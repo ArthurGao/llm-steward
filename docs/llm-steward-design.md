@@ -172,7 +172,7 @@ GovernanceService 是唯一的写入出口；同步器（Syncer）通过任务�
 | ORM / 迁移 | SQLAlchemy 2.0（async）+ Alembic | 同一套模型支持 PostgreSQL 和 SQLite |
 | 自有库 | PostgreSQL 18 + pgvector（本地共用的 PG 容器，CI 用 `pgvector/pgvector:pg18`）；native 模式用 SQLite | 与 mem0 共用一个 PG 实例；WeKnora 自带 ParadeDB |
 | Memory | `mem0ai`（锁定版本） | 见第 2 节 |
-| KB 客户端 | httpx 调用 WeKnora / RAGFlow 的 REST API | 锁定版本，由合约测试保护 |
+| KB 客户端 | httpx2（httpx 的后继，Starlette 1.x TestClient 也用它）调用 WeKnora / RAGFlow 的 REST API | 锁定版本，由合约测试保护 |
 | LLM / Embedding | LiteLLM | 治理层自己的 LLM 调用（风险分级、KB 价值评分、起草、冲突判断）与 provider 的配置分开 |
 | native 实现 | sqlite-vec（`vec0`）+ FTS5 + jieba + fastembed | 零依赖、离线可跑 |
 | 后台任务 | 数据库任务表（outbox）+ asyncio worker | llm-steward 本身不依赖 Redis（WeKnora 自带的 Redis 只供 WeKnora 使用），两种数据库都能用 |
@@ -616,7 +616,7 @@ class KnowledgeProvider(Protocol):
 | adapter | 实现要点 |
 | --- | --- |
 | `Mem0Provider` | 进程内使用 `mem0.AsyncMemory`；scope 映射为 `user_id`/`agent_id`/`run_id`；把 llm-steward 的 memory id 写进 mem0 metadata，便于反查；按 mem0 返回的事件确定 capabilities |
-| `WeKnoraProvider` | REST（httpx）：collection ↔ 知识库；一条 KB entry 写成一篇文本知识（标题 + 正文 + `steward_id` 元数据）；上传文档走其文档接口；定时轮询解析状态 |
+| `WeKnoraProvider` | REST（httpx2）：collection ↔ 知识库；一条 KB entry 写成一篇文本知识（标题 + 正文 + `steward_id` 元数据）；上传文档走其文档接口；定时轮询解析状态 |
 | `RAGFlowProvider` | REST + Python SDK：collection ↔ dataset；entry ↔ 一篇文档；检索用其 retrieval 接口 |
 | `NativeMemoryProvider` / `NativeKnowledgeProvider` | SQLite（或 PG）+ sqlite-vec / pgvector + FTS5 / tsvector + jieba；实现全部 capabilities，作为合约测试的参照 |
 

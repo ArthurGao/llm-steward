@@ -1,7 +1,7 @@
 from collections.abc import Callable
 from pathlib import Path
 
-import httpx
+import httpx2
 import pytest
 from fastapi.testclient import TestClient
 
@@ -22,13 +22,13 @@ def _settings(database_url: str, **overrides: str) -> Settings:
     return Settings(_env_file=None, **values)  # type: ignore[call-arg, arg-type]
 
 
-def _get_health(settings: Settings, http: httpx.AsyncClient | None = None) -> httpx.Response:
+def _get_health(settings: Settings, http: httpx2.AsyncClient | None = None) -> httpx2.Response:
     with TestClient(create_app(settings, http=http)) as client:
         return client.get("/health")
 
 
-def _weknora(handler: Callable[[httpx.Request], httpx.Response]) -> httpx.AsyncClient:
-    return httpx.AsyncClient(transport=httpx.MockTransport(handler))
+def _weknora(handler: Callable[[httpx2.Request], httpx2.Response]) -> httpx2.AsyncClient:
+    return httpx2.AsyncClient(transport=httpx2.MockTransport(handler))
 
 
 def test_all_ok_with_native_providers(db_url: str) -> None:
@@ -58,9 +58,9 @@ def test_database_down_returns_503(unreachable_db_url: str) -> None:
 def test_weknora_up_and_mem0_not_implemented_is_degraded(db_url: str) -> None:
     seen: list[str] = []
 
-    def handler(request: httpx.Request) -> httpx.Response:
+    def handler(request: httpx2.Request) -> httpx2.Response:
         seen.append(str(request.url))
-        return httpx.Response(200, json={"status": "ok"})
+        return httpx2.Response(200, json={"status": "ok"})
 
     settings = _settings(db_url, memory_provider="mem0", kb_provider="weknora")
     response = _get_health(settings, _weknora(handler))
@@ -72,16 +72,16 @@ def test_weknora_up_and_mem0_not_implemented_is_degraded(db_url: str) -> None:
     assert body["components"]["memory_provider"]["status"] == "not_implemented"
 
 
-def _server_error(request: httpx.Request) -> httpx.Response:
-    return httpx.Response(500)
+def _server_error(request: httpx2.Request) -> httpx2.Response:
+    return httpx2.Response(500)
 
 
-def _timeout(request: httpx.Request) -> httpx.Response:
-    raise httpx.ReadTimeout("slow", request=request)
+def _timeout(request: httpx2.Request) -> httpx2.Response:
+    raise httpx2.ReadTimeout("slow", request=request)
 
 
-def _refused(request: httpx.Request) -> httpx.Response:
-    raise httpx.ConnectError("refused", request=request)
+def _refused(request: httpx2.Request) -> httpx2.Response:
+    raise httpx2.ConnectError("refused", request=request)
 
 
 @pytest.mark.parametrize(
@@ -94,7 +94,7 @@ def _refused(request: httpx.Request) -> httpx.Response:
     ids=["http-500", "timeout", "connect-error"],
 )
 def test_weknora_failures_are_reported(
-    tmp_path: Path, handler: Callable[[httpx.Request], httpx.Response], detail: str
+    tmp_path: Path, handler: Callable[[httpx2.Request], httpx2.Response], detail: str
 ) -> None:
     settings = _settings(f"sqlite+aiosqlite:///{tmp_path}/h.db", kb_provider="weknora")
     response = _get_health(settings, _weknora(handler))

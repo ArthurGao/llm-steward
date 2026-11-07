@@ -12,7 +12,7 @@ dependencies = [
     "asyncpg>=0.30",
     "aiosqlite>=0.20",
     "alembic>=1.14",
-    "httpx>=0.28",
+    "httpx2>=2.16",
     "typer>=0.15",
 ]
 

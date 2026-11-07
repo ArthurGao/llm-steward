@@ -3,14 +3,14 @@
 Everything else talks to providers through their Protocol, never by name (backend/AGENTS.md).
 """
 
-import httpx
+import httpx2
 
 from llm_steward.config import Settings
 from llm_steward.providers.base import BuiltinProvider, HealthProbe, NotImplementedProvider
 from llm_steward.providers.weknora import WeKnoraProvider
 
 
-def build_providers(settings: Settings, http: httpx.AsyncClient) -> dict[str, HealthProbe]:
+def build_providers(settings: Settings, http: httpx2.AsyncClient) -> dict[str, HealthProbe]:
     """Return the configured providers keyed by role: memory_provider, kb_provider."""
     memory: HealthProbe
     match settings.memory_provider:

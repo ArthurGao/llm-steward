@@ -1,7 +1,7 @@
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 
-import httpx
+import httpx2
 from fastapi import FastAPI
 
 from llm_steward.api import system
@@ -11,7 +11,7 @@ from llm_steward.storage.db import create_engine
 
 
 def create_app(
-    settings: Settings | None = None, *, http: httpx.AsyncClient | None = None
+    settings: Settings | None = None, *, http: httpx2.AsyncClient | None = None
 ) -> FastAPI:
     """Build the app. `http` is injectable so tests can stub provider endpoints."""
     settings = settings or Settings()
@@ -19,7 +19,7 @@ def create_app(
     @asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         engine = create_engine(settings.database_url, schema=settings.db_schema)
-        client = http or httpx.AsyncClient()
+        client = http or httpx2.AsyncClient()
         app.state.engine = engine
         app.state.providers = build_providers(settings, client)
         try:
