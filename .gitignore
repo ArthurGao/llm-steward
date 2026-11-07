@@ -1,0 +1,57 @@
+# macOS / editors
+.DS_Store
+.idea/
+*.swp
+
+# A global excludesfile hides CLAUDE.md on this machine; agent guides are tracked here.
+!CLAUDE.md
+!**/CLAUDE.md
+
+# Secrets: only .env.example is tracked
+.env*
+!.env.example
+!**/.env.example
+
+# Python (backend/, sdk/python/)
+__pycache__/
+*.py[cod]
+.venv/
+*.egg-info/
+build/
+dist/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.import_linter_cache/
+.coverage
+.coverage.*
+coverage.xml
+htmlcov/
+
+# Node (frontend/)
+node_modules/
+.pnpm-store/
+coverage/
+*.tsbuildinfo
+.vite/
+.eslintcache
+
+# Playwright
+test-results/
+playwright-report/
+blob-report/
+playwright/.cache/
+.playwright-mcp/
+
+# Local data: native-profile SQLite files (e.g. ./data/steward.db) and docker volumes
+data/
+*.db
+*.db-journal
+*.db-wal
+*.db-shm
+*.sqlite
+*.sqlite3
+
+# Logs
+*.log
+logs/
