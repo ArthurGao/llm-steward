@@ -89,7 +89,7 @@ Open questions (design §11) — do not decide them silently; ask, or implement 
 | What | Where |
 | --- | --- |
 | Governance DB (dev) | shared container `postgresql-postgres-1` (PG 18 + pgvector) on `localhost:5432`, database `llm_steward`, role `llm_steward` |
-| Test DB | `llm_steward_test` on the same server; tests refuse any database whose name does not end in `_test` |
+| Tests | same database, schema `steward_test` (dropped and recreated by the fixtures); app data lives in schema `steward`, which tests never touch |
 | Secrets | `backend/.env` (uv runs) and root `.env` (docker compose); both gitignored, templates in `.env.example` |
 | llm-steward API | `127.0.0.1:8600` |
 | WeKnora API / UI (`standard`) | `127.0.0.1:8680` / `127.0.0.1:8681` |

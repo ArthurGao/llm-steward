@@ -1,6 +1,9 @@
 """Shared fixtures.
 
 Every DB test runs on SQLite and PostgreSQL (design §11: both governance stores).
+
+PostgreSQL cases use the same database as development (STEWARD_DATABASE_URL) but their own
+schema, TEST_SCHEMA, which they drop and recreate. They never touch the app schema.
 """
 
 import asyncio
@@ -16,26 +19,25 @@ from sqlalchemy.schema import DropSchema
 from llm_steward.config import DEFAULT_DB_SCHEMA
 from llm_steward.storage.db import engine_scope
 
-SCHEMA = DEFAULT_DB_SCHEMA
+SCHEMA = "steward_test"
+# The fixtures DROP ... CASCADE this schema: it must never be the one holding real data.
+assert SCHEMA != DEFAULT_DB_SCHEMA
 
 
 class _TestEnv(BaseSettings):
-    """Reads STEWARD_TEST_DATABASE_URL from the environment or backend/.env."""
+    """Reads STEWARD_DATABASE_URL from the environment or backend/.env."""
 
-    model_config = SettingsConfigDict(env_prefix="STEWARD_TEST_", env_file=".env", extra="ignore")
+    model_config = SettingsConfigDict(env_prefix="STEWARD_", env_file=".env", extra="ignore")
     database_url: str | None = None
 
 
 def _pg_test_url() -> str:
     url = _TestEnv().database_url
-    if not url:
+    if not url or make_url(url).get_backend_name() != "postgresql":
         pytest.fail(
-            "STEWARD_TEST_DATABASE_URL is not set: PostgreSQL cases cannot run. "
-            "Set it (env or backend/.env) to a database whose name ends with _test."
+            "PostgreSQL cases need STEWARD_DATABASE_URL (env or backend/.env) to point at "
+            f"PostgreSQL; got {url!r}. Tests use schema {SCHEMA!r} only."
         )
-    name = make_url(url).database or ""
-    if not name.endswith("_test"):
-        pytest.fail(f"Refusing to run tests against database {name!r}: name must end with _test.")
     return url
 
 

@@ -9,21 +9,21 @@ jobs:
   backend:
     runs-on: ubuntu-latest
     # conftest runs every DB test on SQLite and on this PostgreSQL in the same pytest run;
-    # the PG cases fail (never skip) if STEWARD_TEST_DATABASE_URL is missing.
+    # PG cases use schema steward_test and fail (never skip) if STEWARD_DATABASE_URL is missing.
     services:
       postgres:
         image: pgvector/pgvector:pg18
         env:
           POSTGRES_USER: llm_steward
           POSTGRES_PASSWORD: ci
-          POSTGRES_DB: llm_steward_test
+          POSTGRES_DB: llm_steward
         ports:
           - 5432:5432
         options: >-
-          --health-cmd "pg_isready -U llm_steward -d llm_steward_test"
+          --health-cmd "pg_isready -U llm_steward -d llm_steward"
           --health-interval 5s --health-timeout 5s --health-retries 10
     env:
-      STEWARD_TEST_DATABASE_URL: postgresql+asyncpg://llm_steward:ci@localhost:5432/llm_steward_test
+      STEWARD_DATABASE_URL: postgresql+asyncpg://llm_steward:ci@localhost:5432/llm_steward
     defaults:
       run:
         working-directory: backend
