@@ -1,0 +1,75 @@
+[project]
+name = "llm-steward"
+version = "0.1.0"
+description = "Governance layer for AI memory and knowledge"
+requires-python = ">=3.12,<3.13"
+dependencies = [
+    "fastapi>=0.115",
+    "uvicorn[standard]>=0.32",
+    "pydantic>=2.9",
+    "pydantic-settings>=2.6",
+    "sqlalchemy[asyncio]>=2.0.36",
+    "asyncpg>=0.30",
+    "aiosqlite>=0.20",
+    "alembic>=1.14",
+    "httpx>=0.28",
+    "typer>=0.15",
+]
+
+[project.scripts]
+steward = "llm_steward.cli:app"
+
+[dependency-groups]
+dev = [
+    "pytest>=8.3",
+    "pytest-asyncio>=0.25",
+    "ruff>=0.8",
+    "mypy>=1.13",
+    "import-linter>=2.1",
+    "pre-commit>=4.0",
+]
+
+[build-system]
+requires = ["uv_build>=0.10,<0.11"]
+build-backend = "uv_build"
+
+[tool.ruff]
+line-length = 100
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "UP", "B", "ASYNC", "RUF"]
+
+[tool.mypy]
+strict = true
+plugins = ["pydantic.mypy"]
+packages = ["llm_steward"]
+mypy_path = "src"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "function"
+
+[tool.importlinter]
+root_package = "llm_steward"
+include_external_packages = true
+
+[[tool.importlinter.contracts]]
+name = "Layers: api/mcp -> services -> providers/pipeline/storage"
+type = "layers"
+layers = [
+    "llm_steward.api | llm_steward.mcp",
+    "llm_steward.services",
+    "llm_steward.providers | llm_steward.pipeline | llm_steward.storage",
+]
+
+[[tool.importlinter.contracts]]
+name = "Services, providers, pipeline and storage do not depend on the web framework"
+type = "forbidden"
+source_modules = [
+    "llm_steward.services",
+    "llm_steward.providers",
+    "llm_steward.pipeline",
+    "llm_steward.storage",
+]
+forbidden_modules = ["fastapi", "starlette"]

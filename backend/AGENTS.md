@@ -9,9 +9,10 @@ Design: `docs/llm-steward-design.md` §3 (architecture), §4 (data model), §5 (
 ```
 backend/
   pyproject.toml              # uv; optional groups [mem0] [native] [rerank]
-  alembic.ini, alembic/versions/
+  alembic.ini                 # points at src/llm_steward/migrations (shipped inside the package)
   src/llm_steward/
     main.py                   # create_app(): mounts /v1, /admin/v1, /mcp, frontend static files
+    migrations/               # Alembic env + versions; `steward migrate` runs them
     config.py                 # pydantic-settings, prefix STEWARD_
     cli.py                    # steward serve | worker | migrate | ns apply | resync | mcp --stdio
     api/deps.py, api/v1/, api/admin/
@@ -19,7 +20,7 @@ backend/
     schemas/                  # Pydantic request/response models
     models/                   # SQLAlchemy ORM: governance tables (§4)
     services/                 # governance, memory, kb, retrieval, sync, namespace
-    providers/                # base.py (Protocols), registry.py, mem0/weknora/ragflow, native/
+    providers/                # base.py (Protocols), registry.py (the only name → instance map), weknora.py, …
     pipeline/                 # buffer, conflict, worthiness, risk, maintenance
     llm/                      # LiteLLM wrapper, reranker
     storage/db.py             # engine/session, dialect chosen from the URL
@@ -34,8 +35,8 @@ backend/
 
 - `api/`, `mcp/` → `services/` → `providers/`, `pipeline/`, `storage/`. No reverse imports.
 - `services/` never imports FastAPI. `providers/` never imports `services/`.
-- Providers are called **only** by the Syncer (`sync_service.py`) and `RetrievalService`. API handlers never touch
-  a provider directly.
+- Providers are called **only** by the Syncer (`sync_service.py`), `RetrievalService` and the health service
+  (`health()` probes). API handlers never touch a provider directly.
 - MCP tools and REST endpoints share the same services and auth; MCP is not a second implementation.
 
 ## Rules
@@ -71,7 +72,7 @@ backend/
 uv run pytest                     # unit + integration, sqlite and pg
 uv run pytest -m contract         # adapters against real engines
 uv run ruff check && uv run ruff format --check
-uv run mypy src
+uv run mypy
 uv run lint-imports
-uv run alembic upgrade head
+uv run steward migrate            # or: uv run alembic upgrade head
 ```

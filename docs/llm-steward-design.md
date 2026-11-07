@@ -13,7 +13,7 @@ Nov 7, 2026 · @Arthur Gao
 - **治理是核心**：状态机（candidate → active → verified → deprecated）、按风险分级审核、终端用户确认卡片、完整变更历史与出处、Memory → KB 的升级（promote）通道。这些全部由 llm-steward 自己实现，与后端无关。
 - **后端可插拔**：通过 `MemoryProvider` 和 `KnowledgeProvider` 两个接口适配不同引擎。治理元数据只存在 llm-steward 自己的库里，外部引擎只负责存储、抽取和检索。更换后端时把生效数据重新同步一遍即可。
 - **统一检索**：一次调用同时查 memory 和 KB，在治理层合并、按可信度加权、组装成可以直接放进 prompt 的上下文。返回格式不随后端变化。
-- **轻量部署**：默认组合 mem0 + WeKnora + llm-steward 共用**一个 PostgreSQL（pgvector）**；native 模式只需要一个 SQLite 文件。
+- **轻量部署**：llm-steward 与 mem0 共用**一个 PostgreSQL（pgvector）**；WeKnora 需要 ParadeDB（`pg_search`），自带一个 PG 实例和 Redis；native 模式只需要一个 SQLite 文件。
 - **多种接入**：REST（OpenAPI）、Python SDK、MCP server、可嵌入的确认卡片组件。
 
 ### 非目标（v1 不做）
@@ -100,7 +100,7 @@ Redis agent-memory-server 和 Microsoft Kernel Memory 曾经最接近这个定�
 
 ### 后端选型结论
 
-**默认组合是 mem0 + WeKnora，与 llm-steward 共用一个 PostgreSQL。** RAGFlow 作为第二个 KB adapter，留给文档复杂的场景。数据为 2026 年 11 月的仓库页面。
+**默认组合是 mem0 + WeKnora。** mem0 与 llm-steward 共用一个 PostgreSQL；WeKnora 使用自带的 ParadeDB 实例（见第 3 节）。 RAGFlow 作为第二个 KB adapter，留给文档复杂的场景。数据为 2026 年 11 月的仓库页面。
 
 | 角色 | 项目 | 协议 | 社区与维护 | 选它的理由 | 注意 |
 | --- | --- | --- | --- | --- | --- |
@@ -141,7 +141,7 @@ flowchart TB
   D2 --> E3
   D2 --> E4
 ```
-mem0、WeKnora 与自有库共用一个 PostgreSQL（独立 schema）；native 同时实现两个接口。
+mem0 与自有库共用一个 PostgreSQL（独立 schema）；WeKnora 使用自带的 ParadeDB 实例；native 同时实现两个接口。
 
 GovernanceService 是唯一的写入出口；同步器（Syncer）通过任务队列，把生效的数据异步推送给 provider。
 
@@ -158,10 +158,10 @@ GovernanceService 是唯一的写入出口；同步器（Syncer）通过任务�
 | profile | 自有库 | Memory provider | KB provider | 适用 |
 | --- | --- | --- | --- | --- |
 | `native` | SQLite | native | native | 开发、测试、单机、嵌入式 |
-| `standard`（默认） | PostgreSQL + pgvector | mem0（进程内 Python 库，使用同一个 PG） | WeKnora（独立容器，使用同一个 PG） | 大多数生产场景 |
+| `standard`（默认） | PostgreSQL + pgvector | mem0（进程内 Python 库，使用同一个 PG） | WeKnora（独立容器，自带 ParadeDB 与 Redis） | 大多数生产场景 |
 | `docparse` | PostgreSQL + pgvector | mem0 | RAGFlow（独立部署） | 大量复杂 PDF、表格、扫描件 |
 
-各 provider 使用独立的 PG schema 或 collection（`steward`、`mem0`、`weknora`），互不干扰。provider 也可以按 namespace 单独配置。
+自有库与 mem0 在同一个数据库中使用独立 schema（`steward`、`mem0`），互不干扰。WeKnora v0.9.0 的迁移依赖 ParadeDB 的 `pg_search` 扩展（BM25 索引），普通 PostgreSQL + pgvector 无法承载，因此它使用自带的 `paradedb/paradedb` 实例（见 `deploy/weknora/README.md`，2026-11-08 核实）。provider 也可以按 namespace 单独配置。
 
 ### 技术选型
 
@@ -170,12 +170,12 @@ GovernanceService 是唯一的写入出口；同步器（Syncer）通过任务�
 | 语言 / 包管理 | Python 3.12、uv | mem0 是 Python 库，可以直接进程内调用 |
 | Web | FastAPI + Pydantic v2 | 自动生成 OpenAPI，前端和 SDK 都从它生成 |
 | ORM / 迁移 | SQLAlchemy 2.0（async）+ Alembic | 同一套模型支持 PostgreSQL 和 SQLite |
-| 自有库 | PostgreSQL 16 + pgvector；native 模式用 SQLite | 与 mem0、WeKnora 共用一个 PG 实例 |
+| 自有库 | PostgreSQL 18 + pgvector（本地共用的 PG 容器，CI 用 `pgvector/pgvector:pg18`）；native 模式用 SQLite | 与 mem0 共用一个 PG 实例；WeKnora 自带 ParadeDB |
 | Memory | `mem0ai`（锁定版本） | 见第 2 节 |
 | KB 客户端 | httpx 调用 WeKnora / RAGFlow 的 REST API | 锁定版本，由合约测试保护 |
 | LLM / Embedding | LiteLLM | 治理层自己的 LLM 调用（风险分级、KB 价值评分、起草、冲突判断）与 provider 的配置分开 |
 | native 实现 | sqlite-vec（`vec0`）+ FTS5 + jieba + fastembed | 零依赖、离线可跑 |
-| 后台任务 | 数据库任务表（outbox）+ asyncio worker | 不依赖 Redis，两种数据库都能用 |
+| 后台任务 | 数据库任务表（outbox）+ asyncio worker | llm-steward 本身不依赖 Redis（WeKnora 自带的 Redis 只供 WeKnora 使用），两种数据库都能用 |
 | MCP | 官方 `mcp` Python SDK（streamable HTTP），挂载在 `/mcp` | 与 REST 共用 service 和鉴权 |
 | 鉴权 | Namespace API key（哈希存储）+ Admin JWT | 机器调用和人工登录分开 |
 | 前端 | React + Vite + TypeScript + TanStack Router/Query + shadcn/ui + Tailwind | 用 `@hey-api/openapi-ts` 生成客户端 |
@@ -665,7 +665,7 @@ Admin 是一个单页应用（SPA），顶部是 namespace 切换器，左侧是
 llm-steward/
 ├── README.md
 ├── CLAUDE.md                     # 给 Claude Code 的开发约定（分层规则、命令、测试要求）
-├── docs/design.md                # 本文档
+├── docs/llm-steward-design.md    # 本文档
 ├── docker-compose.yml            # profiles: native / standard（PG + WeKnora）/ docparse（PG + RAGFlow）
 ├── deploy/
 │   ├── weknora/                  # 锁定版本的 WeKnora compose 片段与初始化脚本
@@ -673,8 +673,7 @@ llm-steward/
 ├── .env.example
 ├── backend/
 │   ├── pyproject.toml            # uv；可选依赖组 [mem0] [native] [rerank]
-│   ├── alembic.ini
-│   ├── alembic/versions/
+│   ├── alembic.ini               # 迁移脚本在包内 src/llm_steward/migrations/，随包发布
 │   ├── src/llm_steward/
 │   │   ├── main.py               # create_app()：挂载 /v1、/admin/v1、/mcp、前端静态文件
 │   │   ├── config.py             # pydantic-settings，环境变量前缀 STEWARD_
@@ -746,10 +745,11 @@ llm-steward/
 ### 阶段与验收
 
 1. **P0 项目骨架**
-   - [ ] monorepo、uv、pnpm、ruff、mypy、import-linter、pre-commit
-   - [ ] `config.py`、`storage/db.py`（SQLite / PG）、Alembic
-   - [ ] docker-compose 的 `native`、`standard`（PG + 锁定版本的 WeKnora）、`docparse` 三个 profile；CI 矩阵
-   - [ ] CLAUDE.md
+   - [x] monorepo、uv、ruff、mypy、import-linter、pre-commit（pnpm workspace 推迟到 P6，与 Admin 一起建）
+   - [x] `config.py`、`storage/db.py`（SQLite / PG）、Alembic
+   - [x] docker-compose 的 `native`、`standard`（共用 PG + 锁定版本的 WeKnora）两个 profile；CI（一次运行覆盖 SQLite 与 PG）
+   - `docparse`（RAGFlow）profile 推迟到 P7：本机无法启动验证（4C/16GB），不写未验证的配置
+   - [x] CLAUDE.md
    - 验收：`native` 和 `standard` 都能启动，`GET /health` 返回各组件状态，CI 通过
 2. **P1 治理核心（基于 native provider）**
    - [ ] 第 4 节的全部治理表和迁移；`providers/base.py` 与 registry；native memory / knowledge provider；Fake provider
@@ -785,7 +785,7 @@ llm-steward/
 ### 给 Claude Code 的第一条指令（参考）
 
 ```text
-阅读 docs/design.md，尤其是第 3、4、8、10、11 节。按第 11 节实施 P0：
+阅读 docs/llm-steward-design.md，尤其是第 3、4、8、10、11 节。按第 11 节实施 P0：
 建立第 10 节的目录结构，配置 uv / ruff / mypy / import-linter / pytest，
 实现按 STEWARD_DATABASE_URL 切换 SQLite 与 PostgreSQL 的 storage/db.py 和 Alembic，
 写 docker-compose 的 native / standard / docparse 三个 profile（WeKnora 与 RAGFlow 锁定镜像版本）、
@@ -795,7 +795,7 @@ CI 矩阵以及 CLAUDE.md。完成后运行测试，逐条对照 P0 的验收标
 ### 待确认的问题
 
 - [ ] 默认 LLM 和 embedding 是否允许联网调用？还是默认本地（fastembed / Ollama）？
-- [ ] mem0 是进程内调用（本文默认），还是部署 mem0 的自托管 server 由 REST 调用？
+- [x] mem0 是进程内调用（本文默认），还是部署 mem0 的自托管 server 由 REST 调用？→ 进程内（2026-11-08 确认）
 - [ ] 开源协议：建议 Apache-2.0（与 mem0、RAGFlow 一致，与 WeKnora 的 MIT 兼容）。
 - [ ] v1 是否需要 TypeScript SDK？
 

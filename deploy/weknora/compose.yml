@@ -1,0 +1,118 @@
+# WeKnora v0.9.0, trimmed to its minimum stack for the `standard` profile.
+# Upstream: https://github.com/Tencent/WeKnora/blob/v0.9.0/docker-compose.yml — see README.md here for
+# what was kept, what was dropped and the upgrade rule. Secrets come from the root .env (WEKNORA_*).
+services:
+  weknora-app:
+    image: wechatopenai/weknora-app:v0.9.0
+    profiles: [standard]
+    ports:
+      - "127.0.0.1:8680:8080"
+    volumes:
+      - weknora-files:/data/files
+      - weknora-docreader-tmp:/tmp/docreader:ro
+      - ./config/config.yaml:/app/config/config.yaml:ro
+    environment:
+      GIN_MODE: release
+      TZ: Pacific/Auckland
+      AUTO_MIGRATE: "true"
+      AUTO_RECOVER_DIRTY: "true"
+      DB_DRIVER: postgres
+      DB_HOST: weknora-postgres
+      DB_PORT: "5432"
+      DB_USER: weknora
+      DB_PASSWORD: ${WEKNORA_DB_PASSWORD:-}
+      DB_NAME: weknora
+      RETRIEVE_DRIVER: postgres
+      STREAM_MANAGER_TYPE: redis
+      REDIS_ADDR: weknora-redis:6379
+      REDIS_PASSWORD: ${WEKNORA_REDIS_PASSWORD:-}
+      REDIS_DB: "0"
+      REDIS_PREFIX: "stream:"
+      STORAGE_TYPE: local
+      LOCAL_STORAGE_BASE_DIR: /data/files
+      DOCREADER_ADDR: weknora-docreader:50051
+      DOCREADER_TRANSPORT: grpc
+      OLLAMA_OPTIONAL: "true"
+      OLLAMA_BASE_URL: http://host.docker.internal:11434
+      WEKNORA_SANDBOX_DOCKER_ENABLED: "false"
+      JWT_SECRET: ${WEKNORA_JWT_SECRET:-}
+      SYSTEM_AES_KEY: ${WEKNORA_SYSTEM_AES_KEY:-}
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 60s
+    depends_on:
+      weknora-postgres:
+        condition: service_healthy
+      weknora-redis:
+        condition: service_started
+      weknora-docreader:
+        condition: service_healthy
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    restart: unless-stopped
+
+  weknora-ui:
+    image: wechatopenai/weknora-ui:v0.9.0
+    profiles: [standard]
+    ports:
+      - "127.0.0.1:8681:80"
+    environment:
+      APP_HOST: weknora-app
+      APP_PORT: "8080"
+      APP_SCHEME: http
+    depends_on:
+      weknora-app:
+        condition: service_healthy
+    restart: unless-stopped
+
+  weknora-docreader:
+    image: wechatopenai/weknora-docreader:v0.9.0
+    profiles: [standard]
+    environment:
+      TZ: Pacific/Auckland
+      DOCREADER_IMAGE_OUTPUT_DIR: /tmp/docreader
+    volumes:
+      - weknora-docreader-tmp:/tmp/docreader
+    healthcheck:
+      test: ["CMD", "grpc_health_probe", "-addr=localhost:50051"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 60s
+    restart: unless-stopped
+
+  # ParadeDB, not plain Postgres: WeKnora's migrations need pg_search (BM25) besides pgvector.
+  weknora-postgres:
+    image: paradedb/paradedb:v0.25.11-pg17
+    profiles: [standard]
+    environment:
+      POSTGRES_USER: weknora
+      POSTGRES_PASSWORD: ${WEKNORA_DB_PASSWORD:-}
+      POSTGRES_DB: weknora
+    volumes:
+      - weknora-pg:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U weknora -d weknora"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 20s
+    stop_grace_period: 1m
+    restart: unless-stopped
+
+  weknora-redis:
+    image: redis:7.0-alpine
+    profiles: [standard]
+    command: ["redis-server", "--appendonly", "yes", "--requirepass", "${WEKNORA_REDIS_PASSWORD:-}"]
+    volumes:
+      - weknora-redis:/data
+    restart: unless-stopped
+
+volumes:
+  weknora-files:
+  weknora-docreader-tmp:
+  weknora-pg:
+  weknora-redis:
