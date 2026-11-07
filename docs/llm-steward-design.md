@@ -752,10 +752,15 @@ llm-steward/
    - [x] CLAUDE.md
    - 验收：`native` 和 `standard` 都能启动，`GET /health` 返回各组件状态，CI 通过
 2. **P1 治理核心（基于 native provider）**
-   - [ ] 第 4 节的全部治理表和迁移；`providers/base.py` 与 registry；native memory / knowledge provider；Fake provider
-   - [ ] `GovernanceService`（状态机、`apply()`、`change_log`、outbox）、jobs worker、Syncer 骨架
-   - [ ] `POST/GET /v1/memories`（`infer=false`）、基础 `POST /v1/retrieve`
-   - [ ] `tests/contract/` 初版，先对 native 跑通
+   - [x] 第 4 节的全部治理表和迁移；`providers/base.py` 与 registry；native memory / knowledge provider；Fake provider
+   - [x] `GovernanceService`（状态机、`apply()`、`change_log`、outbox）、jobs worker、Syncer 骨架
+   - [x] `POST/GET /v1/memories`（`infer=false`）、基础 `POST /v1/retrieve`
+   - [x] `tests/contract/` 初版，先对 native 跑通
+   - 实现说明（2026-11-08）：
+     - API key 鉴权（`stw_<prefix>_<secret>`、scope、吊销）提前到 P1，namespace 与 key 只能用 CLI 创建；user token、Admin JWT、限流仍在 P5。
+     - native 的 `native_*` 表归 provider 所有，首次使用时建表，不进治理迁移，Alembic 的自动生成也会忽略它们；在 PG 上，若治理 schema 不存在就拒绝建表，以免落进 `public`。
+     - native embedding 默认用本地 fastembed `paraphrase-multilingual-MiniLM-L12-v2`（384 维），一个库只允许一种 embedding 模型。
+     - native 的混合检索中，一条全文命中至少要覆盖查询一半的词才参与 RRF 融合，否则一个通用词（"user"/"用户"）就会压过向量检索的正确结果（真实模型测试发现）。
    - 验收：两种自有库上测试全部通过；native 通过合约测试；namespace 之间完全隔离
 3. **P2 Memory：接入 mem0**
    - [ ] `Mem0Provider`（`AsyncMemory` + pgvector）、缓冲与 flush、镜像同步、冲突补偿、对账任务

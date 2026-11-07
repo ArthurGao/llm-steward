@@ -5,14 +5,16 @@ ENV UV_COMPILE_BYTECODE=1 UV_LINK_MODE=copy UV_PYTHON_DOWNLOADS=never
 WORKDIR /app
 # Dependencies first, so source edits do not invalidate this layer.
 COPY pyproject.toml uv.lock ./
-RUN --mount=type=cache,target=/root/.cache/uv uv sync --locked --no-dev --no-install-project
+RUN --mount=type=cache,target=/root/.cache/uv uv sync --locked --no-dev --extra native --no-install-project
 COPY src ./src
-RUN --mount=type=cache,target=/root/.cache/uv uv sync --locked --no-dev --no-editable
+RUN --mount=type=cache,target=/root/.cache/uv uv sync --locked --no-dev --extra native --no-editable
 
 FROM python:3.12-slim
-RUN useradd --system --uid 10001 steward && mkdir /data && chown steward /data
+# A real home: libraries such as huggingface_hub write under $HOME and fail without one.
+RUN useradd --system --create-home --uid 10001 steward && mkdir /data && chown steward /data
 COPY --from=build /app/.venv /app/.venv
-ENV PATH=/app/.venv/bin:$PATH PYTHONUNBUFFERED=1
+ENV PATH=/app/.venv/bin:$PATH PYTHONUNBUFFERED=1 \
+    STEWARD_MODEL_CACHE_DIR=/data/models HF_HOME=/data/.cache/huggingface
 USER steward
 WORKDIR /data
 EXPOSE 8600

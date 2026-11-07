@@ -1,13 +1,25 @@
 """Provider contracts (design §8).
 
-P0 defines only the health part; P1 extends `HealthProbe` into the full `MemoryProvider` /
-`KnowledgeProvider` Protocols with capabilities.
+Adapters are reached only through these Protocols; the governance layer reads `capabilities` and
+degrades accordingly instead of branching on a provider's name.
 """
 
-from dataclasses import dataclass
-from typing import Literal, Protocol
+import uuid
+from dataclasses import dataclass, field
+from typing import Any, Literal, Protocol
+
+from llm_steward.errors import ProviderUnavailable
 
 ComponentStatus = Literal["ok", "error", "not_implemented"]
+
+# Memory capabilities
+EXTRACT = "extract"
+UPDATE = "update"
+DELETE = "delete"
+METADATA_FILTER = "metadata_filter"
+# Knowledge capabilities
+ENTRY_UPSERT = "entry_upsert"
+DOC_PARSING = "doc_parsing"
 
 
 @dataclass(frozen=True)
@@ -21,6 +33,65 @@ class ComponentHealth:
         return cls(name, "error", f"{type(exc).__name__}: {exc}")
 
 
+@dataclass(frozen=True)
+class Scope:
+    """Who a memory belongs to. `None` on a dimension means shared within the namespace."""
+
+    namespace_id: uuid.UUID
+    user_id: str | None = None
+    agent_id: str | None = None
+    session_id: str | None = None
+
+
+@dataclass(frozen=True)
+class Message:
+    role: str
+    content: str
+
+
+@dataclass(frozen=True)
+class MemoryEvent:
+    op: Literal["ADD", "UPDATE", "DELETE"]
+    external_id: str
+    content: str | None = None
+
+
+@dataclass(frozen=True)
+class MemoryRecord:
+    external_id: str
+    content: str
+    scope: Scope
+    metadata: dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass(frozen=True)
+class ProviderHit:
+    """One search result. `score` is provider-internal and not comparable across providers."""
+
+    external_id: str
+    score: float
+    text: str
+
+
+@dataclass(frozen=True)
+class KbCollectionRef:
+    collection_id: uuid.UUID
+    namespace_id: uuid.UUID
+    name: str
+
+
+@dataclass(frozen=True)
+class KbEntryDoc:
+    """One governed KB entry, written to the KB provider as one small document."""
+
+    entry_id: uuid.UUID
+    namespace_id: uuid.UUID
+    title: str
+    content: str
+    version: int
+    tags: list[str] = field(default_factory=list)
+
+
 class HealthProbe(Protocol):
     @property
     def name(self) -> str: ...
@@ -28,22 +99,122 @@ class HealthProbe(Protocol):
     async def health(self) -> ComponentHealth: ...
 
 
+class MemoryProvider(HealthProbe, Protocol):
+    @property
+    def capabilities(self) -> frozenset[str]: ...
+
+    async def add(
+        self,
+        messages: list[Message],
+        scope: Scope,
+        *,
+        infer: bool = True,
+        metadata: dict[str, Any] | None = None,
+    ) -> list[MemoryEvent]: ...
+
+    async def search(
+        self, query: str, scope: Scope, *, top_k: int, filters: dict[str, Any] | None = None
+    ) -> list[ProviderHit]: ...
+
+    async def get(self, external_id: str) -> MemoryRecord | None: ...
+
+    async def update(self, external_id: str, content: str) -> None: ...
+
+    async def delete(self, external_id: str) -> None: ...
+
+    async def list(self, scope: Scope) -> list[MemoryRecord]: ...
+
+
+class KnowledgeProvider(HealthProbe, Protocol):
+    @property
+    def capabilities(self) -> frozenset[str]: ...
+
+    async def ensure_collection(self, collection: KbCollectionRef) -> str: ...
+
+    async def upsert_entry(self, entry: KbEntryDoc, collection_ext_id: str) -> str: ...
+
+    async def remove(self, external_id: str) -> None: ...
+
+    async def search(
+        self,
+        query: str,
+        collection_ext_ids: list[str],
+        *,
+        top_k: int,
+        filters: dict[str, Any] | None = None,
+    ) -> list[ProviderHit]: ...
+
+
 @dataclass(frozen=True)
-class BuiltinProvider:
-    """The native provider runs in-process, so there is nothing remote to probe."""
+class Providers:
+    memory: MemoryProvider
+    kb: KnowledgeProvider
 
-    name: str = "native"
-
-    async def health(self) -> ComponentHealth:
-        return ComponentHealth(self.name, "ok", "builtin")
+    def by_role(self) -> dict[str, HealthProbe]:
+        return {"memory_provider": self.memory, "kb_provider": self.kb}
 
 
-@dataclass(frozen=True)
-class NotImplementedProvider:
-    """A configured provider whose adapter belongs to a later stage."""
+class _Pending:
+    """A configured provider whose adapter belongs to a later stage: health says so, calls 503."""
 
-    name: str
-    stage: str
+    capabilities: frozenset[str] = frozenset()
+
+    def __init__(self, name: str, stage: str) -> None:
+        self.name = name
+        self.stage = stage
+
+    def _unavailable(self) -> ProviderUnavailable:
+        return ProviderUnavailable(f"the {self.name} adapter arrives in {self.stage}")
 
     async def health(self) -> ComponentHealth:
         return ComponentHealth(self.name, "not_implemented", f"adapter arrives in {self.stage}")
+
+
+class PendingMemoryProvider(_Pending):
+    async def add(
+        self,
+        messages: list[Message],
+        scope: Scope,
+        *,
+        infer: bool = True,
+        metadata: dict[str, Any] | None = None,
+    ) -> list[MemoryEvent]:
+        raise self._unavailable()
+
+    async def search(
+        self, query: str, scope: Scope, *, top_k: int, filters: dict[str, Any] | None = None
+    ) -> list[ProviderHit]:
+        raise self._unavailable()
+
+    async def get(self, external_id: str) -> MemoryRecord | None:
+        raise self._unavailable()
+
+    async def update(self, external_id: str, content: str) -> None:
+        raise self._unavailable()
+
+    async def delete(self, external_id: str) -> None:
+        raise self._unavailable()
+
+    async def list(self, scope: Scope) -> list[MemoryRecord]:
+        raise self._unavailable()
+
+
+class PendingKnowledgeProvider(_Pending):
+    async def ensure_collection(self, collection: KbCollectionRef) -> str:
+        raise self._unavailable()
+
+    async def upsert_entry(self, entry: KbEntryDoc, collection_ext_id: str) -> str:
+        raise self._unavailable()
+
+    async def remove(self, external_id: str) -> None:
+        raise self._unavailable()
+
+    async def search(
+        self,
+        query: str,
+        collection_ext_ids: list[str],
+        *,
+        top_k: int,
+        filters: dict[str, Any] | None = None,
+    ) -> list[ProviderHit]:
+        raise self._unavailable()

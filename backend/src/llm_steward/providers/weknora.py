@@ -1,14 +1,13 @@
-"""WeKnora KnowledgeProvider. P0 implements health only; the rest of design §8 arrives in P3."""
+"""WeKnora KnowledgeProvider. P1 implements health only; the rest of design §8 arrives in P3."""
 
 import httpx2
 
-from llm_steward.providers.base import ComponentHealth
+from llm_steward.providers.base import ComponentHealth, PendingKnowledgeProvider
 
 
-class WeKnoraProvider:
-    name = "weknora"
-
+class WeKnoraProvider(PendingKnowledgeProvider):
     def __init__(self, http: httpx2.AsyncClient, base_url: str, timeout_s: float) -> None:
+        super().__init__("weknora", "P3")
         self._http = http
         self._base_url = base_url.rstrip("/")
         self._timeout_s = timeout_s

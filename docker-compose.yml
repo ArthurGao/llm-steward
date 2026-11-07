@@ -24,6 +24,7 @@ services:
       STEWARD_DATABASE_URL: sqlite+aiosqlite:////data/steward.db
       STEWARD_MEMORY_PROVIDER: native
       STEWARD_KB_PROVIDER: native
+      # The image keeps the local embedding model (~220 MB, downloaded on first use) on this volume.
     volumes:
       - steward-data:/data
 

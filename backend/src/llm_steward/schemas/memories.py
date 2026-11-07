@@ -1,0 +1,85 @@
+import uuid
+from datetime import datetime
+from typing import Any
+
+from pydantic import BaseModel, Field
+
+from llm_steward.models.enums import MemoryOrigin, MemoryStatus, SyncStatus
+from llm_steward.services.memory_service import MemoryView
+
+
+class MemoryCreate(BaseModel):
+    content: str = Field(min_length=1, max_length=20_000)
+    user_id: str | None = Field(default=None, max_length=200)
+    agent_id: str | None = Field(default=None, max_length=200)
+    session_id: str | None = Field(default=None, max_length=200)
+    memory_type: str = Field(default="semantic", max_length=64)
+    tags: list[str] = Field(default_factory=list, max_length=50)
+    metadata: dict[str, Any] = Field(default_factory=dict)
+    pinned: bool = False
+    importance: float = Field(default=0.5, ge=0, le=1)
+    confidence: float = Field(default=0.8, ge=0, le=1)
+    infer: bool = Field(
+        default=False,
+        description="Let the memory provider extract facts. Needs the 'extract' capability (P2).",
+    )
+
+
+class SourceRef(BaseModel):
+    type: str
+    id: str
+
+
+class MemoryOut(BaseModel):
+    id: uuid.UUID
+    content: str
+    user_id: str | None
+    agent_id: str | None
+    session_id: str | None
+    memory_type: str
+    status: MemoryStatus
+    origin: MemoryOrigin
+    pinned: bool
+    importance: float
+    confidence: float
+    tags: list[str]
+    metadata: dict[str, Any]
+    valid_from: datetime
+    valid_to: datetime | None
+    created_at: datetime
+    updated_at: datetime
+    sync_status: SyncStatus
+    source_refs: list[SourceRef]
+
+    @classmethod
+    def of(cls, view: MemoryView) -> "MemoryOut":
+        m = view.memory
+        refs = (
+            [SourceRef(type="episode", id=str(m.source_episode_id))] if m.source_episode_id else []
+        )
+        return cls(
+            id=m.id,
+            content=m.content,
+            user_id=m.user_id,
+            agent_id=m.agent_id,
+            session_id=m.session_id,
+            memory_type=m.memory_type,
+            status=m.status,
+            origin=m.origin,
+            pinned=m.pinned,
+            importance=m.importance,
+            confidence=m.confidence,
+            tags=m.tags,
+            metadata=m.meta,
+            valid_from=m.valid_from,
+            valid_to=m.valid_to,
+            created_at=m.created_at,
+            updated_at=m.updated_at,
+            sync_status=view.sync_status,
+            source_refs=refs,
+        )
+
+
+class MemoryPage(BaseModel):
+    items: list[MemoryOut]
+    next_cursor: uuid.UUID | None

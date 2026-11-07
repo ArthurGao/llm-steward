@@ -18,9 +18,11 @@ backend/
     api/deps.py, api/v1/, api/admin/
     mcp/server.py
     schemas/                  # Pydantic request/response models
-    models/                   # SQLAlchemy ORM: governance tables (§4)
-    services/                 # governance, memory, kb, retrieval, sync, namespace
-    providers/                # base.py (Protocols), registry.py (the only name → instance map), weknora.py, …
+    models/                   # SQLAlchemy ORM: governance tables (§4), enums, portable column types
+    services/                 # governance (the single writer), job_queue + worker + sync (outbox),
+                              # memory, retrieval, namespace (API keys), health, container (wiring)
+    providers/                # base.py (Protocols), registry.py (the only name → instance map), weknora.py,
+                              # native/ (store_sqlite / store_pg, embedding, text, providers)
     pipeline/                 # buffer, conflict, worthiness, risk, maintenance
     llm/                      # LiteLLM wrapper, reranker
     storage/db.py             # engine/session, dialect chosen from the URL
@@ -54,7 +56,12 @@ backend/
    No inline prompt strings.
 6. **Provider timeouts.** Each provider call in retrieval has its own timeout (default 800 ms); on timeout return the
    other results and mark `degraded`.
-7. **Errors** are RFC 9457 Problem Details; write endpoints honour `Idempotency-Key`; lists use cursor pagination.
+7. **Errors** are RFC 9457 Problem Details; write endpoints honour `Idempotency-Key` (P5); lists use cursor
+   pagination (cursor = last UUIDv7).
+8. **Default deny.** Every `/v1` route depends on `require(<scope>)`; the open paths are exactly
+   `api/deps.UNAUTHENTICATED_PATHS`, pinned by a test. By-id reads and writes filter by the caller's namespace.
+9. **Provider-owned tables** (`native_*`) are created by the provider on first use, never by a migration, and
+   are excluded from autogenerate (`models.base.include_in_migrations`).
 
 ## Testing
 

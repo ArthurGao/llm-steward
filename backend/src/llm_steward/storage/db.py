@@ -8,10 +8,18 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any
 
-from sqlalchemy import event, text
+from sqlalchemy import Boolean, event, func, text, type_coerce
+from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.engine import URL, make_url
-from sqlalchemy.ext.asyncio import AsyncEngine, create_async_engine
+from sqlalchemy.ext.asyncio import (
+    AsyncEngine,
+    AsyncSession,
+    async_sessionmaker,
+    create_async_engine,
+)
+from sqlalchemy.ext.compiler import compiles
 from sqlalchemy.schema import CreateSchema
+from sqlalchemy.sql.functions import FunctionElement
 
 # Fail fast when the database is unreachable instead of hanging a health check.
 CONNECT_TIMEOUT_SECONDS = 5
@@ -48,12 +56,44 @@ async def engine_scope(database_url: str | URL, *, schema: str) -> AsyncIterator
         await engine.dispose()
 
 
+def session_factory(engine: AsyncEngine) -> async_sessionmaker[AsyncSession]:
+    """Objects stay readable after commit, so services can return what they just wrote."""
+    return async_sessionmaker(engine, expire_on_commit=False)
+
+
 async def prepare_schema(engine: AsyncEngine, schema: str) -> None:
     """Create the governance schema on PostgreSQL; SQLite has no schemas."""
     if engine.dialect.name != "postgresql":
         return
     async with engine.begin() as conn:
         await conn.execute(CreateSchema(schema, if_not_exists=True))
+
+
+class json_array_contains(FunctionElement[bool]):
+    """`json_array_contains(column, value)`: `value` is an element of the JSON array in `column`.
+
+    Compiled per dialect, so callers never branch: JSONB `@>` on PostgreSQL (the column's base type
+    is JSON, whose own `contains` would compile to LIKE), `json_each` on SQLite."""
+
+    type = Boolean()
+    name = "json_array_contains"
+    inherit_cache = True
+
+
+@compiles(json_array_contains, "postgresql")
+def _json_array_contains_pg(element: json_array_contains, compiler: Any, **kw: Any) -> str:
+    column, value = element.clauses.clauses
+    expr = type_coerce(column, JSONB).op("@>")(func.jsonb_build_array(value))
+    return str(compiler.process(expr, **kw))
+
+
+@compiles(json_array_contains, "sqlite")
+def _json_array_contains_sqlite(element: json_array_contains, compiler: Any, **kw: Any) -> str:
+    column, value = element.clauses.clauses
+    return (
+        f"EXISTS (SELECT 1 FROM json_each({compiler.process(column, **kw)})"
+        f" WHERE value = {compiler.process(value, **kw)})"
+    )
 
 
 async def ping(engine: AsyncEngine) -> None:
@@ -72,3 +112,22 @@ def _sqlite_on_connect(dbapi_connection: Any, _record: Any) -> None:
     cursor.execute("PRAGMA foreign_keys=ON")
     cursor.execute("PRAGMA journal_mode=WAL")
     cursor.close()
+    _load_sqlite_vec(dbapi_connection)
+
+
+def _load_sqlite_vec(dbapi_connection: Any) -> None:
+    """Load sqlite-vec (the native provider's vector index) when the `native` extra is installed.
+
+    `dbapi_connection` is SQLAlchemy's aiosqlite adapter; `run_async` reaches the real connection.
+    Extension loading is switched off again right after, so SQL cannot load anything else.
+    """
+    try:
+        import sqlite_vec
+    except ImportError:
+        return
+    path = sqlite_vec.loadable_path()
+    dbapi_connection.run_async(lambda c: c.enable_load_extension(True))
+    try:
+        dbapi_connection.run_async(lambda c: c.load_extension(path))
+    finally:
+        dbapi_connection.run_async(lambda c: c.enable_load_extension(False))

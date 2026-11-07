@@ -1,0 +1,17 @@
+{# Prompt context for format=context (design §6). Every line carries a citation id so the model can
+   cite it and feedback can find it; unverified knowledge is marked as such. #}
+{% if memories %}
+## 关于用户
+{% for m in memories %}
+- [mem:{{ m.id }}] {{ m.content }}
+{% endfor %}
+{% endif %}
+{% if memories and kb %}
+
+{% endif %}
+{% if kb %}
+## 知识库
+{% for k in kb %}
+- [kb:{{ k.id }}] {{ k.title }}：{{ k.content }}（{{ "已验证" if k.verified else "未验证" }}）
+{% endfor %}
+{% endif %}

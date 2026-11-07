@@ -2,13 +2,20 @@ import asyncio
 
 import pytest
 from alembic import command
+from alembic.autogenerate import compare_metadata
 from alembic.runtime.migration import MigrationContext
 from sqlalchemy import inspect, text
 from sqlalchemy.engine import Connection
 
 from llm_steward.cli import alembic_config
+from llm_steward.models import Base
+from llm_steward.models.base import include_in_migrations
+from llm_steward.providers.native.providers import create_store
 from llm_steward.storage.db import engine_scope
 from tests.conftest import TEST_SCHEMA
+from tests.fakes.embedder import FakeEmbedder
+
+HEAD = "0002"
 
 
 def _state(url: str) -> tuple[tuple[str, ...], bool]:
@@ -30,10 +37,30 @@ def test_upgrade_and_downgrade_on_both_dialects(db_url: str) -> None:
     cfg = alembic_config(db_url, TEST_SCHEMA)
 
     command.upgrade(cfg, "head")
-    assert _state(db_url) == (("0001",), True)
+    assert _state(db_url) == ((HEAD,), True)
 
     command.downgrade(cfg, "base")
     assert _state(db_url) == ((), True)
+
+
+def test_models_match_the_migrated_schema(db_url: str) -> None:
+    """A model change without a migration (or the reverse) fails here, on both dialects."""
+    command.upgrade(alembic_config(db_url, TEST_SCHEMA), "head")
+
+    def diff(conn: Connection) -> list[object]:
+        ctx = MigrationContext.configure(conn, opts={"include_name": include_in_migrations})
+        return [d for d in compare_metadata(ctx, Base.metadata) if "alembic_version" not in str(d)]
+
+    async def run() -> list[object]:
+        async with engine_scope(db_url, schema=TEST_SCHEMA) as engine:
+            # The native provider's own tables live next to the governance ones; they are not
+            # part of the migrations and must not show up as drift.
+            embedder = FakeEmbedder()
+            await create_store(engine, embedder, TEST_SCHEMA).ready()
+            async with engine.connect() as conn:
+                return await conn.run_sync(diff)
+
+    assert asyncio.run(run()) == []
 
 
 # Marks the public.alembic_version this test plants, so it only ever drops its own table.
@@ -79,6 +106,6 @@ def test_stray_public_version_table_is_ignored(pg_url: str) -> None:
             )
         )
         command.upgrade(alembic_config(pg_url, TEST_SCHEMA), "head")
-        assert _state(pg_url) == (("0001",), True)
+        assert _state(pg_url) == ((HEAD,), True)
     finally:
         drop_if_ours()

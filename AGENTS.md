@@ -39,14 +39,15 @@ If a change must contradict the design, update the design in the same change and
 
 ## Current stage
 
-**P0 — project skeleton.** Track the checklist in design §11 (ticked items are done and verified). `docparse`
-(RAGFlow) moved to P7 and the frontend workspace to P6. **Do not start P1 until P0 acceptance is reported item
-by item.**
+**P1 — governance core on the native provider** (P0 closed out). Track the checklist in design §11 (ticked
+items are done and verified). Next: P2 (mem0). `docparse` (RAGFlow) is P7, the frontend workspace P6.
 
-Decided (2026-11-08): default backends mem0 (in-process Python library) + WeKnora v0.9.0.
+Decided (2026-11-08): default backends mem0 (in-process Python library) + WeKnora v0.9.0; native embeddings are
+local fastembed MiniLM (multilingual, 384-d); API keys arrive in P1 (user tokens / admin JWT stay in P5).
 
 Open questions (design §11) — do not decide them silently; ask, or implement the conservative option behind config:
-- Default LLM / embedding: network calls allowed, or local by default (fastembed / Ollama)?
+- Governance-layer LLM (risk grading, KB worthiness, drafting — P2/P3): network API allowed, or local by default?
+- WeKnora's own embedding model (configured inside WeKnora, P3): local (Ollama) or a remote API?
 - License (design suggests Apache-2.0).
 - TypeScript SDK in v1?
 
@@ -101,8 +102,12 @@ Backend (run from `backend/`; `.env` is read from the current directory):
 ```
 uv run pytest                      # every DB test on SQLite and PostgreSQL
 uv run ruff check && uv run ruff format --check && uv run mypy && uv run lint-imports
+uv run pytest -m model             # opt-in: the real local embedding model (downloads ~220 MB once)
 uv run steward migrate             # alembic upgrade head on STEWARD_DATABASE_URL
-uv run steward serve               # http://127.0.0.1:8600, GET /health
+uv run steward ns create <slug>    # a namespace (no HTTP route creates one)
+uv run steward key create <slug>   # prints an API key once: Authorization: Bearer stw_<prefix>_<secret>
+uv run steward serve               # http://127.0.0.1:8600 (+ outbox worker unless STEWARD_RUN_WORKER=false)
+uv run steward worker              # the outbox worker on its own
 ```
 
 Stack (run from the repo root):
@@ -112,7 +117,8 @@ docker compose --profile native up -d --build      # llm-steward alone, SQLite v
 docker compose --profile standard up -d --build    # llm-steward + WeKnora, shared PG
 ```
 
-Later stages add `uv run pytest -m contract` (P1+), `pnpm -C frontend test` and `generate-client` (P6).
+Later stages add `uv run pytest -m contract` for real engines (P2+), `pnpm -C frontend test` and
+`generate-client` (P6).
 
 ## Workflow
 

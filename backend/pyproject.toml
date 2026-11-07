@@ -14,6 +14,15 @@ dependencies = [
     "alembic>=1.14",
     "httpx2>=2.16",
     "typer>=0.15",
+    "jinja2>=3.1",
+]
+
+[project.optional-dependencies]
+# Built-in native provider (design §3): vector search, FTS segmentation, local embeddings.
+native = [
+    "sqlite-vec>=0.1.9",
+    "fastembed>=0.9.1",
+    "jieba>=0.42.1",
 ]
 
 [project.scripts]
@@ -38,6 +47,8 @@ line-length = 100
 
 [tool.ruff.lint]
 select = ["E", "F", "W", "I", "UP", "B", "ASYNC", "RUF"]
+# Full-width punctuation is intentional in the Chinese prompt context (prompts/context_render.j2).
+allowed-confusables = ["：", "（", "）"]
 
 [tool.mypy]
 strict = true
@@ -45,10 +56,21 @@ plugins = ["pydantic.mypy"]
 packages = ["llm_steward"]
 mypy_path = "src"
 
+[[tool.mypy.overrides]]
+# No type information shipped by these (native extra).
+module = ["sqlite_vec", "jieba"]
+ignore_missing_imports = true
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 asyncio_mode = "auto"
 asyncio_default_fixture_loop_scope = "function"
+# `-m model` downloads and runs the real local embedding model (~220 MB, once); deselected by default.
+addopts = "-m 'not model'"
+markers = [
+    "model: runs the real fastembed model (opt-in: uv run pytest -m model)",
+    "contract: adapter contract against a real external engine (opt-in: uv run pytest -m contract)",
+]
 
 [tool.importlinter]
 root_package = "llm_steward"
@@ -60,7 +82,9 @@ type = "layers"
 layers = [
     "llm_steward.api | llm_steward.mcp",
     "llm_steward.services",
-    "llm_steward.providers | llm_steward.pipeline | llm_steward.storage",
+    "llm_steward.providers | llm_steward.pipeline",
+    "llm_steward.models",
+    "llm_steward.storage",
 ]
 
 [[tool.importlinter.contracts]]
@@ -70,6 +94,7 @@ source_modules = [
     "llm_steward.services",
     "llm_steward.providers",
     "llm_steward.pipeline",
+    "llm_steward.models",
     "llm_steward.storage",
 ]
 forbidden_modules = ["fastapi", "starlette"]

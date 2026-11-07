@@ -12,12 +12,13 @@ from alembic import context
 from sqlalchemy.engine import Connection
 
 from llm_steward.config import Settings
+from llm_steward.models import Base
+from llm_steward.models.base import include_in_migrations
 from llm_steward.storage.db import engine_scope, prepare_schema
 
 config = context.config
 
-# P1 sets this to the ORM metadata so autogenerate works.
-target_metadata = None
+target_metadata = Base.metadata
 
 
 def _target() -> tuple[str, str]:
@@ -37,6 +38,7 @@ def _run(connection: Connection, schema: str) -> None:
         target_metadata=target_metadata,
         version_table_schema=schema if is_pg else None,
         render_as_batch=not is_pg,
+        include_name=include_in_migrations,
     )
     with context.begin_transaction():
         context.run_migrations()

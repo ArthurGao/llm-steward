@@ -7,23 +7,19 @@ from fastapi.testclient import TestClient
 
 from llm_steward.config import Settings
 from llm_steward.main import create_app
+from tests.conftest import test_settings
+from tests.fakes.embedder import FakeEmbedder
 
 WEKNORA = "http://weknora.test:8080"
 
 
 def _settings(database_url: str, **overrides: str) -> Settings:
-    values: dict[str, str] = {
-        "database_url": database_url,
-        "memory_provider": "native",
-        "kb_provider": "native",
-        "weknora_url": WEKNORA,
-        **overrides,
-    }
-    return Settings(_env_file=None, **values)  # type: ignore[call-arg, arg-type]
+    """Native providers in TEST_SCHEMA (their health checks touch the database)."""
+    return test_settings(database_url, weknora_url=WEKNORA, **overrides)
 
 
 def _get_health(settings: Settings, http: httpx2.AsyncClient | None = None) -> httpx2.Response:
-    with TestClient(create_app(settings, http=http)) as client:
+    with TestClient(create_app(settings, http=http, embedder=FakeEmbedder())) as client:
         return client.get("/health")
 
 
@@ -31,8 +27,8 @@ def _weknora(handler: Callable[[httpx2.Request], httpx2.Response]) -> httpx2.Asy
     return httpx2.AsyncClient(transport=httpx2.MockTransport(handler))
 
 
-def test_all_ok_with_native_providers(db_url: str) -> None:
-    response = _get_health(_settings(db_url))
+def test_all_ok_with_native_providers(migrated_url: str) -> None:
+    response = _get_health(_settings(migrated_url))
     body = response.json()
     assert response.status_code == 200
     assert body["status"] == "ok"
@@ -55,14 +51,14 @@ def test_database_down_returns_503(unreachable_db_url: str) -> None:
     assert body["components"]["database"]["name"] == "postgresql"
 
 
-def test_weknora_up_and_mem0_not_implemented_is_degraded(db_url: str) -> None:
+def test_weknora_up_and_mem0_not_implemented_is_degraded(migrated_url: str) -> None:
     seen: list[str] = []
 
     def handler(request: httpx2.Request) -> httpx2.Response:
         seen.append(str(request.url))
         return httpx2.Response(200, json={"status": "ok"})
 
-    settings = _settings(db_url, memory_provider="mem0", kb_provider="weknora")
+    settings = _settings(migrated_url, memory_provider="mem0", kb_provider="weknora")
     response = _get_health(settings, _weknora(handler))
     body = response.json()
     assert response.status_code == 200

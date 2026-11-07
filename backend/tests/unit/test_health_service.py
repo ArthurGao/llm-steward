@@ -5,10 +5,17 @@ from pathlib import Path
 import pytest
 from sqlalchemy.ext.asyncio import AsyncEngine
 
-from llm_steward.providers.base import BuiltinProvider, ComponentHealth
+from llm_steward.providers.base import ComponentHealth
 from llm_steward.services import health_service
 from llm_steward.services.health_service import check_health
 from llm_steward.storage.db import engine_scope
+
+
+class _Healthy:
+    name = "native"
+
+    async def health(self) -> ComponentHealth:
+        return ComponentHealth(self.name, "ok", "builtin")
 
 
 class _Exploding:
@@ -45,7 +52,7 @@ async def test_a_hanging_probe_times_out(
 ) -> None:
     monkeypatch.setattr(health_service, "PROBE_TIMEOUT_SECONDS", 0.05)
     report = await asyncio.wait_for(
-        check_health(engine, {"memory_provider": BuiltinProvider(), "kb_provider": _Hanging()}),
+        check_health(engine, {"memory_provider": _Healthy(), "kb_provider": _Hanging()}),
         timeout=2,
     )
     assert report.status == "degraded"

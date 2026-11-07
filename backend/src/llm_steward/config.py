@@ -26,8 +26,17 @@ class Settings(BaseSettings):
     weknora_url: str = "http://localhost:8680"
     weknora_api_key: str | None = None
     provider_timeout_ms: int = Field(default=800, gt=0)
+    # Per-provider budget for one /v1/retrieve search; a slower provider is reported as degraded.
+    retrieve_timeout_ms: int = Field(default=800, gt=0)
 
     llm_model: str = "anthropic/claude-haiku-5-5"
+
+    # Native provider only: local fastembed model (downloaded once, then offline) and its cache.
+    embedding_model: str = "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2"
+    model_cache_dir: str | None = None
+    # Run the outbox worker inside the API process (single-process deployments); otherwise run
+    # `steward worker` separately.
+    run_worker: bool = True
 
     @field_validator("db_schema")
     @classmethod
