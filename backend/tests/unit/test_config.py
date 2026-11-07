@@ -42,6 +42,7 @@ def test_reads_steward_prefixed_env(monkeypatch: pytest.MonkeyPatch) -> None:
         ("STEWARD_MEMORY_PROVIDER", "letta"),
         ("STEWARD_KB_PROVIDER", "elasticsearch"),
         ("STEWARD_DB_SCHEMA", 'steward"; drop table x; --'),
+        ("STEWARD_DB_SCHEMA", "steward_test"),  # reserved: the test fixtures drop *_test schemas
         ("STEWARD_PROVIDER_TIMEOUT_MS", "0"),
     ],
 )

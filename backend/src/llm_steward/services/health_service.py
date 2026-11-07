@@ -1,7 +1,7 @@
 """Aggregate health of the governance store and the configured providers."""
 
 import asyncio
-from collections.abc import Mapping
+from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass
 from typing import Literal
 
@@ -12,8 +12,9 @@ from llm_steward.storage.db import ping
 
 OverallStatus = Literal["ok", "degraded", "error"]
 
-# Keeps a dead database from outlasting the 4 s Docker HEALTHCHECK request.
+# Both stay under the 4 s Docker HEALTHCHECK request, so /health always answers with a report.
 DATABASE_TIMEOUT_SECONDS = 3.0
+PROBE_TIMEOUT_SECONDS = 3.0
 
 
 @dataclass(frozen=True)
@@ -24,7 +25,8 @@ class HealthReport:
 
 async def check_health(engine: AsyncEngine, providers: Mapping[str, HealthProbe]) -> HealthReport:
     database, *provider_health = await asyncio.gather(
-        _check_database(engine), *(p.health() for p in providers.values())
+        _bounded(engine.dialect.name, _database_ok(engine), DATABASE_TIMEOUT_SECONDS),
+        *(_bounded(p.name, p.health, PROBE_TIMEOUT_SECONDS) for p in providers.values()),
     )
     components = {"database": database, **dict(zip(providers, provider_health, strict=True))}
 
@@ -37,13 +39,22 @@ async def check_health(engine: AsyncEngine, providers: Mapping[str, HealthProbe]
     return HealthReport(status=status, components=components)
 
 
-async def _check_database(engine: AsyncEngine) -> ComponentHealth:
-    name = engine.dialect.name
+def _database_ok(engine: AsyncEngine) -> Callable[[], Awaitable[ComponentHealth]]:
+    async def check() -> ComponentHealth:
+        await ping(engine)
+        return ComponentHealth(engine.dialect.name, "ok")
+
+    return check
+
+
+async def _bounded(
+    name: str, check: Callable[[], Awaitable[ComponentHealth]], timeout_s: float
+) -> ComponentHealth:
+    """Run one check so that a hang or an unexpected exception becomes that component's error."""
     try:
-        async with asyncio.timeout(DATABASE_TIMEOUT_SECONDS):
-            await ping(engine)
+        async with asyncio.timeout(timeout_s):
+            return await check()
     except TimeoutError:
-        return ComponentHealth(name, "error", f"timeout after {DATABASE_TIMEOUT_SECONDS:g}s")
+        return ComponentHealth(name, "error", f"timeout after {timeout_s:g}s")
     except Exception as exc:
         return ComponentHealth.from_exception(name, exc)
-    return ComponentHealth(name, "ok")

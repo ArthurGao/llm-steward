@@ -7,7 +7,6 @@ from fastapi.testclient import TestClient
 
 from llm_steward.config import Settings
 from llm_steward.main import create_app
-from tests.conftest import SCHEMA
 
 WEKNORA = "http://weknora.test:8080"
 
@@ -15,7 +14,6 @@ WEKNORA = "http://weknora.test:8080"
 def _settings(database_url: str, **overrides: str) -> Settings:
     values: dict[str, str] = {
         "database_url": database_url,
-        "db_schema": SCHEMA,
         "memory_provider": "native",
         "kb_provider": "native",
         "weknora_url": WEKNORA,

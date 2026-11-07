@@ -2,7 +2,7 @@
 
 from typing import Literal
 
-from pydantic import Field
+from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 MemoryProviderName = Literal["mem0", "native"]
@@ -28,3 +28,11 @@ class Settings(BaseSettings):
     provider_timeout_ms: int = Field(default=800, gt=0)
 
     llm_model: str = "anthropic/claude-haiku-5-5"
+
+    @field_validator("db_schema")
+    @classmethod
+    def _not_a_test_schema(cls, value: str) -> str:
+        # Test fixtures DROP ... CASCADE schemas named *_test, so no app process may ever use one.
+        if value.endswith("_test"):
+            raise ValueError(f"schema names ending in _test are reserved for tests: {value!r}")
+        return value

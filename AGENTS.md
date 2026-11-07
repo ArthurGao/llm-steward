@@ -89,7 +89,7 @@ Open questions (design §11) — do not decide them silently; ask, or implement 
 | What | Where |
 | --- | --- |
 | Governance DB (dev) | shared container `postgresql-postgres-1` (PG 18 + pgvector) on `localhost:5432`, database `llm_steward`, role `llm_steward` |
-| Tests | same database, schema `steward_test` (dropped and recreated by the fixtures); app data lives in schema `steward`, which tests never touch |
+| Tests | same database via `STEWARD_TEST_DATABASE_URL` (set explicitly, never inherited from the app URL); only schema `steward_test`, dropped and recreated by the fixtures. App data lives in schema `steward`; `Settings` rejects any `*_test` schema name, so no app process can use the one tests drop |
 | Secrets | `backend/.env` (uv runs) and root `.env` (docker compose); both gitignored, templates in `.env.example` |
 | llm-steward API | `127.0.0.1:8600` |
 | WeKnora API / UI (`standard`) | `127.0.0.1:8680` / `127.0.0.1:8681` |
@@ -121,6 +121,14 @@ Later stages add `uv run pytest -m contract` (P1+), `pnpm -C frontend test` and 
 3. Definition of done: ruff, mypy, import-linter and tests pass on **both** SQLite and PostgreSQL; frontend
    typecheck/lint/test pass; acceptance items covered by tests; design doc updated if behaviour changed.
 4. Conventional Commits (`feat(governance): …`, `fix(retrieval): …`). All code-facing text in English.
+5. **Stage close-out — after a stage's implementation passes its checks, and before the next stage starts:**
+   1. Simplify the stage's full diff (reuse, simplification, efficiency, altitude) and apply the fixes.
+   2. Independent code review by Codex of the same diff (`codex review --base <commit before the stage>`, or
+      `--uncommitted` before the first commit).
+   3. Fix every finding that holds up — a bug gets a failing regression test first. A finding you reject is
+      written down with the reason; never silently dropped.
+   4. Re-run all checks (step 3) so they cover the final code, then report the review outcome with the stage.
+   The next stage does not start until this loop is finished.
 
 ## Glossary
 
