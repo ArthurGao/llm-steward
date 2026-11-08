@@ -808,7 +808,7 @@ CI 矩阵以及 CLAUDE.md。完成后运行测试，逐条对照 P0 的验收标
 
 ### 待确认的问题
 
-- [ ] 默认 LLM 和 embedding 是否允许联网调用？还是默认本地（fastembed / Ollama）？
+- [x] 默认 LLM 和 embedding 是否允许联网调用？还是默认本地（fastembed / Ollama）？→ embedding 默认本地：llm-steward / mem0 用 fastembed MiniLM，WeKnora 用宿主机上的 Ollama（2026-11-08 确认）；LLM 在本地开发经 llm-gateway，生产按环境变量指向供应商
 - [x] mem0 是进程内调用（本文默认），还是部署 mem0 的自托管 server 由 REST 调用？→ 进程内（2026-11-08 确认）
 - [ ] 开源协议：建议 Apache-2.0（与 mem0、RAGFlow 一致，与 WeKnora 的 MIT 兼容）。
 - [ ] v1 是否需要 TypeScript SDK？

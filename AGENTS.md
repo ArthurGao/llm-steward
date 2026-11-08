@@ -41,17 +41,18 @@ If a change must contradict the design, update the design in the same change and
 
 ## Current stage
 
-**P2 — memory: mem0 behind the governance layer** (P0, P1 closed out). Track the checklist in design §11
-(ticked items are done and verified). Next: P3 (KB governance, WeKnora). `docparse` (RAGFlow) is P7, the
-frontend workspace P6.
+**P3 — KB governance: WeKnora — paused** (P0, P1, P2 closed out). Since 2026-11-08 the owner's own RAG engine
+**lite-rag** (`~/Code/AI/lite-rag`, design `docs/lite-rag-design.md`) is built first; its stage S9 adds a
+`LiteRagProvider` here, then P3 resumes with WeKnora. Track the checklist in design §11 (ticked items are done
+and verified). After P3: P4 (joint retrieval). `docparse` (RAGFlow) is P7, the frontend workspace P6.
 
 Decided (2026-11-08): default backends mem0 (in-process Python library) + WeKnora v0.9.0; native and mem0
 embeddings are local fastembed MiniLM (multilingual, 384-d); API keys arrive in P1 (user tokens / admin JWT
 stay in P5); API-key writes are actor `host_app`; real LLM calls in local development go through llm-gateway
 subscription profiles — **only when the user has started the gateway and asked for it**; tests use FakeLLM.
+WeKnora's own embedding model is local, served by Ollama on the host (decided 2026-11-08).
 
 Open questions (design §11) — do not decide them silently; ask, or implement the conservative option behind config:
-- WeKnora's own embedding model (configured inside WeKnora, P3): local (Ollama) or a remote API?
 - License (design suggests Apache-2.0).
 - TypeScript SDK in v1?
 
