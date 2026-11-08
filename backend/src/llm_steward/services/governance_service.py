@@ -51,7 +51,7 @@ from llm_steward.models.enums import (
     RiskLevel,
     SyncStatus,
 )
-from llm_steward.pipeline.risk import Assessment, RiskPolicy, assess
+from llm_steward.pipeline.risk import Assessment, RiskPolicy, assess, redact_pii
 from llm_steward.providers.base import Scope
 from llm_steward.services.job_queue import enqueue
 from llm_steward.services.scoping import exact
@@ -729,6 +729,10 @@ class GovernanceService:
         route = "auto" if actor.is_reviewer else _route(collection, risk)
         if route == "user" and op.requested_for_user is None:
             route = "auto"  # nobody to ask: medium goes live (design §5)
+        if route == "auto" and op.author_type == AuthorType.AI:
+            # A model rewrote untrusted text and labelled its own risk: a prompt injection could
+            # make that "low". A person sees it first, the asked user or else a reviewer.
+            route = "user" if op.requested_for_user else "review"
         if route == "auto":
             status = KbStatus.VERIFIED if actor.is_reviewer else KbStatus.ACTIVE
             return await self._create_from_draft(s, op.namespace_id, draft, risk, status, actor)
@@ -811,6 +815,7 @@ class GovernanceService:
         before = snapshot(candidate)
         _check(CANDIDATE_TRANSITIONS, "candidate", candidate.status, op.to)
         _check_decider(candidate, actor, op.to)
+        note = redact_pii(op.note) if op.note else None  # free text: no personal data in history
         if op.to == CandidateStatus.ACCEPTED and candidate.target_type == CandidateTarget.KB_ENTRY:
             if candidate.expires_at is not None and candidate.expires_at <= utcnow():
                 raise Conflict(f"candidate {candidate.id} expired at {candidate.expires_at}")
@@ -823,9 +828,7 @@ class GovernanceService:
                 candidate.stage = CandidateStage.AWAITING_REVIEW
                 candidate.draft, candidate.risk_level = draft, risk
                 await s.flush()
-                self._log(
-                    s, ObjectType.CANDIDATE, candidate, ChangeOp.UPDATE, before, actor, op.note
-                )
+                self._log(s, ObjectType.CANDIDATE, candidate, ChangeOp.UPDATE, before, actor, note)
                 return candidate
             else:
                 status = KbStatus.ACTIVE if by_user else KbStatus.VERIFIED
@@ -834,9 +837,9 @@ class GovernanceService:
                 candidate.target_id = entry.id  # an ADD now names what it created
         candidate.status = op.to
         candidate.decided_by, candidate.decided_at = actor.id, utcnow()
-        candidate.decision_note = op.note
+        candidate.decision_note = note
         await s.flush()
-        self._log(s, ObjectType.CANDIDATE, candidate, ChangeOp.TRANSITION, before, actor, op.note)
+        self._log(s, ObjectType.CANDIDATE, candidate, ChangeOp.TRANSITION, before, actor, note)
         return candidate
 
     async def _edited(
@@ -1037,7 +1040,8 @@ def _draft(op: SubmitKbEntry, checked: Assessment) -> dict[str, Any]:
 
 
 def _reason(given: str | None, checked: Assessment) -> str | None:
-    return "; ".join([*([given] if given else []), *checked.reasons]) or None
+    """What is written about a change; a caller's or model's free text is redacted (PII)."""
+    return "; ".join([*([redact_pii(given)] if given else []), *checked.reasons]) or None
 
 
 def _memory_op(candidate: Candidate, draft: dict[str, Any]) -> CreateMemory:

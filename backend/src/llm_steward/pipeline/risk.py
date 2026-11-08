@@ -84,6 +84,12 @@ def _redact(text: str, found: list[tuple[str, tuple[int, int]]]) -> str:
     return "".join([*parts, text[last:]])
 
 
+def redact_pii(text: str) -> str:
+    """`text` with every PII value replaced, whatever the namespace's policy: for what is written
+    about knowledge (reasons, notes), which is never itself the knowledge being shared."""
+    return _redact(text, find_pii(text))
+
+
 @dataclass(frozen=True)
 class RiskPolicy:
     high_risk_keywords: tuple[str, ...] = ()

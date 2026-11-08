@@ -135,11 +135,14 @@ def test_promote_drafts_a_memory_into_knowledge(app: AppClient) -> None:
         json={"collection_id": collection},
         headers=h,
     )
-    assert r.status_code == 201, r.text  # medium, nobody to ask: live
-    entry = r.json()["entry"]
-    assert entry["content"] == "In general: my refund took 5 days"
-    assert (entry["origin"], entry["author_type"]) == ("promoted_memory", "ai")
-    assert {"type": "memory", "id": memory.json()["id"]} in entry["source_refs"]
+    # a model wrote it and nobody owns the memory to ask: a reviewer sees it before it goes live
+    assert r.status_code == 202, r.text
+    candidate = r.json()["candidate"]
+    assert (candidate["stage"], candidate["origin"]) == ("awaiting_review", "promote")
+    draft = candidate["draft"]
+    assert draft["content"] == "In general: my refund took 5 days"
+    assert (draft["origin"], draft["author_type"]) == ("promoted_memory", "ai")
+    assert {"type": "memory", "id": memory.json()["id"]} in draft["source_refs"]
 
 
 def test_a_suggestion_from_the_host_app_is_drafted_and_routed(app: AppClient) -> None:

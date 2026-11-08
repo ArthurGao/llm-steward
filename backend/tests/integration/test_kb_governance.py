@@ -65,7 +65,7 @@ class KbStack:
             content=kw.pop("content", "Refunds take 3 to 5 business days"),
             risk_level=risk,
             origin=KbOrigin.MANUAL,
-            author_type=AuthorType.HUMAN,
+            author_type=kw.pop("author_type", AuthorType.HUMAN),
             requested_for_user=user,
             **kw,
         )
@@ -377,3 +377,31 @@ async def test_a_submission_is_screened_by_governance_itself(kb: KbStack) -> Non
         RiskLevel.HIGH,
         "Mail [REDACTED:email]",
     )
+
+
+# --- AI-authored knowledge, and what is written about it --------------------------------------
+
+
+@pytest.mark.parametrize(("user", "stage"), [(None, "review"), ("alice", "user")])
+async def test_ai_authored_knowledge_never_goes_live_without_a_person(
+    kb: KbStack, user: str | None, stage: str
+) -> None:
+    """A model that rewrote untrusted text also labels its risk: a prompt injection could make
+    it say "low". So a person always sees it: the asked user, or a reviewer."""
+    candidate = await kb.submit(
+        RiskLevel.LOW, Actor(ActorType.AI, "kb.draft:m"), user=user, author_type=AuthorType.AI
+    )
+    assert isinstance(candidate, Candidate)
+    assert candidate.stage == (
+        CandidateStage.AWAITING_REVIEW if stage == "review" else CandidateStage.AWAITING_USER
+    )
+    assert await kb.count(KbEntry) == 0
+
+
+async def test_reasons_and_notes_are_redacted_like_the_text(kb: KbStack) -> None:
+    candidate = await kb.submit(RiskLevel.HIGH, reason="model says: ask alice@example.com")
+    assert candidate.reason == "model says: ask [REDACTED:email]"
+    decided = await kb.decide(
+        candidate, REVIEWER, CandidateStatus.REJECTED, note="call 13812345678 first"
+    )
+    assert decided.decision_note == "call [REDACTED:phone] first"
