@@ -32,6 +32,11 @@ mem0 = [
     "psycopg[binary,pool]>=3.2",
     "fastembed>=0.9.1",
 ]
+# The owner's own RAG engine in-process (`STEWARD_LITERAG_MODE=inprocess`); the default HTTP mode needs
+# nothing. Pinned to a commit: upgrading requires the contract tests (`pytest -m contract`) to pass first.
+literag = [
+    "lite-rag[server] @ git+https://github.com/ArthurGao/lite-rag@df84939f338f8ccf7a2057420869d6003b4da8ff",
+]
 
 [project.scripts]
 steward = "llm_steward.cli:app"
@@ -44,6 +49,7 @@ dev = [
     "mypy>=1.13",
     "import-linter>=2.1",
     "pre-commit>=4.0",
+    "llm-steward[literag]",  # the default suite imports lite-rag; one pin, in the extra
 ]
 
 [build-system]

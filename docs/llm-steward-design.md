@@ -109,6 +109,7 @@ Redis agent-memory-server 和 Microsoft Kernel Memory 曾经最接近这个定�
 | KB（备选） | [RAGFlow](https://github.com/infiniflow/ragflow) | Apache-2.0 | 约 9.4 万 star；1.0.0-rc1 于 2026-09-29 发布 | 文档解析最强（版面、表格、扫描件）；有 HTTP API 和 Python SDK | 依赖重：Elasticsearch / Infinity、MySQL、MinIO 等；建议 4 核 16 GB 起步 |
 | 图谱（v2） | [LightRAG](https://github.com/HKUDS/LightRAG) 或 WeKnora 自带 GraphRAG | MIT | 约 4 万 star | 有 REST server，可以只用 PostgreSQL 存储；自称 LLM 调用比 Microsoft GraphRAG 少得多 | 默认没有鉴权，必须放在内网 |
 | 测试 / 单机 | native（内置） | — | — | SQLite + sqlite-vec + FTS5，零依赖；合约测试的参照实现 | 只求够用，不追求效果 |
+| KB（自有，S9） | [lite-rag](https://github.com/ArthurGao/lite-rag)（owner 自己的 RAG 引擎） | Apache-2.0 | — | 混合检索（BM25 + 向量 + RRF）、可选 rerank；PostgreSQL + pgvector 或 Chroma；每个 kb 的配置有身份校验；有 HTTP 服务和 Docker 镜像 | 个人项目；`STEWARD_KB_PROVIDER=literag`，详见第 8 节 |
 
 **不选 Microsoft GraphRAG**：它是索引库而不是服务，建索引时 LLM 调用量大、成本高，不适合作为通用 KB 的默认后端。**不选 Letta / Zep 作 memory 后端**：它们更像完整的 agent 运行时或图数据库方案，不适合作为可插拔组件。
 
@@ -617,6 +618,7 @@ class KnowledgeProvider(Protocol):
 | --- | --- |
 | `Mem0Provider` | 进程内使用 `mem0.AsyncMemory`；scope 映射为 `user_id`/`agent_id`/`run_id`；把 llm-steward 的 memory id 写进 mem0 metadata，便于反查；按 mem0 返回的事件确定 capabilities |
 | `WeKnoraProvider` | REST（httpx2）：collection ↔ 知识库；一条 KB entry 写成一篇文本知识（标题 + 正文 + `steward_id` 元数据）；上传文档走其文档接口；定时轮询解析状态 |
+| `LiteRagProvider` | 默认走 lite-rag 的 HTTP API（`literag serve` 或其 Docker 镜像，API key 的 namespaces 覆盖 `steward/*`），也可进程内（extra `literag`，锁定 git commit）。namespace ↔ `steward/<namespace_id>`，collection ↔ kb `c-<collection_id>`，entry ↔ 文档 `doc_id = entry_id`（metadata 带 `steward_id`、`version`、`tags`）；entry 的 external id 为 `<namespace_id>/<collection_id>#<entry_id>`（`remove` 不带 collection）。检索逐个 collection 并发查询，每个 entry 取最高分的 chunk，再按分数合并；还没同步过的 collection 返回空 |
 | `RAGFlowProvider` | REST + Python SDK：collection ↔ dataset；entry ↔ 一篇文档；检索用其 retrieval 接口 |
 | `NativeMemoryProvider` / `NativeKnowledgeProvider` | SQLite（或 PG）+ sqlite-vec / pgvector + FTS5 / tsvector + jieba；实现全部 capabilities，作为合约测试的参照 |
 
@@ -776,6 +778,15 @@ llm-steward/
      - 合约测试 `pytest -m contract` 默认不跑，CI 不跑；真实 LLM 只在手动验证时经 llm-gateway 调用。
    - 验收：Mem0Provider 通过合约测试；金标测试——先写入"我住北京"，再写入"我搬到上海了"，得到旧记录 superseded、新记录 active，检索只返回上海，`as_of` 能查到北京
 4. **P3 KB 治理：接入 WeKnora**
+   - 先做的 lite-rag S9（2026-11-09）：
+     - `LiteRagProvider` 已接入，`STEWARD_KB_PROVIDER=literag`，默认 HTTP（`STEWARD_LITERAG_URL`、`STEWARD_LITERAG_API_KEY`），`STEWARD_LITERAG_MODE=inprocess` 则在进程内运行（extra `literag`，lite-rag 用自己的 `LITERAG_*` 配置或 `STEWARD_LITERAG_CONFIG` 指向的 YAML）。
+     - KB 合约测试抽成 `tests/contract/test_kb_contract.py` 的一条生命周期：native 在默认测试里跑两种数据库；lite-rag 在 `-m contract` 下以进程内、真实 HTTP app（ASGI，开启 API key）两种方式跑，另有一条经治理层的端到端测试（active 条目能检索到；废弃并同步后，lite-rag 里也删掉了）。
+     - 手动端到端（真实 `literag serve` + Ollama `bge-m3` + `steward serve` 带 worker）：active 条目被检索到；废弃后立即检索不到（安全网），worker 约 2 秒内从 lite-rag 删除；停掉 lite-rag 后 `/health` 为 degraded，kb_provider 为 error。
+     - 收尾 /simplify 改了：进程内模式每个 namespace 复用一个 lite-rag 引擎，并发上限 4（lite-rag 连接池同为 4，默认线程池与 native embedder、mem0 共用）；`Providers.aclose()` 在容器关闭时释放 provider 持有的资源（进程内 lite-rag 的连接）；格式不对的 collection id 是我们自己的不变量被破坏，报 `ValueError` 而不是 503；dev 依赖改为 `llm-steward[literag]`，只有一处锁定。
+     - Codex review（2026-11-09）：
+       - 一条成立并已修复：进程内模式把 lite-rag 的原始异常写进日志，而存储错误可能带数据库 URL 和密码。现在写日志前用 `lite_rag.errors.redact` 去掉凭据（lite-rag 把 `redact` 从服务端模块移到了 `errors`），有先红后绿的测试。
+       - 不成立的一条：Codex 认为"按 namespace 缓存引擎"是先查后建、没加锁，会有竞态。实际上 `_engine` 在事件循环线程里同步执行，查和建之间没有 `await`，不会被别的协程打断；而且引擎本身不持锁，写入由 store 串行化。
+     - 留到 P4（联合检索）：lite-rag 一次只查一个 kb，多个 collection 会各自嵌入一次查询、各自 rerank，按分数合并实际上是按名次交错（hybrid 的分数是 RRF）。正确的做法是 lite-rag 提供多 kb 检索（只嵌入一次、只融合一次）。
    - [ ] collections、entries、candidates、风险分级（含 PII）、KB 价值评分、promote、suggestions、accept / reject
    - [ ] `WeKnoraProvider`（条目同步、文档导入、解析状态轮询、检索）+ 合约测试
    - 验收：high 风险条目在批准前**永远不会**出现在 WeKnora 中；终端用户确认**永远不会**产生 verified；条目废弃后即使停掉 worker、不让它从 WeKnora 删除，检索也不会再返回它（安全网测试）

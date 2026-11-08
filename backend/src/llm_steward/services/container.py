@@ -138,8 +138,11 @@ async def runtime(
         try:
             embed = embedder or (build_embedder(settings) if uses_native(settings) else None)
             providers = build_providers(settings, client, engine, embed, memory=memory_provider)
-            roles = llm or build_llm(settings, providers)
-            yield build_services(settings, engine, providers, embed, roles)
+            try:
+                roles = llm or build_llm(settings, providers)
+                yield build_services(settings, engine, providers, embed, roles)
+            finally:
+                await providers.aclose()
         finally:
             if http is None:
                 await client.aclose()

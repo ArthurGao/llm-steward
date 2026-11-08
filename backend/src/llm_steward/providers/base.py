@@ -157,6 +157,14 @@ class Providers:
     def by_role(self) -> dict[str, HealthProbe]:
         return {"memory_provider": self.memory, "kb_provider": self.kb}
 
+    async def aclose(self) -> None:
+        """Release what providers hold (an in-process engine's connections). `aclose` is
+        optional: most providers hold nothing of their own."""
+        for provider in (self.memory, self.kb):
+            close = getattr(provider, "aclose", None)
+            if close is not None:
+                await close()
+
 
 class _Pending:
     """A configured provider whose adapter belongs to a later stage: health says so, calls 503."""

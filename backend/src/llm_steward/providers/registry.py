@@ -67,8 +67,39 @@ def build_providers(
             kb = WeKnoraProvider(http, settings.weknora_url, settings.provider_timeout_ms / 1000)
         case "ragflow":
             kb = PendingKnowledgeProvider("ragflow", "P7")
+        case "literag":
+            kb = build_literag(settings, http)
 
     return Providers(memory=memory, kb=kb)
+
+
+# In-process lite-rag calls at once; its store pool has as many connections (lite-rag design §3).
+LITERAG_CONCURRENCY = 4
+
+
+def build_literag(settings: Settings, http: httpx2.AsyncClient) -> KnowledgeProvider:
+    """lite-rag over its HTTP API (default), or in-process: its runtime is built here, once, from
+    lite-rag's own configuration (and fails here, at startup, when that is wrong)."""
+    from llm_steward.providers.literag import (
+        HttpTransport,
+        InProcessTransport,
+        LiteRagProvider,
+        Transport,
+    )
+
+    transport: Transport
+    if settings.literag_mode == "inprocess":
+        from lite_rag.config import load_settings
+        from lite_rag.engine import RagRuntime
+
+        runtime = RagRuntime.from_settings(
+            load_settings(settings.literag_config), max_connections=LITERAG_CONCURRENCY
+        )
+        transport = InProcessTransport(runtime, LITERAG_CONCURRENCY)
+    else:
+        timeout = settings.provider_timeout_ms / 1000
+        transport = HttpTransport(http, settings.literag_url, settings.literag_api_key, timeout)
+    return LiteRagProvider(transport, settings.literag_namespace_prefix)
 
 
 def build_mem0(settings: Settings) -> MemoryProvider:

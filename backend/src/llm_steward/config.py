@@ -6,7 +6,7 @@ from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 MemoryProviderName = Literal["mem0", "native"]
-KnowledgeProviderName = Literal["weknora", "ragflow", "native"]
+KnowledgeProviderName = Literal["weknora", "ragflow", "native", "literag"]
 
 DEFAULT_DB_SCHEMA = "steward"
 
@@ -25,6 +25,13 @@ class Settings(BaseSettings):
     kb_provider: KnowledgeProviderName = "weknora"
     weknora_url: str = "http://localhost:8680"
     weknora_api_key: str | None = None
+    # lite-rag (the owner's own RAG engine): its HTTP service by default, or in-process (extra
+    # `literag`, configured by its own LITERAG_* variables or `literag_config`, a lite-rag YAML).
+    literag_mode: Literal["http", "inprocess"] = "http"
+    literag_url: str = "http://127.0.0.1:8700"
+    literag_api_key: str | None = None  # a lite-rag key whose namespaces cover `<prefix>/*`
+    literag_namespace_prefix: str = Field(default="steward", pattern=r"^[a-z0-9][a-z0-9_.-]{0,62}$")
+    literag_config: str | None = None
     provider_timeout_ms: int = Field(default=800, gt=0)
     # Per-provider budget for one /v1/retrieve search; a slower provider is reported as degraded.
     retrieve_timeout_ms: int = Field(default=800, gt=0)

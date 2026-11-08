@@ -12,9 +12,8 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncEngine
 
 from llm_steward.errors import ProviderUnavailable, Unprocessable
-from llm_steward.providers.base import KbCollectionRef, KbEntryDoc, Message, Scope
+from llm_steward.providers.base import Message, Scope
 from llm_steward.providers.native.providers import (
-    NativeKnowledgeProvider,
     NativeMemoryProvider,
     create_store,
 )
@@ -37,12 +36,6 @@ async def engine(db_url: str) -> AsyncIterator[AsyncEngine]:
 def memory(engine: AsyncEngine) -> NativeMemoryProvider:
     embedder = FakeEmbedder()
     return NativeMemoryProvider(create_store(engine, embedder, TEST_SCHEMA), embedder)
-
-
-@pytest.fixture
-def kb(engine: AsyncEngine) -> NativeKnowledgeProvider:
-    embedder = FakeEmbedder()
-    return NativeKnowledgeProvider(create_store(engine, embedder, TEST_SCHEMA), embedder)
 
 
 async def _add(provider: NativeMemoryProvider, text: str, scope: Scope, steward_id: str) -> str:
@@ -95,34 +88,6 @@ async def test_memory_search_honours_scope_and_namespace(memory: NativeMemoryPro
 async def test_memory_without_extract_rejects_infer(memory: NativeMemoryProvider) -> None:
     with pytest.raises(Unprocessable):
         await memory.add([Message("user", "x")], Scope(NS), infer=True)
-
-
-async def test_knowledge_lifecycle(kb: NativeKnowledgeProvider) -> None:
-    refunds = await kb.ensure_collection(KbCollectionRef(uuid.uuid4(), NS, "refunds"))
-    shipping = await kb.ensure_collection(KbCollectionRef(uuid.uuid4(), NS, "shipping"))
-    entry = KbEntryDoc(uuid.uuid4(), NS, "Refund time", "Refunds take 3-5 business days", 1)
-    other = KbEntryDoc(uuid.uuid4(), NS, "Courier", "Parcels ship by courier", 1)
-
-    eid = await kb.upsert_entry(entry, refunds)
-    await kb.upsert_entry(other, shipping)
-    assert eid == str(entry.entry_id)
-
-    hits = await kb.search("how long do refunds take", [refunds], top_k=5)
-    assert [h.external_id for h in hits] == [eid]
-    assert "Refunds take" in hits[0].text
-    # Only the collections asked for are searched. (KNN always returns the nearest items, so the
-    # shipping entry comes back for any query; the refunds entry must not.)
-    in_shipping = await kb.search("refunds", [shipping], top_k=5)
-    assert [h.external_id for h in in_shipping] == [str(other.entry_id)]
-
-    await kb.upsert_entry(
-        KbEntryDoc(entry.entry_id, NS, "Refund time", "Refunds now take 7 days", 2), refunds
-    )
-    [updated] = await kb.search("refunds", [refunds], top_k=5)
-    assert "7 days" in updated.text
-
-    await kb.remove(eid)
-    assert await kb.search("refunds", [refunds], top_k=5) == []
 
 
 async def test_a_different_embedding_model_is_refused(engine: AsyncEngine) -> None:

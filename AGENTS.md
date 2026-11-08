@@ -42,8 +42,8 @@ If a change must contradict the design, update the design in the same change and
 ## Current stage
 
 **P3 — KB governance: WeKnora — paused** (P0, P1, P2 closed out). Since 2026-11-08 the owner's own RAG engine
-**lite-rag** (`~/Code/AI/lite-rag`, design `docs/lite-rag-design.md`) is built first; its stage S9 adds a
-`LiteRagProvider` here, then P3 resumes with WeKnora. Track the checklist in design §11 (ticked items are done
+**lite-rag** (`~/Code/AI/lite-rag`, design `docs/lite-rag-design.md`) is built first; its stage S9 added a
+`LiteRagProvider` here (2026-11-09, `STEWARD_KB_PROVIDER=literag`; design §8, §11), then P3 resumes with WeKnora. Track the checklist in design §11 (ticked items are done
 and verified). After P3: P4 (joint retrieval). `docparse` (RAGFlow) is P7, the frontend workspace P6.
 
 Decided (2026-11-08): default backends mem0 (in-process Python library) + WeKnora v0.9.0; native and mem0

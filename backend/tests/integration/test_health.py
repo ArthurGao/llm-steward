@@ -24,7 +24,7 @@ def _get_health(settings: Settings, http: httpx2.AsyncClient | None = None) -> h
         return client.get("/health")
 
 
-def _weknora(handler: Callable[[httpx2.Request], httpx2.Response]) -> httpx2.AsyncClient:
+def _mock_http(handler: Callable[[httpx2.Request], httpx2.Response]) -> httpx2.AsyncClient:
     return httpx2.AsyncClient(transport=httpx2.MockTransport(handler))
 
 
@@ -62,7 +62,7 @@ def test_weknora_up_is_reported_ok(migrated_url: str) -> None:
         return httpx2.Response(200, json={"status": "ok"})
 
     settings = _settings(migrated_url, kb_provider="weknora")
-    response = _get_health(settings, _weknora(handler))
+    response = _get_health(settings, _mock_http(handler))
     body = response.json()
     assert response.status_code == 200
     assert body["status"] == "ok"
@@ -103,7 +103,7 @@ def test_weknora_failures_are_reported(
     tmp_path: Path, handler: Callable[[httpx2.Request], httpx2.Response], detail: str
 ) -> None:
     settings = _settings(f"sqlite+aiosqlite:///{tmp_path}/h.db", kb_provider="weknora")
-    response = _get_health(settings, _weknora(handler))
+    response = _get_health(settings, _mock_http(handler))
     body = response.json()
     assert response.status_code == 200
     assert body["status"] == "degraded"
@@ -123,3 +123,70 @@ def test_ragflow_is_reported_not_implemented(tmp_path: Path) -> None:
         "status": "not_implemented",
         "detail": "adapter arrives in P7",
     }
+
+
+LITERAG = "http://literag.test:8700"
+
+
+def test_literag_over_http_is_probed_at_its_url(tmp_path: Path) -> None:
+    seen: list[str] = []
+
+    def handler(request: httpx2.Request) -> httpx2.Response:
+        seen.append(str(request.url))
+        return httpx2.Response(200, json={"status": "ok"})
+
+    settings = _settings(
+        f"sqlite+aiosqlite:///{tmp_path}/h.db", kb_provider="literag", literag_url=LITERAG
+    )
+    body = _get_health(settings, _mock_http(handler)).json()
+    assert body["components"]["kb_provider"] == {"name": "literag", "status": "ok", "detail": None}
+    assert seen == [f"{LITERAG}/health"]
+
+
+def test_literag_down_is_reported(tmp_path: Path) -> None:
+    settings = _settings(
+        f"sqlite+aiosqlite:///{tmp_path}/h.db", kb_provider="literag", literag_url=LITERAG
+    )
+    body = _get_health(settings, _mock_http(_refused)).json()
+    assert body["status"] == "degraded"
+    assert body["components"]["kb_provider"] == {
+        "name": "literag",
+        "status": "error",
+        "detail": "lite-rag GET /health: ConnectError",
+    }
+
+
+def test_literag_in_process_is_built_from_its_own_config(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from lite_rag.engine import RagRuntime
+
+    built: list[object] = []
+
+    class Runtime:
+        closed = False
+
+        def health(self) -> None:
+            pass
+
+        def close(self) -> None:
+            Runtime.closed = True
+
+    def from_settings(settings: object, **kwargs: object) -> Runtime:
+        built.append(settings)
+        return Runtime()
+
+    config = tmp_path / "literag.yaml"
+    config.write_text("store: {schema: from_file}\n")
+    monkeypatch.setattr(RagRuntime, "from_settings", from_settings)
+    settings = _settings(
+        f"sqlite+aiosqlite:///{tmp_path}/h.db",
+        kb_provider="literag",
+        literag_mode="inprocess",
+        literag_config=str(config),
+    )
+    body = _get_health(settings).json()
+    assert body["components"]["kb_provider"]["status"] == "ok"
+    [lite_settings] = built
+    assert lite_settings.store.schema_name == "from_file"  # type: ignore[attr-defined]
+    assert Runtime.closed  # the app's shutdown released lite-rag's connections
