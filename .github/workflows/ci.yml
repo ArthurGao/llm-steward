@@ -29,7 +29,7 @@ jobs:
         working-directory: backend
     steps:
       - uses: actions/checkout@v7
-      - uses: astral-sh/setup-uv@v10
+      - uses: astral-sh/setup-uv@v10.3.3   # setup-uv has no moving v10 tag
         with:
           version: "0.10.8"
       - run: uv sync --locked --all-extras   # Python from backend/.python-version
