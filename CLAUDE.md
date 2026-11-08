@@ -21,4 +21,4 @@
   focus prompt and `--uncommitted` misses committed work, so prefer `exec`.) Fix what holds up, re-run
   every check, then report. Do not start the next stage, or plan it, before this is done.
 - Never answer a mem0 / WeKnora / RAGFlow API question from memory: check context7 or the pinned version's docs,
-  and record surprises in the KB.
+  and record surprises in that engine's global KB page (`KB/global/{mem0,weknora,ragflow}/README.md`).

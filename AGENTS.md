@@ -31,9 +31,11 @@ OpenAPI spec (frontend generates its client from it with `@hey-api/openapi-ts`).
 
 1. `docs/llm-steward-design.md` — the design. §3 architecture, §4 data model, §5 write pipeline, §6 retrieval,
    §7 API, §8 extension points, §10 project structure, §11 stage plan and acceptance.
-2. Project KB: `/Users/arthurgao/Docs/Knowledgebase/projects/llm-steward/` — decisions, findings about the engines
-   (mem0 / WeKnora / RAGFlow quirks), lessons. Read it before architecture or "which component does X" questions.
-   Empty as of 2026-11-08; write to it with the `kb-maintain` skill.
+2. KB at `/Users/arthurgao/Docs/Knowledgebase` (write to it with the `kb-maintain` skill):
+   - Engine facts and quirks, per pinned version and shared across projects: `global/mem0/`, `global/weknora/`,
+     `global/ragflow/`. Read the engine's page before using, deploying or upgrading it.
+   - Project KB `projects/llm-steward/` — decisions and lessons specific to llm-steward. Read it before
+     architecture or "which component does X" questions. Empty as of 2026-11-08.
 
 If a change must contradict the design, update the design in the same change and say why in the commit.
 
