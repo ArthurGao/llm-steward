@@ -36,6 +36,9 @@ class RetrievedItemOut(BaseModel):
     verified: bool
     score: float
     pinned: bool
+    kind: Literal["memory", "entry", "document"] = Field(
+        description="A KB hit is an entry, or a chunk of a document (`content` is that chunk)."
+    )
 
 
 class RetrieveOut(BaseModel):

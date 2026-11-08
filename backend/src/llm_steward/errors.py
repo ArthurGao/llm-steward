@@ -43,3 +43,10 @@ class ProviderUnavailable(StewardError):
 
     status = 503
     code = "provider_unavailable"
+
+
+class TooLarge(StewardError):
+    """An upload over the configured limit."""
+
+    status = 413
+    code = "too_large"

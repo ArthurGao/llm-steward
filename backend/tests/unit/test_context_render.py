@@ -2,10 +2,14 @@ import uuid
 
 from llm_steward.services.retrieval_service import RetrievedItem, _render
 
-MEM = RetrievedItem("memory", uuid.UUID(int=1), "Drinks black coffee", None, "active", False, 0.1)
-KB = RetrievedItem("kb", uuid.UUID(int=2), "3-5 business days", "Refunds", "verified", True, 0.1)
+MEM = RetrievedItem(
+    "memory", uuid.UUID(int=1), "Drinks black coffee", None, "active", False, 0.1, kind="memory"
+)
+KB = RetrievedItem(
+    "kb", uuid.UUID(int=2), "3-5 business days", "Refunds", "verified", True, 0.1, kind="entry"
+)
 DRAFTY = RetrievedItem(
-    "kb", uuid.UUID(int=3), "Plus a fee abroad", "Cross-border", "active", False, 0.1
+    "kb", uuid.UUID(int=3), "Plus a fee abroad", "Cross-border", "active", False, 0.1, kind="entry"
 )
 M1, K2, K3 = (str(uuid.UUID(int=i)) for i in (1, 2, 3))
 

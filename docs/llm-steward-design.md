@@ -209,7 +209,7 @@ STEWARD_LLM_MODEL=anthropic/claude-haiku-5-5
 | `memories` | memory 的镜像 + 治理元数据（内容由 memory provider 产生和检索） | 见下方 DDL |
 | `kb_collections` | KB 分组，对应 provider 里的一个知识库 | `name`、`review_policy`、`default_risk` |
 | `kb_entries` | 受治理的原子知识，**真相源** | 见下方 DDL |
-| `kb_documents` | 上传文档的记录 | `collection_id`、`title`、`source_uri`、`mime`、`content_hash`、`status`（pending / processing / ready / failed，从 provider 同步）、`risk_level` |
+| `kb_documents` | 上传文档的记录 | `collection_id`、`title`、`filename`、`source_uri`、`mime`、`size_bytes`、`content_hash`、`state`（治理状态，同条目：draft / active / verified / deprecated / rejected）、`status`（解析状态 pending / processing / ready / failed，从 provider 同步）、`error`、`risk_level`、`valid_to`；待上传的字节在 `kb_document_files`（P3d） |
 | `candidates` | 待确认或待审核的写入提议 | 见下方 DDL |
 | `external_refs` | 与 provider 的 id 映射及同步状态 | 见下方 DDL |
 | `change_log` | 所有对象的变更历史 | `object_type`、`object_id`、`op`、`before`、`after`、`actor_type`（ai / end\_user / admin / system / provider）、`actor_id`、`reason` |
@@ -817,6 +817,15 @@ llm-steward/
      - 检索用 `/knowledge-search`（一次查多个知识库），结果是 chunk，按 knowledge 取最高分；没有元数据过滤能力，由治理层过滤。错误只带 HTTP 状态和 WeKnora 的错误码，不带响应正文（可能回显输入）。
      - `deploy/weknora/bootstrap.py`：注册 owner、登记 `bge-m3:567m` 并等它变成 active、建 API key，打印 `STEWARD_WEKNORA_*`（写入 gitignored 的 `backend/.env`）。
      - 合约测试（`-m contract`，真实 WeKnora + 宿主 Ollama）：通用 KB 生命周期通过；P3 验收经整个应用自动化：high 风险条目在 reviewer 批准前 WeKnora 里连知识库都没有，批准后可检索；废弃后 worker 未运行时检索立即消失（WeKnora 仍有它），worker 运行后 WeKnora 也删掉了。文档导入与解析状态轮询在 P3d。
+   - P3d 文档（2026-11-09，用户选定：字节暂存在治理库、按 collection 路由、只做 multipart）：
+     - `POST /v1/kb/documents`（multipart：`file`、`collection_id`，可选 `title`、`risk_level`，返回 202）、`GET /v1/kb/documents`（`collection_id`、`state` 过滤，游标分页）、`GET /v1/kb/documents/{id}`、`DELETE /v1/kb/documents/{id}`（review scope）。迁移 0006：`kb_documents` 加治理状态 `state` 等列，新表 `kb_document_files`，candidate 目标加 `kb_document`，三种任务 `kb.doc_ingest` / `kb.doc_status` / `kb.doc_remove`。
+     - 治理：风险取 max(调用方估计, 标题规则, collection 的 `default_risk`)；reviewer 上传直接 `verified`；high（或路由为 `review`）先成为 draft 并生成 `kb_document` candidate，进统一的审核队列，7 天过期，批准前任何字节都不出治理库；其余直接 `active`（文档没有"问终端用户"这条路，`user` 路由视同生效）。只筛查标题（PII 脱敏、关键词提升风险），正文要等 provider 解析，不筛查。同一 collection 里同一文件（sha256）在 draft / active / verified 时再传返回 409；废弃或驳回的不挡。DELETE：生效的废弃（`valid_to`，排队删除），待审的连同 candidate 一起驳回；离开生效状态时删掉暂存字节。
+     - 上传前检查：provider 要有 `doc_parsing`（否则 422）；扩展名在 WeKnora 的文本文档清单里（去掉图片、音频、视频，它们要额外的模型；WeKnora 对不支持的类型回 500，所以我们先挡）；非空；不超过 `STEWARD_KB_MAX_UPLOAD_MB`（默认 20，WeKnora 上限 50，超出 413）。sha256 在线程里算，不占事件循环。
+     - Syncer：`kb.doc_ingest` 交出字节后立刻记下引擎 id（仍 pending，避免重试再传一份），若上传途中文档已被删掉就把刚传的撤回；`kb.doc_status` 第一次立即轮询，之后 2 秒起翻倍到 1 分钟，30 分钟还没解析完记为失败；ready 后 ref 记 SYNCED、删掉暂存字节；failed 记 `error`（固定文字，不抄引擎的 error_message，它可能回显原文）、删字节、并把引擎里的副本删掉，要重试就重新上传。解析状态和 `error` 是 Syncer 记录的同步状态，`state` 只由 GovernanceService 改。
+     - Provider：`DocumentParser` Protocol（`ingest_document`、`document_status`），只有带 `doc_parsing` 的 provider 实现。WeKnora：`POST /knowledge-bases/{kb}/knowledge/file`（multipart，后台解析，没有 publish 这一步），再 PUT `custom_metadata`；同一知识库同一文件再传是 409 `duplicate_file`，响应里带已有条目，直接用它的 id（只在上传这个调用上接受 409）；`finalizing` / `completed` 为 ready，`failed` / `cancelled` / `deleting` / 404 为 failed。native（参照实现）只解析 txt / md，按段落切块（每块最多 1000 字），块 id `doc:<id>#<n>`，另有一行清单记块数；检索把块映射回文档。lite-rag 暂不支持文档。
+     - 检索安全网：KB 命中先按条目反查，没对上的再按文档反查，只返回 active / verified、在有效期内、且解析状态为 ready 的文档；条目返回 `kind: "document"`，`content` 是命中的那一块。每篇文档只取最高分的一块，多块留到 P4。
+     - 测试：集成测试两种数据库各 14 条，覆盖：生效与检索、审核、驳回、删除（含安全网与 `as_of` 历史查询）、重复、上传检查、轮询、失败、超时、上传途中被删；26 个变异全部被测试杀死。合约测试新增文档生命周期，native 在默认测试里跑，真实 WeKnora 在 `-m contract` 下跑，另有一条经整个应用的验收：高风险文档批准前 WeKnora 里没有知识库，批准后解析完可检索，删除后先从检索消失、worker 运行后从 WeKnora 删除。
+     - 留到以后：URL 导入（`POST /kb/documents` 带 URL，有 SSRF 风险）推到 P5，和限流、鉴权一起做（域名白名单、拒绝内网地址）；lite-rag 的文档导入；重新处理（reprocess）；同一文件的并发上传在 409 检查上有竞态（没有唯一索引，因为状态会变），后果是多一份副本，不影响治理。
    - 验收：high 风险条目在批准前**永远不会**出现在 WeKnora 中；终端用户确认**永远不会**产生 verified；条目废弃后即使停掉 worker、不让它从 WeKnora 删除，检索也不会再返回它（安全网测试）
 5. **P4 联合检索**
    - [ ] 并行分发、超时与 `degraded`、反查过滤、RRF、可信度加权、时间衰减、MMR、pinned、上下文模板、token 预算、可选 rerank

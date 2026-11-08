@@ -1,24 +1,29 @@
 import uuid
 from typing import Annotated
 
-from fastapi import APIRouter, Query, Response
+from fastapi import APIRouter, Form, Query, Response, UploadFile
 
 from llm_steward.api.deps import Reader, Reviewer, ServicesDep, Writer
-from llm_steward.models.enums import KbStatus
+from llm_steward.models.enums import KbStatus, RiskLevel
 from llm_steward.schemas.kb import (
     CandidateOut,
     CollectionCreate,
     CollectionOut,
     CollectionPage,
     CollectionPatch,
+    DocumentOut,
+    DocumentPage,
+    DocumentWritten,
     EntryCreate,
     EntryOut,
     EntryPage,
     EntryPatch,
     Written,
 )
+from llm_steward.services.document_service import DocumentFilter
 from llm_steward.services.governance_service import (
     CreateCollection,
+    RetireKbDocument,
     TransitionKbEntry,
     UpdateCollection,
 )
@@ -138,3 +143,70 @@ async def deprecate_entry(
     """Out of retrieval at once (the safety net), out of the provider when the Syncer runs."""
     op = TransitionKbEntry(principal.namespace_id, entry_id, KbStatus.DEPRECATED)
     return EntryOut.model_validate(await services.governance.apply(op, principal.actor))
+
+
+# --- documents (design §4: governed as a whole; the KB provider parses and chunks them) ---------
+
+
+@router.post("/documents", status_code=202)
+async def upload_document(
+    principal: Writer,
+    services: ServicesDep,
+    file: UploadFile,
+    collection_id: Annotated[uuid.UUID, Form()],
+    title: Annotated[str | None, Form(max_length=500)] = None,
+    risk_level: Annotated[RiskLevel, Form()] = RiskLevel.LOW,
+) -> DocumentWritten:
+    """Stored, then handed to the KB provider by the worker (202). Routed by the collection: high
+    risk waits for a reviewer (`candidate`), a reviewer's upload is verified, others go live.
+    The title is screened like an entry's; the content is parsed by the provider, not screened."""
+    data = await file.read(services.documents.max_bytes + 1)  # one byte over says "too large"
+    uploaded = await services.documents.upload(
+        principal.namespace_id,
+        collection_id,
+        file.filename or "",
+        data,
+        actor=principal.actor,
+        mime=file.content_type,
+        title=title or None,
+        risk_level=risk_level,
+    )
+    candidate = uploaded.candidate
+    return DocumentWritten(
+        document=DocumentOut.model_validate(uploaded.document),
+        candidate=CandidateOut.model_validate(candidate) if candidate else None,
+    )
+
+
+@router.get("/documents")
+async def list_documents(
+    principal: Reader,
+    services: ServicesDep,
+    collection_id: uuid.UUID | None = None,
+    state: KbStatus | None = None,
+    cursor: uuid.UUID | None = None,
+    limit: Annotated[int, Query(ge=1, le=MAX_PAGE)] = 50,
+) -> DocumentPage:
+    rows, next_cursor = await services.documents.list(
+        principal.namespace_id, DocumentFilter(collection_id, state), cursor=cursor, limit=limit
+    )
+    items = [DocumentOut.model_validate(d) for d in rows]
+    return DocumentPage(items=items, next_cursor=next_cursor)
+
+
+@router.get("/documents/{document_id}")
+async def get_document(
+    document_id: uuid.UUID, principal: Reader, services: ServicesDep
+) -> DocumentOut:
+    document = await services.documents.get(principal.namespace_id, document_id)
+    return DocumentOut.model_validate(document)
+
+
+@router.delete("/documents/{document_id}")
+async def delete_document(
+    document_id: uuid.UUID, principal: Reviewer, services: ServicesDep
+) -> DocumentOut:
+    """Out of retrieval at once, out of the provider when the Syncer runs (the row is kept); a
+    document waiting for review is rejected instead."""
+    op = RetireKbDocument(principal.namespace_id, document_id)
+    return DocumentOut.model_validate(await services.governance.apply(op, principal.actor))

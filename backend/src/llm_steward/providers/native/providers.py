@@ -11,19 +11,23 @@ from sqlalchemy.ext.asyncio import AsyncEngine
 
 from llm_steward.errors import Unprocessable
 from llm_steward.ids import uuid7
+from llm_steward.models.enums import DocStatus
 from llm_steward.providers.base import (
     DELETE,
+    DOC_PARSING,
     ENTRY_UPSERT,
     METADATA_FILTER,
     UPDATE,
     ComponentHealth,
     KbCollectionRef,
+    KbDocumentUpload,
     KbEntryDoc,
     MemoryEvent,
     MemoryRecord,
     Message,
     ProviderHit,
     Scope,
+    best_hit_per_id,
 )
 from llm_steward.providers.native.embedding import Embedder
 from llm_steward.providers.native.store import NativeItem, NativeStore, StoredItem
@@ -38,6 +42,12 @@ CANDIDATES_PER_RESULT = 3
 
 MEMORY = "memory"
 KB = "kb"
+# A document is its chunks (kind KB, searchable, ids `doc:<id>#<n>`) plus one manifest row (kind
+# and partition DOC, which no search reads) that records how many chunks there are (0: failed).
+DOC = "kb_doc"
+DOC_PREFIX = "doc:"
+TEXT_TYPES = frozenset({".txt", ".md", ".markdown"})  # what the reference implementation parses
+MAX_CHUNK_CHARS = 1000
 
 
 def create_store(engine: AsyncEngine, embedder: Embedder, schema: str) -> NativeStore:
@@ -118,8 +128,15 @@ class _NativeBase:
         return sorted(hits, key=lambda h: h.score, reverse=True)[:top_k]
 
     async def _write(self, item: NativeItem) -> bool:
-        [embedding] = await self._embedder.embed([item.text])
-        return await self._store.upsert(item, embedding, tokens(item.text))
+        return (await self._write_all([item]))[0]
+
+    async def _write_all(self, items: list[NativeItem]) -> list[bool]:
+        """Embedded in one call (the embedder batches), then stored one by one."""
+        embeddings = await self._embedder.embed([i.text for i in items]) if items else []
+        return [
+            await self._store.upsert(item, embedding, tokens(item.text))
+            for item, embedding in zip(items, embeddings, strict=True)
+        ]
 
 
 class NativeMemoryProvider(_NativeBase):
@@ -193,8 +210,38 @@ class NativeMemoryProvider(_NativeBase):
         return [MemoryRecord(i.external_id, i.text, _scope_of(i), i.metadata) for i in items]
 
 
+def _chunk_id(document_ext_id: str, n: int) -> str:
+    return f"{document_ext_id}#{n}"
+
+
+def _answering_id(hit_id: str) -> str:
+    """The id a hit answers for: a document chunk's document (entry ids carry no '#')."""
+    return hit_id.split("#", 1)[0]
+
+
+def _parse(doc: KbDocumentUpload) -> list[str]:
+    """The chunks of a plain-text or Markdown file; [] for anything else or not UTF-8."""
+    if not any(doc.filename.lower().endswith(t) for t in TEXT_TYPES):
+        return []
+    try:
+        return chunk_text(doc.data.decode("utf-8"))
+    except UnicodeDecodeError:
+        return []
+
+
+def chunk_text(text: str) -> list[str]:
+    """Paragraphs (blank-line separated), long ones cut at MAX_CHUNK_CHARS."""
+    paragraphs = [" ".join(p.split()) for p in text.split("\n\n")]
+    return [
+        p[i : i + MAX_CHUNK_CHARS]
+        for p in paragraphs
+        if p
+        for i in range(0, len(p), MAX_CHUNK_CHARS)
+    ]
+
+
 class NativeKnowledgeProvider(_NativeBase):
-    capabilities = frozenset({ENTRY_UPSERT, METADATA_FILTER})
+    capabilities = frozenset({ENTRY_UPSERT, METADATA_FILTER, DOC_PARSING})
 
     async def ensure_collection(self, collection: KbCollectionRef) -> str:
         # Collections need no storage of their own: the id is the partition key.
@@ -215,8 +262,45 @@ class NativeKnowledgeProvider(_NativeBase):
         )
         return external_id
 
+    async def ingest_document(self, doc: KbDocumentUpload, collection_ext_id: str) -> str:
+        """Parsed at once (plain text and Markdown); anything else is recorded as failed."""
+        external_id = f"{DOC_PREFIX}{doc.document_id}"
+        await self.remove(external_id)  # a re-upload replaces every chunk
+        chunks = await asyncio.to_thread(_parse, doc)  # a large file: off the event loop
+        items = [
+            NativeItem(
+                part=_kb_part(collection_ext_id),
+                kind=KB,
+                external_id=_chunk_id(external_id, n),
+                text=chunk,
+                metadata={"document": external_id},
+            )
+            for n, chunk in enumerate(chunks)
+        ]
+        manifest = NativeItem(
+            part=DOC,
+            kind=DOC,
+            external_id=external_id,
+            text=doc.filename,
+            metadata={"chunks": len(chunks)},
+        )
+        await self._write_all([*items, manifest])
+        return external_id
+
+    async def document_status(self, external_id: str) -> DocStatus:
+        manifest = await self._store.get(DOC, external_id)
+        if manifest is None or not manifest.metadata.get("chunks"):
+            return DocStatus.FAILED  # gone, or nothing it could read
+        return DocStatus.READY
+
     async def remove(self, external_id: str) -> None:
-        await self._store.delete(KB, external_id)
+        if not external_id.startswith(DOC_PREFIX):
+            await self._store.delete(KB, external_id)
+            return
+        manifest = await self._store.get(DOC, external_id)
+        for n in range(manifest.metadata.get("chunks", 0) if manifest else 0):
+            await self._store.delete(KB, _chunk_id(external_id, n))
+        await self._store.delete(DOC, external_id)
 
     async def search(
         self,
@@ -228,4 +312,8 @@ class NativeKnowledgeProvider(_NativeBase):
     ) -> list[ProviderHit]:
         if not collection_ext_ids:
             return []
-        return await self._hybrid([_kb_part(c) for c in collection_ext_ids], query, top_k, {})
+        hits = await self._hybrid([_kb_part(c) for c in collection_ext_ids], query, top_k, {})
+        # a document chunk answers for its document (its best chunk)
+        return best_hit_per_id(
+            (ProviderHit(_answering_id(h.external_id), h.score, h.text) for h in hits), top_k
+        )

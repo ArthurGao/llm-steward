@@ -32,15 +32,21 @@ class ClaimedJob:
 
 
 def enqueue(
-    session: AsyncSession, namespace_id: uuid.UUID, job_type: JobType, payload: dict[str, Any]
+    session: AsyncSession,
+    namespace_id: uuid.UUID,
+    job_type: JobType,
+    payload: dict[str, Any],
+    *,
+    delay: timedelta | None = None,
 ) -> Job:
-    """Add an outbox row to the caller's session; it commits (or not) with the caller's write."""
+    """Add an outbox row to the caller's session; it commits (or not) with the caller's write.
+    `delay`: not claimable before then (a poll)."""
     job = Job(
         namespace_id=namespace_id,
         type=job_type,
         payload=payload,
         status=JobStatus.PENDING,
-        run_after=utcnow(),
+        run_after=utcnow() + (delay or timedelta()),
     )
     session.add(job)
     return job

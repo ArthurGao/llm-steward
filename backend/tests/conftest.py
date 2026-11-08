@@ -184,6 +184,22 @@ class AppClient:
         """Run the outbox worker until nothing is claimable (the in-process worker is off)."""
         return self.call(self.services.worker.drain)
 
+    def make_jobs_due(self) -> None:
+        """Make every waiting job claimable now (e.g. parse-status polls scheduled ahead)."""
+        from sqlalchemy import update
+
+        from llm_steward.models import Job
+        from llm_steward.models.base import utcnow
+        from llm_steward.models.enums import JobStatus
+        from llm_steward.storage.db import session_factory
+
+        async def due() -> None:
+            async with session_factory(self.services.engine)() as s, s.begin():
+                pending = Job.status == JobStatus.PENDING
+                await s.execute(update(Job).where(pending).values(run_after=utcnow()))
+
+        self.call(due)
+
 
 @pytest.fixture
 async def sessions(migrated_url: str) -> AsyncIterator["async_sessionmaker[AsyncSession]"]:

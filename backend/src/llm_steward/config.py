@@ -48,6 +48,8 @@ class Settings(BaseSettings):
     # KB pipeline LLM steps (design §5): risk labels, worthiness scoring, drafting (roles kb.risk,
     # kb.worthiness, kb.draft). Off: rules-only risk, no suggestions; promote/suggestions → 422.
     kb_llm: bool = False
+    # KB document uploads (P3d): the bytes wait in the governance DB until the KB provider has them.
+    kb_max_upload_mb: int = Field(default=20, gt=0, le=50)  # WeKnora v0.9.0 accepts up to 50
 
     # Episode buffer (design §5 step 1): flush past this many tokens, or after this long idle.
     buffer_tokens: int = Field(default=1024, gt=0)

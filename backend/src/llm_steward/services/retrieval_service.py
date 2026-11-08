@@ -22,10 +22,18 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from llm_steward.errors import ProviderUnavailable
 from llm_steward.ids import uuid7
-from llm_steward.models import ExternalRef, KbCollection, KbEntry, Memory, RetrievalLog
+from llm_steward.models import (
+    ExternalRef,
+    KbCollection,
+    KbDocument,
+    KbEntry,
+    Memory,
+    RetrievalLog,
+)
 from llm_steward.models.base import utcnow
 from llm_steward.models.enums import (
     EFFECTIVE_KB_STATUSES,
+    DocStatus,
     KbStatus,
     MemoryStatus,
     ObjectType,
@@ -42,6 +50,7 @@ log = logging.getLogger(__name__)
 CANDIDATES_PER_RESULT = 3
 MIN_CANDIDATES = 10
 Source = Literal["memory", "kb"]
+ItemKind = Literal["memory", "entry", "document"]
 _MEMORY_CURRENT = (MemoryStatus.ACTIVE,)
 _MEMORY_HISTORY = (MemoryStatus.ACTIVE, MemoryStatus.SUPERSEDED)  # deleted stays out
 _KB_HISTORY = (*EFFECTIVE_KB_STATUSES, KbStatus.DEPRECATED)
@@ -78,6 +87,7 @@ class RetrievedItem:
     verified: bool
     score: float = 0.0
     pinned: bool = False  # always-present core memory (design §6 step 8), not a search hit
+    kind: ItemKind = field(kw_only=True)  # a KB hit is an entry or a chunk of a document
 
 
 @dataclass(frozen=True)
@@ -182,6 +192,9 @@ class RetrievalService:
             )
         if hits.get("kb"):
             known = await self._entries(s, namespace_id, hits["kb"], as_of)
+            rest = [h for h in hits["kb"] if h.external_id not in known]
+            if rest:  # not an entry: maybe a document's chunk
+                known |= await self._documents(s, namespace_id, rest, as_of)
             rankings.append([known[h.external_id] for h in hits["kb"] if h.external_id in known])
         dropped = sum(len(h) for h in hits.values()) - sum(len(r) for r in rankings)
         if dropped:
@@ -214,7 +227,9 @@ class RetrievalService:
         )
         rows = await s.execute(query)
         return {
-            eid: RetrievedItem("memory", m.id, m.content, None, m.status.value, False)
+            eid: RetrievedItem(
+                "memory", m.id, m.content, None, m.status.value, False, kind="memory"
+            )
             for eid, m in rows
             if eid
         }
@@ -244,10 +259,56 @@ class RetrievalService:
         rows = await s.execute(query)
         return {
             eid: RetrievedItem(
-                "kb", e.id, e.content, e.title, e.status.value, e.status == KbStatus.VERIFIED
+                "kb",
+                e.id,
+                e.content,
+                e.title,
+                e.status.value,
+                e.status == KbStatus.VERIFIED,
+                kind="entry",
             )
             for eid, e in rows
             if eid
+        }
+
+    async def _documents(
+        self,
+        s: AsyncSession,
+        namespace_id: uuid.UUID,
+        hits: list[ProviderHit],
+        as_of: datetime | None,
+    ) -> dict[str, RetrievedItem]:
+        """Hits on document chunks: served only for a live (or, at `as_of`, then live) document
+        the engine has finished parsing. The content is the matching chunk, not the file."""
+        now = as_of or utcnow()
+        query = (
+            select(ExternalRef.external_id, KbDocument)
+            .join(KbDocument, KbDocument.id == ExternalRef.object_id)
+            .where(
+                ExternalRef.object_type == ObjectType.KB_DOCUMENT,
+                ExternalRef.provider == self._providers.kb.name,
+                ExternalRef.namespace_id == namespace_id,
+                ExternalRef.external_id.in_([h.external_id for h in hits]),
+                KbDocument.namespace_id == namespace_id,
+                KbDocument.state.in_(_KB_HISTORY if as_of else EFFECTIVE_KB_STATUSES),
+                KbDocument.status == DocStatus.READY,
+                KbDocument.created_at <= now,
+                or_(KbDocument.valid_to.is_(None), KbDocument.valid_to > now),
+            )
+        )
+        documents = {eid: d for eid, d in await s.execute(query) if eid}
+        return {
+            h.external_id: RetrievedItem(
+                "kb",
+                d.id,
+                h.text,
+                d.title,
+                d.state.value,
+                d.state == KbStatus.VERIFIED,
+                kind="document",
+            )
+            for h in hits
+            if (d := documents.get(h.external_id)) is not None
         }
 
     @staticmethod
@@ -298,6 +359,8 @@ def _render(items: list[RetrievedItem]) -> str:
 
 def _core_items(memories: list[Memory]) -> list[RetrievedItem]:
     return [
-        RetrievedItem("memory", m.id, m.content, m.key, m.status.value, False, 1.0, True)
+        RetrievedItem(
+            "memory", m.id, m.content, m.key, m.status.value, False, 1.0, True, kind="memory"
+        )
         for m in memories
     ]

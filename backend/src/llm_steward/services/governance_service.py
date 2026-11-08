@@ -16,7 +16,7 @@ from datetime import datetime, timedelta
 from enum import Enum
 from typing import Any, Literal, cast
 
-from sqlalchemy import select
+from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from llm_steward.errors import Conflict, Forbidden, NotFound, Unprocessable
@@ -26,6 +26,8 @@ from llm_steward.models import (
     Episode,
     ExternalRef,
     KbCollection,
+    KbDocument,
+    KbDocumentFile,
     KbEntry,
     Memory,
     Namespace,
@@ -41,6 +43,7 @@ from llm_steward.models.enums import (
     CandidateStatus,
     CandidateTarget,
     ChangeOp,
+    DocStatus,
     EpisodeKind,
     JobType,
     KbOrigin,
@@ -109,6 +112,7 @@ STAGES: dict[Route, CandidateStage] = {
     "user": CandidateStage.AWAITING_USER,
     "review": CandidateStage.AWAITING_REVIEW,
 }
+REMOVALS = frozenset({JobType.KB_REMOVE, JobType.DOC_REMOVE})
 EDITABLE = frozenset({"title", "content"})  # what a decision may change in a draft
 CANDIDATE_TTL = timedelta(days=7)  # unanswered cards expire (design §5)
 
@@ -281,6 +285,34 @@ class TransitionKbEntry:
 
 
 @dataclass(frozen=True)
+class SubmitKbDocument:
+    """An uploaded document, governed as a whole by its collection (design §4): risk = max(the
+    caller's estimate, the rules on its title, the collection's default). A reviewer's upload is
+    verified; high risk (or a `review` route) waits in the review queue and nothing reaches the
+    engine; otherwise it is live at once (no end user is asked about a document). The content is
+    not screened: it has not been parsed yet."""
+
+    namespace_id: uuid.UUID
+    collection_id: uuid.UUID
+    title: str
+    filename: str
+    mime: str | None
+    data: bytes = field(repr=False)
+    content_hash: str  # sha256 of `data`, computed by the caller off the event loop
+    risk_level: RiskLevel = RiskLevel.LOW
+
+
+@dataclass(frozen=True)
+class RetireKbDocument:
+    """Take a document out (DELETE): a live one is deprecated (out of retrieval at once, out of
+    the engine when the Syncer runs); one waiting for review is rejected, with its candidate."""
+
+    namespace_id: uuid.UUID
+    document_id: uuid.UUID
+    reason: str | None = None
+
+
+@dataclass(frozen=True)
 class CreateCandidate:
     namespace_id: uuid.UUID
     target_type: CandidateTarget
@@ -325,6 +357,8 @@ Operation = (
     | ReviseKbEntry
     | UpdateKbEntry
     | TransitionKbEntry
+    | SubmitKbDocument
+    | RetireKbDocument
     | CreateCandidate
     | DecideCandidate
 )
@@ -409,6 +443,10 @@ class GovernanceService:
                 return await self._update_kb_entry(s, op, actor)
             case TransitionKbEntry():
                 return await self._transition_kb_entry(s, op, actor)
+            case SubmitKbDocument():
+                return await self._submit_kb_document(s, op, actor)
+            case RetireKbDocument():
+                return await self._retire_kb_document(s, op, actor)
             case CreateCandidate():
                 return await self._create_candidate(s, op, actor)
             case DecideCandidate():
@@ -783,6 +821,110 @@ class GovernanceService:
         )
         return await self._create_candidate(s, candidate, actor)
 
+    # documents
+
+    async def _submit_kb_document(
+        self, s: AsyncSession, op: SubmitKbDocument, actor: Actor
+    ) -> tuple[KbDocument, Candidate | None]:
+        collection = await load_owned(
+            s, KbCollection, op.namespace_id, op.collection_id, "collection", lock=False
+        )
+        digest = op.content_hash
+        same = await s.scalar(
+            select(KbDocument.id).where(
+                KbDocument.namespace_id == op.namespace_id,
+                KbDocument.collection_id == op.collection_id,
+                KbDocument.content_hash == digest,
+                KbDocument.state.in_((KbStatus.DRAFT, *EFFECTIVE_KB_STATUSES)),
+            )
+        )
+        if same is not None:
+            raise Conflict(f"this file is already document {same} in the collection")
+        checked = await self._screen(s, op.namespace_id, op.title, "")
+        risk = max_risk(op.risk_level, checked.level, collection.default_risk)
+        waits = not actor.is_reviewer and _route(collection, risk) == "review"
+        if actor.is_reviewer:
+            state = KbStatus.VERIFIED
+        else:
+            state = KbStatus.DRAFT if waits else KbStatus.ACTIVE
+        doc = KbDocument(
+            namespace_id=op.namespace_id,
+            collection_id=op.collection_id,
+            title=checked.title,
+            filename=op.filename,
+            mime=op.mime,
+            content_hash=digest,
+            size_bytes=len(op.data),
+            status=DocStatus.PENDING,
+            risk_level=risk,
+            state=state,
+            created_by=actor.id,
+        )
+        s.add(doc)
+        await s.flush()
+        s.add(KbDocumentFile(document_id=doc.id, namespace_id=doc.namespace_id, data=op.data))
+        reason = _reason(None, checked)
+        self._log(s, ObjectType.KB_DOCUMENT, doc, ChangeOp.CREATE, None, actor, reason)
+        if not waits:
+            await self._queue_kb(s, doc, JobType.DOC_INGEST)
+            return doc, None
+        candidate = CreateCandidate(
+            namespace_id=op.namespace_id,
+            target_type=CandidateTarget.KB_DOCUMENT,
+            op=CandidateOp.ADD,
+            target_id=doc.id,
+            draft={"collection_id": str(doc.collection_id), "title": doc.title},
+            risk_level=risk,
+            origin=CandidateOrigin.API,
+            stage=CandidateStage.AWAITING_REVIEW,
+            reason=reason,
+        )
+        return doc, await self._create_candidate(s, candidate, actor)
+
+    async def _retire_kb_document(
+        self, s: AsyncSession, op: RetireKbDocument, actor: Actor
+    ) -> KbDocument:
+        doc = await load_owned(s, KbDocument, op.namespace_id, op.document_id, "document")
+        if doc.state != KbStatus.DRAFT:
+            return await self._transition_document(s, doc, KbStatus.DEPRECATED, op.reason, actor)
+        waiting = await s.scalar(
+            select(Candidate.id).where(
+                Candidate.namespace_id == doc.namespace_id,
+                Candidate.target_type == CandidateTarget.KB_DOCUMENT,
+                Candidate.target_id == doc.id,
+                Candidate.status == CandidateStatus.PENDING,
+            )
+        )
+        if waiting is None:  # its candidate expired or was decided: reject the document itself
+            return await self._transition_document(s, doc, KbStatus.REJECTED, op.reason, actor)
+        decide = DecideCandidate(
+            doc.namespace_id, waiting, CandidateStatus.REJECTED, note=op.reason or "deleted"
+        )
+        await self._decide_candidate(s, decide, actor)  # rejects the document with it
+        return doc
+
+    async def _transition_document(
+        self, s: AsyncSession, doc: KbDocument, to: KbStatus, reason: str | None, actor: Actor
+    ) -> KbDocument:
+        """A document's governed state (the entries' state machine); going live queues the upload,
+        leaving it queues the removal, and a document that is out drops its waiting bytes."""
+        before = snapshot(doc)
+        was_live = doc.state in EFFECTIVE_KB_STATUSES
+        _check(KB_TRANSITIONS, "document", doc.state, to)
+        if to == KbStatus.VERIFIED:
+            _require_reviewer(actor, "verify a document")
+        doc.state = to
+        if to in (KbStatus.DEPRECATED, KbStatus.REJECTED):
+            doc.valid_to = utcnow()
+            await s.execute(delete(KbDocumentFile).where(KbDocumentFile.document_id == doc.id))
+        await s.flush()
+        self._log(s, ObjectType.KB_DOCUMENT, doc, ChangeOp.TRANSITION, before, actor, reason)
+        if to in EFFECTIVE_KB_STATUSES and not was_live:
+            await self._queue_kb(s, doc, JobType.DOC_INGEST)
+        elif was_live and to not in EFFECTIVE_KB_STATUSES:
+            await self._queue_kb(s, doc, JobType.DOC_REMOVE)
+        return doc
+
     # candidates
 
     async def _create_candidate(
@@ -816,9 +958,17 @@ class GovernanceService:
         _check(CANDIDATE_TRANSITIONS, "candidate", candidate.status, op.to)
         _check_decider(candidate, actor, op.to)
         note = redact_pii(op.note) if op.note else None  # free text: no personal data in history
-        if op.to == CandidateStatus.ACCEPTED and candidate.target_type == CandidateTarget.KB_ENTRY:
+        accepted = op.to == CandidateStatus.ACCEPTED
+        if accepted and candidate.target_type != CandidateTarget.MEMORY:
             if candidate.expires_at is not None and candidate.expires_at <= utcnow():
                 raise Conflict(f"candidate {candidate.id} expired at {candidate.expires_at}")
+        if candidate.target_type == CandidateTarget.KB_DOCUMENT:
+            if op.draft:
+                raise Unprocessable("a document cannot be edited in a decision")
+            doc = await load_owned(s, KbDocument, op.namespace_id, _target(candidate), "document")
+            to = KbStatus.VERIFIED if accepted else KbStatus.REJECTED
+            await self._transition_document(s, doc, to, note, actor)
+        elif accepted and candidate.target_type == CandidateTarget.KB_ENTRY:
             draft, risk = await self._edited(s, candidate, op.draft)
             risk = max_risk(risk, op.risk_level or RiskLevel.LOW)
             by_user = candidate.stage == CandidateStage.AWAITING_USER and not actor.is_reviewer
@@ -911,10 +1061,16 @@ class GovernanceService:
             expired += 1
         return expired
 
-    async def _queue_kb(self, s: AsyncSession, entry: KbEntry, job: JobType) -> None:
-        status = SyncStatus.PENDING if job == JobType.KB_UPSERT else SyncStatus.DELETING
-        await _mark_ref(s, ObjectType.KB_ENTRY, entry, self._kb_provider, status)
-        enqueue(s, entry.namespace_id, job, {"entry_id": str(entry.id)})
+    async def _queue_kb(self, s: AsyncSession, obj: KbEntry | KbDocument, job: JobType) -> None:
+        """Open the object's ref at the KB provider and queue its push (or removal)."""
+        status = SyncStatus.DELETING if job in REMOVALS else SyncStatus.PENDING
+        object_type, key = (
+            (ObjectType.KB_DOCUMENT, "document_id")
+            if isinstance(obj, KbDocument)
+            else (ObjectType.KB_ENTRY, "entry_id")
+        )
+        await _mark_ref(s, object_type, obj, self._kb_provider, status)
+        enqueue(s, obj.namespace_id, job, {key: str(obj.id)})
 
     # change log
 

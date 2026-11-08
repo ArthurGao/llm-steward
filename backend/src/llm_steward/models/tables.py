@@ -7,7 +7,7 @@ import uuid
 from datetime import datetime
 from typing import Any
 
-from sqlalchemy import ForeignKey, Index, String, Text, UniqueConstraint, func, text
+from sqlalchemy import ForeignKey, Index, LargeBinary, String, Text, UniqueConstraint, func, text
 from sqlalchemy.orm import Mapped, mapped_column
 
 from llm_steward.models.base import Base, CreatedMixin, IdMixin, TimestampMixin, enum_column
@@ -177,7 +177,14 @@ class KbEntry(IdMixin, TimestampMixin, Base):
 
 
 class KbDocument(IdMixin, TimestampMixin, Base):
+    """An uploaded document: governed as a whole (`state`), parsed and chunked by the KB provider
+    (`status` is its parse status, copied from the provider)."""
+
     __tablename__ = "kb_documents"
+    __table_args__ = (
+        Index("ix_kb_documents_list", "namespace_id", "state", "id"),  # GET /v1/kb/documents
+        Index("ix_kb_documents_hash", "collection_id", "content_hash"),  # one live copy per file
+    )
     namespace_id: Mapped[uuid.UUID] = _namespace_fk()
     collection_id: Mapped[uuid.UUID] = mapped_column(
         ForeignKey("kb_collections.id", ondelete="CASCADE"), index=True
@@ -188,6 +195,27 @@ class KbDocument(IdMixin, TimestampMixin, Base):
     content_hash: Mapped[str] = mapped_column(String(64))
     status: Mapped[DocStatus] = mapped_column(enum_column(DocStatus, "doc_status"))
     risk_level: Mapped[RiskLevel] = mapped_column(enum_column(RiskLevel, "doc_risk"))
+    # P3d: the governed lifecycle (`state`, changed only by GovernanceService), the upload's own
+    # facts, and why parsing failed (a fixed text). `status`/`error` are the Syncer's record of the
+    # provider's parse, kept here (retrieval and the API read them) beside its external_refs row.
+    state: Mapped[KbStatus] = mapped_column(enum_column(KbStatus, "doc_state"))
+    filename: Mapped[str] = mapped_column(String(500))
+    size_bytes: Mapped[int]
+    created_by: Mapped[str | None] = mapped_column(String(200))
+    valid_to: Mapped[datetime | None]
+    error: Mapped[str | None] = mapped_column(String(200))
+
+
+class KbDocumentFile(Base):
+    """An upload's bytes, kept only until the KB provider has them (or the document is dropped):
+    written with the document row and its outbox job in one transaction."""
+
+    __tablename__ = "kb_document_files"
+    document_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("kb_documents.id", ondelete="CASCADE"), primary_key=True
+    )
+    namespace_id: Mapped[uuid.UUID] = _namespace_fk()
+    data: Mapped[bytes] = mapped_column(LargeBinary)
 
 
 class Candidate(IdMixin, CreatedMixin, Base):

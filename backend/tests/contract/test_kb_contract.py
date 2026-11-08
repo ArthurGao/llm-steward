@@ -1,5 +1,7 @@
 """The KnowledgeProvider contract (design §8): one lifecycle every KB adapter must pass —
-ensure → upsert → hit → update → the new text → remove → no hit → health.
+ensure → upsert → hit → update → the new text → remove → no hit → health — and, for adapters with
+`doc_parsing`, the document lifecycle: upload → parsed → its chunks hit → the same file again is the
+same document → remove → no hit, status failed.
 
 `native` is the reference and runs in the default suite on both dialects. lite-rag runs under
 `-m contract`, really: a lite-rag runtime on the local PostgreSQL (its own schema `literag_test`,
@@ -7,8 +9,11 @@ created and dropped here) with lite-rag's fake embedder (no Ollama), in-process 
 HTTP app (`create_app`, API keys on, reached through ASGI).
 """
 
+import asyncio
+import time
 import uuid
 from collections.abc import AsyncIterator, Iterator
+from contextlib import contextmanager
 from typing import Any
 
 import httpx2
@@ -18,7 +23,14 @@ from sqlalchemy.engine import make_url
 from sqlalchemy.ext.asyncio import AsyncEngine
 
 from llm_steward.errors import ProviderUnavailable
-from llm_steward.providers.base import KbCollectionRef, KbEntryDoc, KnowledgeProvider
+from llm_steward.models.enums import DocStatus
+from llm_steward.providers.base import (
+    KbCollectionRef,
+    KbDocumentUpload,
+    KbEntryDoc,
+    KnowledgeProvider,
+    document_parser,
+)
 from llm_steward.providers.literag import HttpTransport, InProcessTransport, LiteRagProvider
 from llm_steward.providers.native.providers import NativeKnowledgeProvider, create_store
 from llm_steward.providers.weknora import WeKnoraProvider
@@ -64,6 +76,42 @@ async def check_lifecycle(kb: KnowledgeProvider) -> str:
     return eid
 
 
+POLICY = (
+    b"# Customer policy\n\nRefunds take 3 to 5 business days after the parcel arrives.\n\n"
+    b"Shipping is free above 50 euros.\n"
+)
+
+
+async def check_documents(kb: KnowledgeProvider, *, settle_s: float = 0) -> str:
+    """The document contract (`doc_parsing`); returns the document's external id. `settle_s`: how
+    long the engine may take to parse it (polled, as the Syncer does)."""
+    parser = document_parser(kb)
+    assert parser is not None, f"{kb.name} lacks doc_parsing"
+    docs = await kb.ensure_collection(KbCollectionRef(uuid.uuid4(), NS, "docs"))
+    upload = KbDocumentUpload(
+        uuid.uuid4(), NS, "Policy", f"policy-{uuid.uuid4().hex}.md", None, POLICY
+    )
+
+    did = await parser.ingest_document(upload, docs)
+    deadline = time.monotonic() + settle_s
+    status = await parser.document_status(did)
+    while status in (DocStatus.PENDING, DocStatus.PROCESSING) and time.monotonic() < deadline:
+        await asyncio.sleep(0.5)
+        status = await parser.document_status(did)
+    assert status == DocStatus.READY
+
+    [hit] = await kb.search("how long do refunds take", [docs], top_k=5)
+    assert hit.external_id == did  # a chunk answers for its document
+    assert "Refunds take 3 to 5 business days" in hit.text  # its chunk (the engine sizes chunks)
+    assert await parser.ingest_document(upload, docs) == did  # a retried upload: no second copy
+
+    await kb.remove(did)
+    assert await kb.search("refunds", [docs], top_k=5) == []
+    assert await parser.document_status(did) == DocStatus.FAILED  # gone
+    await kb.remove(did)  # idempotent
+    return did
+
+
 # --- native (reference) -----------------------------------------------------------------------
 
 
@@ -79,6 +127,18 @@ async def test_native(engine: AsyncEngine) -> None:
     kb = NativeKnowledgeProvider(create_store(engine, embedder, TEST_SCHEMA), embedder)
     eid = await check_lifecycle(kb)
     uuid.UUID(eid)  # native: the entry id itself
+    assert (await check_documents(kb)).startswith("doc:")
+
+
+async def test_native_fails_what_it_cannot_parse(engine: AsyncEngine) -> None:
+    embedder = FakeEmbedder()
+    kb = NativeKnowledgeProvider(create_store(engine, embedder, TEST_SCHEMA), embedder)
+    docs = await kb.ensure_collection(KbCollectionRef(uuid.uuid4(), NS, "docs"))
+    for name, data in (("scan.pdf", b"%PDF-1.7"), ("latin.txt", "caf\xe9".encode("latin-1"))):
+        did = await kb.ingest_document(
+            KbDocumentUpload(uuid.uuid4(), NS, "x", name, None, data), docs
+        )
+        assert await kb.document_status(did) == DocStatus.FAILED
 
 
 # --- lite-rag (real engine, -m contract) ----------------------------------------------------
@@ -241,6 +301,7 @@ async def weknora(weknora_target: _WeKnoraTarget) -> AsyncIterator[WeKnoraProvid
 async def test_weknora(weknora: WeKnoraProvider) -> None:
     eid = await check_lifecycle(weknora)
     uuid.UUID(eid)  # WeKnora's own knowledge id
+    uuid.UUID(await check_documents(weknora, settle_s=60))
 
 
 @pytest.mark.contract
@@ -250,32 +311,9 @@ def test_weknora_acceptance_through_governance(
     """P3 acceptance (design §11), real on both sides: a high-risk entry never reaches WeKnora
     before a reviewer approves it; a deprecated one leaves retrieval at once — while WeKnora still
     has it, with the worker stopped — and leaves WeKnora when the worker runs."""
-    from fastapi.testclient import TestClient
-
-    from llm_steward.main import create_app
-    from llm_steward.models.enums import ApiScope
-    from tests.conftest import AppClient, test_settings
-
     target = weknora_target
-    settings = test_settings(
-        migrated_url,
-        kb_provider="weknora",
-        weknora_url=target.url,
-        weknora_api_key=target.api_key,
-        weknora_embedding_model_id=target.embedding_model_id,
-        provider_timeout_ms=10_000,
-        retrieve_timeout_ms=10_000,
-    )
-    app = create_app(settings, embedder=FakeEmbedder())
-    with TestClient(app) as client:
-        c = AppClient(client, app.state.services)
-        host, _ = c.new_tenant("acme", ApiScope.READ, ApiScope.WRITE)
-        reviewer_key = c.call(
-            c.services.namespaces.create_key,
-            "acme",
-            (ApiScope.READ, ApiScope.WRITE, ApiScope.REVIEW),
-        )
-        reviewer = {"Authorization": f"Bearer {reviewer_key}"}
+    with _weknora_app(migrated_url, target) as (c, host, reviewer):
+        client = c.http
         collection = client.post(
             "/v1/kb/collections", json={"name": "faq", "default_risk": "low"}, headers=reviewer
         ).json()["id"]
@@ -310,6 +348,92 @@ def test_weknora_acceptance_through_governance(
         assert c.call(kb.search, "refunds", [ext], top_k=5) != []  # WeKnora still has it
         c.drain()
         assert c.call(kb.search, "refunds", [ext], top_k=5) == []
+
+
+@pytest.mark.contract
+def test_weknora_documents_through_governance(
+    migrated_url: str, weknora_target: _WeKnoraTarget
+) -> None:
+    """P3d, real on both sides: a document in a high-risk collection waits for a reviewer with
+    nothing in WeKnora; approved, the worker uploads it and polls until WeKnora has parsed it, and
+    retrieval serves its chunk; deleted, it leaves retrieval at once and WeKnora when the worker
+    runs."""
+    target = weknora_target
+    with _weknora_app(migrated_url, target) as (c, host, reviewer):
+        collection = c.http.post(
+            "/v1/kb/collections", json={"name": "docs", "default_risk": "high"}, headers=reviewer
+        ).json()["id"]
+        r = c.http.post(
+            "/v1/kb/documents",
+            data={"collection_id": collection},
+            files={"file": ("policy.md", POLICY, "text/markdown")},
+            headers=host,
+        )
+        assert r.status_code == 202, r.text
+        doc, card = r.json()["document"], r.json()["candidate"]
+        c.drain()
+        assert _weknora_kb(target, collection) is None  # nothing reached WeKnora at all
+
+        r = c.http.post(f"/v1/candidates/{card['id']}/accept", headers=reviewer)
+        assert r.status_code == 200, r.text
+        deadline = time.monotonic() + 60
+        while (state := _document(c, host, doc["id"]))["status"] in ("pending", "processing"):
+            assert time.monotonic() < deadline, state
+            c.make_jobs_due()  # the next poll is scheduled seconds ahead
+            c.drain()
+            time.sleep(0.5)
+        assert (state["state"], state["status"]) == ("verified", "ready")
+
+        def retrieve() -> list[dict[str, Any]]:
+            r = c.http.post(
+                "/v1/retrieve",
+                json={"query": "how long do refunds take", "sources": ["kb"]},
+                headers=host,
+            )
+            assert r.status_code == 200 and r.json()["degraded"] == [], r.text
+            return list(r.json()["items"])
+
+        [item] = retrieve()
+        assert (item["id"], item["kind"]) == (doc["id"], "document")
+        assert "Refunds take 3 to 5 business days" in item["content"]
+
+        assert c.http.delete(f"/v1/kb/documents/{doc['id']}", headers=reviewer).status_code == 200
+        assert retrieve() == []  # worker not run: the safety net
+        kb, ext = c.services.providers.kb, _weknora_kb(target, collection)
+        assert ext is not None
+        assert c.call(kb.search, "refunds", [ext], top_k=5) != []  # WeKnora still has it
+        c.drain()
+        assert c.call(kb.search, "refunds", [ext], top_k=5) == []
+
+
+@contextmanager
+def _weknora_app(migrated_url: str, target: _WeKnoraTarget) -> Iterator[Any]:
+    """The app on WeKnora, with a host-app key (read/write) and a reviewer key (review scope)."""
+    from fastapi.testclient import TestClient
+
+    from llm_steward.main import create_app
+    from tests.conftest import AppClient, test_settings
+    from tests.integration.test_kb_api import Tenant
+
+    settings = test_settings(
+        migrated_url,
+        kb_provider="weknora",
+        weknora_url=target.url,
+        weknora_api_key=target.api_key,
+        weknora_embedding_model_id=target.embedding_model_id,
+        provider_timeout_ms=10_000,
+        retrieve_timeout_ms=10_000,
+    )
+    app = create_app(settings, embedder=FakeEmbedder())
+    with TestClient(app) as client:
+        t = Tenant(AppClient(client, app.state.services), "acme")
+        yield t.c, t.host, t.reviewer
+
+
+def _document(c: Any, headers: dict[str, str], document_id: str) -> dict[str, Any]:
+    r = c.http.get(f"/v1/kb/documents/{document_id}", headers=headers)
+    assert r.status_code == 200, r.text
+    return dict(r.json())
 
 
 def _auth(target: _WeKnoraTarget) -> dict[str, str]:

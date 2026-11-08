@@ -22,6 +22,7 @@ from llm_steward.models.enums import JobType
 from llm_steward.providers.base import MemoryProvider, Providers
 from llm_steward.providers.native.embedding import Embedder
 from llm_steward.providers.registry import build_embedder, build_providers, uses_native
+from llm_steward.services.document_service import DocumentService
 from llm_steward.services.episode_service import EpisodeService
 from llm_steward.services.extraction_service import ExtractionService, compensates
 from llm_steward.services.governance_service import GovernanceService
@@ -51,6 +52,7 @@ class Services:
     namespaces: NamespaceService
     memories: MemoryService
     kb: KbService
+    documents: DocumentService
     episodes: EpisodeService
     reconcile: ReconcileService
     retrieval: RetrievalService
@@ -128,6 +130,12 @@ def build_services(
         namespaces=NamespaceService(sessions),
         memories=MemoryService(sessions, governance, providers.memory),
         kb=kb,
+        documents=DocumentService(
+            sessions,
+            governance,
+            providers.kb,
+            max_bytes=settings.kb_max_upload_mb * 1024 * 1024,
+        ),
         episodes=episodes,
         reconcile=reconcile,
         retrieval=RetrievalService(

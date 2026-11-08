@@ -15,8 +15,13 @@ Mapping, checked against the running v0.9.0 server (2026-11-09):
   searchable shortly, and a retry would only duplicate it); a remove not finished raises, and its
   retry is safe (404 = gone). A Syncer-level pending → confirm step, so no adapter blocks the
   worker, is a follow-up (it changes the sync state machine);
-- search (`/knowledge-search`, several knowledge bases at once) returns chunks: each entry's best
-  chunk is kept. There is no metadata filter, so the governance layer filters (capabilities).
+- a document is one "file" knowledge item (`POST .../knowledge/file`, multipart), parsed in the
+  background with no publish step; the Syncer polls `document_status`. Uploading the same bytes
+  into the same knowledge base again is a 409 `duplicate_file` whose body carries the existing item:
+  its id is returned, so a retried upload never makes a second copy. A failed item does not count
+  as a duplicate (WeKnora skips it), so a new upload after a failure starts afresh;
+- search (`/knowledge-search`, several knowledge bases at once) returns chunks: each entry's (or
+  document's) best chunk is kept. There is no metadata filter, so the governance layer filters.
 
 Errors carry the HTTP status and WeKnora's error code, never a response body (it may echo text).
 """
@@ -30,10 +35,13 @@ from typing import Any
 import httpx2
 
 from llm_steward.errors import ProviderUnavailable
+from llm_steward.models.enums import DocStatus
 from llm_steward.providers.base import (
+    DOC_PARSING,
     ENTRY_UPSERT,
     ComponentHealth,
     KbCollectionRef,
+    KbDocumentUpload,
     KbEntryDoc,
     ProviderHit,
     best_hit_per_id,
@@ -44,11 +52,21 @@ log = logging.getLogger(__name__)
 API = "/api/v1"
 SEARCHABLE = frozenset({"finalizing", "completed"})  # finalizing: vectors are in, extras run on
 CHUNKS_PER_ENTRY = 3  # search returns chunks; ask for enough to fill top_k entries
+# A file item's parse_status (v0.9.0 internal/types/knowledge.go) as a document status; anything
+# else is still in progress (and the Syncer gives up after its deadline).
+DOC_STATUSES = {
+    "pending": DocStatus.PENDING,
+    "processing": DocStatus.PROCESSING,
+    **dict.fromkeys(SEARCHABLE, DocStatus.READY),  # vectors are in, as for entries
+    "failed": DocStatus.FAILED,
+    "cancelled": DocStatus.FAILED,
+    "deleting": DocStatus.FAILED,
+}
 
 
 class WeKnoraProvider:
     name = "weknora"
-    capabilities = frozenset({ENTRY_UPSERT})
+    capabilities = frozenset({ENTRY_UPSERT, DOC_PARSING})
 
     def __init__(
         self,
@@ -90,14 +108,20 @@ class WeKnoraProvider:
         *,
         timeout_s: float,
         missing_ok: bool = False,
+        existing_ok: bool = False,
+        files: dict[str, tuple[str, bytes, str]] | None = None,
+        form: dict[str, str] | None = None,
     ) -> Any:
-        """The `data` of a successful call; None for a 404 when `missing_ok`."""
+        """The `data` of a successful call; None for a 404 when `missing_ok`; with `existing_ok`,
+        the item a 409 carries (an upload WeKnora already holds) counts as the result."""
         what = f"weknora {method} {path}"
         try:
             response = await self._http.request(
                 method,
                 f"{self._base_url}{API}{path}",
                 json=body,
+                files=files,
+                data=form,
                 headers={"X-API-Key": self._api_key or ""},
                 timeout=max(timeout_s, 0.1),
             )
@@ -111,6 +135,11 @@ class WeKnoraProvider:
             payload = {}
         if response.is_success and payload.get("success", True):
             return payload.get("data")
+        existing = payload.get("data")
+        if existing_ok and response.status_code == 409 and isinstance(existing, dict):
+            if not existing.get("id"):
+                raise ProviderUnavailable(f"{what}: HTTP 409 without the existing item")
+            return existing
         error = payload.get("error")
         if isinstance(error, dict):  # handler errors: a numeric code (the message may echo input)
             detail = f"error code {error.get('code')}"
@@ -197,6 +226,38 @@ class WeKnoraProvider:
             raise ProviderUnavailable(
                 f"weknora {external_id} not deleted within {self._budget_s:g}s"
             )
+
+    async def ingest_document(self, doc: KbDocumentUpload, collection_ext_id: str) -> str:
+        """Upload the file, then tag it (`custom_metadata`; the upload's own `metadata` field is
+        not searchable). Parsing runs in the background: the Syncer polls `document_status`."""
+        deadline = time.monotonic() + self._budget_s
+        data = await self._call(
+            "POST",
+            f"/knowledge-bases/{collection_ext_id}/knowledge/file",
+            files={"file": (doc.filename, doc.data, doc.mime or "application/octet-stream")},
+            form={"fileName": doc.filename},
+            timeout_s=_left(deadline),
+            existing_ok=True,
+        )
+        knowledge_id = str(data["id"])
+        metadata = {"steward_id": str(doc.document_id), "kind": "document"}
+        await self._call(
+            "PUT",
+            f"/knowledge/{knowledge_id}",
+            {"custom_metadata": metadata},
+            timeout_s=_left(deadline),
+        )
+        return knowledge_id
+
+    async def document_status(self, external_id: str) -> DocStatus:
+        """Gone from WeKnora (404) is final: FAILED. The item's error_message is never read (it
+        can echo the document)."""
+        data = await self._call(
+            "GET", f"/knowledge/{external_id}", timeout_s=self._budget_s, missing_ok=True
+        )
+        if data is None:
+            return DocStatus.FAILED
+        return DOC_STATUSES.get(str(data.get("parse_status")), DocStatus.PROCESSING)
 
     async def _wait(self, knowledge_id: str, deadline: float, done: Callable[[Any], bool]) -> Any:
         """GET the item (None when gone) until `done(item)` or the deadline; the last item seen.

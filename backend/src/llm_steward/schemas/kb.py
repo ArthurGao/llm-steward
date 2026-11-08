@@ -11,6 +11,7 @@ from llm_steward.models.enums import (
     CandidateStage,
     CandidateStatus,
     CandidateTarget,
+    DocStatus,
     KbOrigin,
     KbStatus,
     RiskLevel,
@@ -156,3 +157,37 @@ class SuggestionIn(BaseModel):
 
 class DecisionOut(CandidateOut):
     entry: EntryOut | None = None  # the knowledge an accepted candidate became
+
+
+class DocumentOut(BaseModel):
+    """`state` is the governed lifecycle (as for entries); `status` is the KB provider's parse
+    status. Only an active/verified document with status `ready` is retrieved."""
+
+    model_config = ConfigDict(from_attributes=True)
+    id: uuid.UUID
+    collection_id: uuid.UUID
+    title: str
+    filename: str
+    mime: str | None
+    size_bytes: int
+    content_hash: str
+    state: KbStatus
+    status: DocStatus
+    error: str | None
+    risk_level: RiskLevel
+    created_by: str | None
+    valid_to: datetime | None
+    created_at: datetime
+    updated_at: datetime
+
+
+class DocumentPage(BaseModel):
+    items: list[DocumentOut]
+    next_cursor: uuid.UUID | None
+
+
+class DocumentWritten(BaseModel):
+    """An upload: the document, and the candidate when it waits for a reviewer."""
+
+    document: DocumentOut
+    candidate: CandidateOut | None

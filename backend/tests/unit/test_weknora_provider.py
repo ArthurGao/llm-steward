@@ -11,7 +11,14 @@ import httpx2
 import pytest
 
 from llm_steward.errors import ProviderUnavailable
-from llm_steward.providers.base import ENTRY_UPSERT, KbCollectionRef, KbEntryDoc
+from llm_steward.models.enums import DocStatus
+from llm_steward.providers.base import (
+    DOC_PARSING,
+    ENTRY_UPSERT,
+    KbCollectionRef,
+    KbDocumentUpload,
+    KbEntryDoc,
+)
 from llm_steward.providers.weknora import WeKnoraProvider
 from tests.fakes.http import mock_http
 
@@ -268,4 +275,79 @@ async def test_errors_are_reported_without_the_response_body(
 
 def test_capabilities() -> None:
     p = provider(Api({}))
-    assert (p.name, p.capabilities) == ("weknora", frozenset({ENTRY_UPSERT}))
+    assert (p.name, p.capabilities) == ("weknora", frozenset({ENTRY_UPSERT, DOC_PARSING}))
+
+
+DOCUMENT = KbDocumentUpload(
+    uuid.UUID("00000000-0000-7000-8000-0000000000d1"), NS, "Policy", "policy.md", None, b"# Refunds"
+)
+UPLOAD = "/api/v1/knowledge-bases/kb-1/knowledge/file"
+
+
+async def test_a_document_is_uploaded_as_a_file_then_tagged_without_waiting() -> None:
+    api = Api(
+        {
+            ("POST", UPLOAD): lambda r: ok({"id": "k-9", "parse_status": "pending"}),
+            ("PUT", "/api/v1/knowledge/k-9"): lambda r: ok({"id": "k-9"}),
+        }
+    )
+    assert await provider(api).ingest_document(DOCUMENT, "kb-1") == "k-9"
+    assert api.calls() == [f"POST {UPLOAD}", "PUT /api/v1/knowledge/k-9"]  # no status polling
+    upload = api.requests[0]
+    assert upload.headers["Content-Type"].startswith("multipart/form-data")
+    content = upload.content
+    assert b'name="file"; filename="policy.md"' in content and b"# Refunds" in content
+    assert b'name="fileName"' in content
+    assert b"application/octet-stream" in content  # no mime given
+    assert api.body("PUT", "/api/v1/knowledge/k-9") == {
+        "custom_metadata": {"steward_id": str(DOCUMENT.document_id), "kind": "document"}
+    }
+
+
+async def test_uploading_the_same_file_again_returns_the_copy_weknora_already_has() -> None:
+    duplicate = httpx2.Response(
+        409,
+        json={
+            "success": False,
+            "code": "duplicate_file",
+            "message": "File already exists: policy.md",
+            "data": {"id": "k-1", "parse_status": "completed"},
+        },
+    )
+    api = Api(
+        {
+            ("POST", UPLOAD): lambda r: duplicate,
+            ("PUT", "/api/v1/knowledge/k-1"): lambda r: ok({"id": "k-1"}),
+        }
+    )
+    assert await provider(api).ingest_document(DOCUMENT, "kb-1") == "k-1"
+
+
+async def test_a_conflict_without_the_existing_item_is_an_error() -> None:
+    api = Api({("POST", UPLOAD): lambda r: httpx2.Response(409, json={"success": False})})
+    with pytest.raises(ProviderUnavailable, match="HTTP 409"):
+        await provider(api).ingest_document(DOCUMENT, "kb-1")
+
+
+@pytest.mark.parametrize(
+    ("parse_status", "expected"),
+    [
+        ("pending", DocStatus.PENDING),
+        ("processing", DocStatus.PROCESSING),
+        ("finalizing", DocStatus.READY),
+        ("completed", DocStatus.READY),
+        ("failed", DocStatus.FAILED),
+        ("cancelled", DocStatus.FAILED),
+        ("deleting", DocStatus.FAILED),
+        ("something-new", DocStatus.PROCESSING),
+    ],
+)
+async def test_the_parse_status_maps_to_a_document_status(
+    parse_status: str, expected: DocStatus
+) -> None:
+    api = Api({("GET", "/api/v1/knowledge/k-1"): statuses(parse_status)})
+    assert await provider(api).document_status("k-1") == expected
+
+
+async def test_a_document_gone_from_weknora_has_failed() -> None:
+    assert await provider(Api({})).document_status("k-1") == DocStatus.FAILED  # 404

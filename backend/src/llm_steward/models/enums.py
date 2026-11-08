@@ -55,6 +55,7 @@ class DocStatus(StrEnum):
 class CandidateTarget(StrEnum):
     MEMORY = "memory"
     KB_ENTRY = "kb_entry"
+    KB_DOCUMENT = "kb_document"
 
 
 class CandidateOp(StrEnum):
@@ -122,6 +123,9 @@ class JobType(StrEnum):
     MEMORY_EXTRACT = "memory.extract"
     MEMORY_RECONCILE = "memory.reconcile"
     KB_SUGGEST = "kb.suggest"  # score new memories; worthy ones become KB candidates
+    DOC_INGEST = "kb.doc_ingest"  # upload a document to the KB provider
+    DOC_STATUS = "kb.doc_status"  # poll its parse status until ready or failed
+    DOC_REMOVE = "kb.doc_remove"
 
 
 class JobStatus(StrEnum):

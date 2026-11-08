@@ -7,9 +7,10 @@ degrades accordingly instead of branching on a provider's name.
 import uuid
 from collections.abc import Iterable
 from dataclasses import dataclass, field
-from typing import Any, Literal, Protocol
+from typing import Any, Literal, Protocol, cast
 
 from llm_steward.errors import ProviderUnavailable
+from llm_steward.models.enums import DocStatus
 
 ComponentStatus = Literal["ok", "error", "not_implemented"]
 
@@ -106,6 +107,18 @@ class KbEntryDoc:
     tags: list[str] = field(default_factory=list)
 
 
+@dataclass(frozen=True)
+class KbDocumentUpload:
+    """One governed document, uploaded whole: the provider parses and chunks it."""
+
+    document_id: uuid.UUID
+    namespace_id: uuid.UUID
+    title: str
+    filename: str
+    mime: str | None
+    data: bytes = field(repr=False)
+
+
 class HealthProbe(Protocol):
     @property
     def name(self) -> str: ...
@@ -162,6 +175,25 @@ class KnowledgeProvider(HealthProbe, Protocol):
         top_k: int,
         filters: dict[str, Any] | None = None,
     ) -> list[ProviderHit]: ...
+
+
+class DocumentParser(Protocol):
+    """What a KnowledgeProvider with `DOC_PARSING` adds (design §8): documents are parsed in the
+    engine's own time, so an upload returns at once and the Syncer polls the status."""
+
+    async def ingest_document(self, doc: KbDocumentUpload, collection_ext_id: str) -> str:
+        """Hand the file over; returns its external id. Uploading the same bytes again returns
+        the id of the copy the engine already holds (no second copy)."""
+        ...
+
+    async def document_status(self, external_id: str) -> DocStatus:
+        """READY once searchable; FAILED is final (including: the engine no longer has it)."""
+        ...
+
+
+def document_parser(provider: KnowledgeProvider) -> DocumentParser | None:
+    """The provider's document side, or None when it cannot parse documents."""
+    return cast(DocumentParser, provider) if DOC_PARSING in provider.capabilities else None
 
 
 @dataclass(frozen=True)
