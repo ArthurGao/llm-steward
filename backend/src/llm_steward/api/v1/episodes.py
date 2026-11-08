@@ -3,6 +3,7 @@ from fastapi import APIRouter, Response
 from llm_steward.api.deps import ServicesDep, Writer
 from llm_steward.providers.base import Scope
 from llm_steward.schemas.episodes import BufferScope, EpisodeAccepted, EpisodeCreate, FlushResult
+from llm_steward.schemas.kb import CandidateOut
 from llm_steward.schemas.memories import MemoryOut
 
 router = APIRouter(prefix="/episodes", tags=["episodes"])
@@ -30,6 +31,7 @@ async def add_episode(
         status=result.status,
         job_id=result.job_id,
         memories=memories,
+        suggestions=[CandidateOut.model_validate(c) for c in await services.kb.cards(scope)],
     )
 
 

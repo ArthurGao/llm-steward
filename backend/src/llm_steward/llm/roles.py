@@ -15,6 +15,9 @@ from llm_steward.config import Settings
 class Role(StrEnum):
     MEMORY_EXTRACT = "memory.extract"  # handed to the memory engine (mem0) for fact extraction
     MEMORY_RESOLVE = "memory.resolve"  # ADD / UPDATE / DELETE / NOOP for a new memory vs. old ones
+    KB_RISK = "kb.risk"  # label the risk of knowledge text (rules may raise it further)
+    KB_WORTHINESS = "kb.worthiness"  # five scores per new memory: is it worth a KB entry?
+    KB_DRAFT = "kb.draft"  # rewrite a memory / a suggestion as general knowledge
 
 
 class LLMConfigError(ValueError):

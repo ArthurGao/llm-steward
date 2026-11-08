@@ -5,6 +5,7 @@ from, so they can never drift apart in how providers are configured. A configura
 serve a needed LLM role fails here, at startup (KB llm-app-architecture §1.5).
 """
 
+import logging
 from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
@@ -36,7 +37,9 @@ from llm_steward.storage.db import engine_scope, session_factory
 
 Handler = Callable[[ClaimedJob], Awaitable[Any]]
 
+log = logging.getLogger(__name__)
 IDLE_FLUSH_EVERY_S = 60.0
+EXPIRE_EVERY_S = 24 * 3600.0  # candidates expire after days (governance CANDIDATE_TTL)
 
 
 @dataclass(frozen=True)
@@ -55,10 +58,14 @@ class Services:
 
 
 def build_llm(settings: Settings, providers: Providers) -> LLM | None:
-    """`memory.resolve` is needed exactly when conflict compensation runs."""
-    if not compensates(providers.memory):
-        return None
-    return OpenAICompatibleLLM(settings, (Role.MEMORY_RESOLVE,))
+    """Exactly the roles that will be used, resolved now (a missing model fails at startup):
+    `memory.resolve` when conflict compensation runs, the KB roles when `kb_llm` is on."""
+    roles = [Role.MEMORY_RESOLVE] if compensates(providers.memory) else []
+    if settings.kb_llm:
+        roles += [Role.KB_RISK, Role.KB_WORTHINESS, Role.KB_DRAFT]
+    else:
+        log.info("KB LLM steps are off (STEWARD_KB_LLM): rules-only risk, no suggestions")
+    return OpenAICompatibleLLM(settings, tuple(roles)) if roles else None
 
 
 def build_services(
@@ -73,12 +80,16 @@ def build_services(
         sessions, memory_provider=providers.memory.name, kb_provider=providers.kb.name
     )
     sync = SyncService(sessions, providers)
-    extraction = ExtractionService(sessions, governance, providers.memory, llm)
+    kb = KbService(sessions, governance, llm if settings.kb_llm else None)
+    extraction = ExtractionService(
+        sessions, governance, providers.memory, llm, on_extracted=kb.queue_suggestions
+    )
     reconcile = ReconcileService(sessions, providers.memory)
     handlers: dict[JobType, Handler] = {
         **dict.fromkeys(SyncService.JOB_TYPES, sync.handle),
         JobType.MEMORY_EXTRACT: extraction.handle,
         JobType.MEMORY_RECONCILE: reconcile.handle,
+        JobType.KB_SUGGEST: kb.handle,
     }
     missing = set(JobType) - set(handlers)
     if missing:
@@ -93,6 +104,7 @@ def build_services(
         ticks=(
             # late-bound: `episodes` is built below, with the worker's run_job
             Tick("flush idle episode buffers", IDLE_FLUSH_EVERY_S, lambda: episodes.flush_idle()),
+            Tick("expire unanswered candidates", EXPIRE_EVERY_S, governance.expire_candidates),
             Tick(
                 "schedule reconcile",
                 settings.reconcile_interval_hours * 3600.0,
@@ -115,7 +127,7 @@ def build_services(
         governance=governance,
         namespaces=NamespaceService(sessions),
         memories=MemoryService(sessions, governance, providers.memory),
-        kb=KbService(sessions, governance),
+        kb=kb,
         episodes=episodes,
         reconcile=reconcile,
         retrieval=RetrievalService(

@@ -1,6 +1,8 @@
 from fastapi import APIRouter
 
 from llm_steward.api.deps import Reader, ServicesDep
+from llm_steward.providers.base import Scope
+from llm_steward.schemas.kb import CandidateOut
 from llm_steward.schemas.retrieve import RetrievedItemOut, RetrieveIn, RetrieveOut
 from llm_steward.services.retrieval_service import RetrieveRequest
 
@@ -24,7 +26,10 @@ async def retrieve(body: RetrieveIn, principal: Reader, services: ServicesDep) -
             as_of=body.as_of,
         ),
     )
+    scope = Scope(principal.namespace_id, body.scope.user_id, None, body.scope.session_id)
+    cards = await services.kb.cards(scope)
     return RetrieveOut(
+        suggestions=[CandidateOut.model_validate(c) for c in cards],
         retrieval_id=result.retrieval_id,
         items=[RetrievedItemOut.model_validate(i) for i in result.items],
         degraded=result.degraded,

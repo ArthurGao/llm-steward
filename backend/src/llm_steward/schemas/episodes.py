@@ -3,6 +3,7 @@ from typing import Literal
 
 from pydantic import BaseModel, Field
 
+from llm_steward.schemas.kb import CandidateOut
 from llm_steward.schemas.memories import MemoryOut
 
 
@@ -33,6 +34,9 @@ class EpisodeAccepted(BaseModel):
     status: Literal["buffered", "queued", "processed"]
     job_id: uuid.UUID | None = None
     memories: list[MemoryOut] = Field(default_factory=list)
+    suggestions: list[CandidateOut] = Field(
+        default_factory=list, description="The user's open confirmation cards (design §5)."
+    )
 
 
 class FlushResult(BaseModel):

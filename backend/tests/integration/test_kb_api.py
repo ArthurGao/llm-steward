@@ -193,3 +193,13 @@ def test_an_edited_draft_is_screened_again_before_it_goes_live(t: Tenant) -> Non
     )
     assert moved["draft"]["content"] == "Refunds: write to [REDACTED:email]"
     assert moved["entry"] is None
+
+
+def test_tags_are_screened_and_bounded(t: Tenant) -> None:
+    collection = t.collection(default_risk="low")
+    r = t.submit(collection, "Refunds take 3 days", tags=["billing", "alice@example.com"])
+    assert r.status_code == 202 and r.json()["candidate"]["draft"]["tags"] == [
+        "billing",
+        "[REDACTED:email]",
+    ]
+    assert t.submit(collection, "x", tags=["t" * 101]).status_code == 422

@@ -1,6 +1,6 @@
 import uuid
 from datetime import datetime
-from typing import Any, Literal
+from typing import Annotated, Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -59,7 +59,9 @@ class EntryCreate(BaseModel):
         max_length=200,
         description="The end user to ask about medium-risk knowledge (a confirmation card).",
     )
-    tags: list[str] = Field(default_factory=list, max_length=50)
+    tags: list[Annotated[str, Field(min_length=1, max_length=100)]] = Field(
+        default_factory=list, max_length=50
+    )
 
 
 class EntryPatch(BaseModel):
@@ -136,6 +138,20 @@ class Decision(BaseModel):
     scope: Literal["personal", "team"] = "team"
     draft: EntryPatch | None = None
     note: str | None = Field(default=None, max_length=2000)
+
+
+class PromoteIn(BaseModel):
+    collection_id: uuid.UUID
+    user_id: str | None = Field(
+        default=None, max_length=200, description="Who to ask (default: the memory's owner)."
+    )
+
+
+class SuggestionIn(BaseModel):
+    collection_id: uuid.UUID
+    text: str = Field(min_length=1, max_length=20_000)
+    user_id: str | None = Field(default=None, max_length=200)
+    session_id: str | None = Field(default=None, max_length=200)
 
 
 class DecisionOut(CandidateOut):

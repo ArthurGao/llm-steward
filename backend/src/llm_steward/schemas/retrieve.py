@@ -4,6 +4,8 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from llm_steward.schemas.kb import CandidateOut
+
 
 class RetrieveScope(BaseModel):
     user_id: str | None = None
@@ -37,6 +39,9 @@ class RetrievedItemOut(BaseModel):
 
 
 class RetrieveOut(BaseModel):
+    suggestions: list[CandidateOut] = Field(
+        default_factory=list, description="The scope's user's open confirmation cards (design §5)."
+    )
     retrieval_id: uuid.UUID
     items: list[RetrievedItemOut]
     degraded: list[Literal["memory", "kb"]]

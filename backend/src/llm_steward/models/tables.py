@@ -196,6 +196,7 @@ class Candidate(IdMixin, CreatedMixin, Base):
         # the review queue and an end user's cards (P3), without reading decided history
         Index("ix_candidates_queue", "namespace_id", "status", "stage", "id"),
         Index("ix_candidates_user", "namespace_id", "requested_for_user", "status", "id"),
+        Index("ix_candidates_expiry", "status", "expires_at"),  # the daily expiry sweep (P3b)
     )
     namespace_id: Mapped[uuid.UUID] = _namespace_fk()
     target_type: Mapped[CandidateTarget] = mapped_column(
@@ -214,6 +215,7 @@ class Candidate(IdMixin, CreatedMixin, Base):
         enum_column(CandidateStatus, "candidate_status")
     )
     requested_for_user: Mapped[str | None] = mapped_column(String(200))
+    session_id: Mapped[str | None] = mapped_column(String(200))  # cards are capped per session
     decided_by: Mapped[str | None] = mapped_column(String(200))
     decided_at: Mapped[datetime | None]
     decision_note: Mapped[str | None] = mapped_column(Text)

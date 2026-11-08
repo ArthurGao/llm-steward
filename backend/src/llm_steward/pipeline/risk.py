@@ -22,7 +22,12 @@ _SECRET = re.compile(
     r"|-----BEGIN [A-Z ]*PRIVATE KEY-----"
     r"|(?i:\b(?:api[_-]?key|secret|token|password)\s*[:=]\s*\S{8,})"
 )
-_EMAIL = re.compile(r"[A-Za-z0-9._%+-]+@[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)*\.[A-Za-z]{2,}")
+# Bounded and anchored: an unbounded local part made a long run of letters with no '@' quadratic
+# (every start re-scanned the rest of the run), on the event loop.
+_EMAIL = re.compile(
+    r"(?<![A-Za-z0-9._%+-])[A-Za-z0-9._%+-]{1,64}@[A-Za-z0-9-]{1,63}"
+    r"(?:\.[A-Za-z0-9-]{1,63}){0,8}\.[A-Za-z]{2,24}"
+)
 _CN_ID = re.compile(r"(?<![0-9A-Za-z])\d{17}[\dXx](?![0-9A-Za-z])")
 _CARD = re.compile(r"(?<!\d)(?:\d[ -]?){12,18}\d(?!\d)")
 _PHONE = re.compile(r"(?<!\d)1[3-9]\d{9}(?!\d)")
@@ -98,17 +103,23 @@ class Assessment:
     title: str  # redacted when the policy says so
     content: str
     reasons: list[str] = field(default_factory=list)  # never repeat a PII value
+    tags: tuple[str, ...] = ()
 
 
-def assess(title: str, content: str, policy: RiskPolicy) -> Assessment:
+def assess(title: str, content: str, policy: RiskPolicy, tags: tuple[str, ...] = ()) -> Assessment:
+    """Title, content and tags: everything of an entry that is stored and shared."""
     reasons: list[str] = []
-    text = f"{title}\n{content}".casefold()
+    text = "\n".join((title, content, *tags)).casefold()
     reasons += [f"keyword: {k}" for k in policy.high_risk_keywords if k.casefold() in text]
     in_title, in_content = find_pii(title), find_pii(content)
-    kinds = list(dict.fromkeys(kind for kind, _ in in_title + in_content))
+    in_tags = [find_pii(tag) for tag in tags]
+    found = in_title + in_content + [f for tag in in_tags for f in tag]
+    kinds = list(dict.fromkeys(kind for kind, _ in found))
     if kinds and policy.pii_action == "block":
         raise Unprocessable(f"personal data found ({', '.join(kinds)}); this namespace blocks it")
     reasons += [f"pii: {kind}" for kind in kinds]
     if policy.pii_action == "redact":
         title, content = _redact(title, in_title), _redact(content, in_content)
-    return Assessment(RiskLevel.HIGH if reasons else RiskLevel.LOW, title, content, reasons)
+        tags = tuple(_redact(tag, f) for tag, f in zip(tags, in_tags, strict=True))
+    level = RiskLevel.HIGH if reasons else RiskLevel.LOW
+    return Assessment(level, title, content, reasons, tags)

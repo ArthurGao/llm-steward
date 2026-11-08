@@ -43,6 +43,9 @@ class Settings(BaseSettings):
     llm_model: str | None = None  # default model for every role
     llm_roles: dict[str, str] = Field(default_factory=dict)  # role -> model override (JSON in env)
     llm_timeout_s: float = Field(default=60.0, gt=0)
+    # KB pipeline LLM steps (design §5): risk labels, worthiness scoring, drafting (roles kb.risk,
+    # kb.worthiness, kb.draft). Off: rules-only risk, no suggestions; promote/suggestions → 422.
+    kb_llm: bool = False
 
     # Episode buffer (design §5 step 1): flush past this many tokens, or after this long idle.
     buffer_tokens: int = Field(default=1024, gt=0)

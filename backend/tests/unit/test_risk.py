@@ -80,3 +80,18 @@ def test_the_policy_comes_from_the_namespace_config() -> None:
     config = {"kb": {"high_risk_keywords": ["法律"]}, "memory": {"pii": {"action": "block"}}}
     assert RiskPolicy.from_config(config) == RiskPolicy(("法律",), "block")
     assert RiskPolicy.from_config({}) == RiskPolicy((), "redact")
+
+
+def test_detection_stays_linear_on_hostile_input() -> None:
+    import time
+
+    start = time.perf_counter()
+    for text in ("a" * 50_000, "a." * 25_000, "1 " * 25_000):
+        assert find_pii(text) == []
+    assert time.perf_counter() - start < 0.5  # was quadratic: a long local part with no '@'
+
+
+def test_tags_are_screened_like_the_text() -> None:
+    result = assess("t", "c", POLICY, tags=("billing", "alice@example.com"))
+    assert result.tags == ("billing", "[REDACTED:email]")
+    assert (result.level, result.reasons) == (RiskLevel.HIGH, ["pii: email"])

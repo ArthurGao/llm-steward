@@ -10,7 +10,7 @@ key); the daily reconcile reports those orphans, and the retrieval safety net ne
 
 import logging
 import uuid
-from collections.abc import Sequence
+from collections.abc import Awaitable, Callable, Sequence
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
@@ -56,7 +56,11 @@ class ExtractionService:
         governance: GovernanceService,
         provider: MemoryProvider,
         llm: LLM | None,
+        *,
+        on_extracted: Callable[[uuid.UUID, list[uuid.UUID]], Awaitable[None]] | None = None,
     ) -> None:
+        """`on_extracted(namespace, memory ids)`: what follows a batch (the KB suggest job)."""
+        self._on_extracted = on_extracted
         self._sessions = sessions
         self._governance = governance
         self._provider = provider
@@ -116,9 +120,14 @@ class ExtractionService:
         return await self._finish(scope, created)
 
     async def _finish(self, scope: Scope, created: list[Memory]) -> list[uuid.UUID]:
-        if not compensates(self._provider):
-            return [m.id for m in created]
-        return await self._compensate(scope, created)
+        kept = (
+            await self._compensate(scope, created)
+            if compensates(self._provider)
+            else [m.id for m in created]
+        )
+        if self._on_extracted is not None:
+            await self._on_extracted(scope.namespace_id, kept)
+        return kept
 
     async def _mirrored(self, namespace_id: uuid.UUID, last: uuid.UUID) -> list[Memory] | None:
         """The still-active memories an earlier attempt mirrored for this batch (each batch has its

@@ -170,7 +170,7 @@ class AppClient:
         return self.new_tenant(slug, *scopes)[0]
 
     def apply(self, op: object) -> Any:
-        """GovernanceService.apply as an admin would (KB and candidates have no HTTP API yet)."""
+        """GovernanceService.apply as an admin (for setups the HTTP API does not offer)."""
         return self.call(self.services.governance.apply, op, ADMIN)
 
     def collection_ext_id(self, entry: Any) -> str:
@@ -224,15 +224,17 @@ def kb_entry_op(
 
 
 @contextmanager
-def running_app(url: str, **overrides: Any) -> Iterator[AppClient]:
-    """The app on TEST_SCHEMA with a fake embedder; `overrides` go to create_app (e.g. a fake
-    memory_provider and llm for the extraction pipeline)."""
+def running_app(
+    url: str, *, settings: dict[str, Any] | None = None, **overrides: Any
+) -> Iterator[AppClient]:
+    """The app on TEST_SCHEMA with a fake embedder; `settings` override Settings fields, and
+    `overrides` go to create_app (e.g. a fake memory_provider and llm for the pipeline)."""
     from fastapi.testclient import TestClient
 
     from llm_steward.main import create_app
     from tests.fakes.embedder import FakeEmbedder
 
-    app = create_app(test_settings(url), embedder=FakeEmbedder(), **overrides)
+    app = create_app(test_settings(url, **(settings or {})), embedder=FakeEmbedder(), **overrides)
     with TestClient(app) as http:
         yield AppClient(http, app.state.services)
 

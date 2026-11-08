@@ -121,6 +121,7 @@ class JobType(StrEnum):
     KB_REMOVE = "sync.kb_remove"
     MEMORY_EXTRACT = "memory.extract"
     MEMORY_RECONCILE = "memory.reconcile"
+    KB_SUGGEST = "kb.suggest"  # score new memories; worthy ones become KB candidates
 
 
 class JobStatus(StrEnum):

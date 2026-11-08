@@ -1,10 +1,12 @@
 import uuid
 from typing import Annotated
 
-from fastapi import APIRouter, Query
+from fastapi import APIRouter, Query, Response
 
 from llm_steward.api.deps import Reader, ServicesDep, Writer
+from llm_steward.api.v1.kb import written
 from llm_steward.models.enums import MemoryStatus
+from llm_steward.schemas.kb import PromoteIn, Written
 from llm_steward.schemas.memories import (
     ChangeOut,
     MemoryBrief,
@@ -103,3 +105,23 @@ async def memory_history(
         changes=[ChangeOut.model_validate(c) for c in h.changes],
         chain=[MemoryBrief.model_validate(m) for m in h.chain],
     )
+
+
+@router.post("/{memory_id}/promote", status_code=201, responses={202: {"model": Written}})
+async def promote(
+    memory_id: uuid.UUID,
+    body: PromoteIn,
+    principal: Writer,
+    services: ServicesDep,
+    response: Response,
+) -> Written:
+    """Rewrite the memory as general knowledge (`kb.draft`), then route it like any KB write:
+    201 live, 202 a candidate. Needs the KB LLM (STEWARD_KB_LLM)."""
+    result = await services.kb.promote(
+        principal.namespace_id,
+        memory_id,
+        body.collection_id,
+        actor=principal.actor,
+        user_id=body.user_id,
+    )
+    return written(result, response)

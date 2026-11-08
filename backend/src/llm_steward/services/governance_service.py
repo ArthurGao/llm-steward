@@ -243,6 +243,7 @@ class SubmitKbEntry:
     origin: KbOrigin
     author_type: AuthorType
     requested_for_user: str | None = None
+    session_id: str | None = None  # the conversation a card belongs to
     source_refs: list[dict[str, Any]] = field(default_factory=list)
     tags: list[str] = field(default_factory=list)
     reason: str | None = None
@@ -291,6 +292,7 @@ class CreateCandidate:
     target_id: uuid.UUID | None = None
     reason: str | None = None
     requested_for_user: str | None = None
+    session_id: str | None = None
     expires_at: datetime | None = None  # default: CANDIDATE_TTL from now
 
 
@@ -306,6 +308,7 @@ class DecideCandidate:
     note: str | None = None
     draft: dict[str, Any] | None = None
     scope: Literal["personal", "team"] = "team"
+    risk_level: RiskLevel | None = None  # the decider's edit labelled (KB LLM): a floor
 
 
 Operation = (
@@ -702,13 +705,17 @@ class GovernanceService:
         return entry
 
     async def _screen(
-        self, s: AsyncSession, namespace_id: uuid.UUID, title: str, content: str
+        self,
+        s: AsyncSession,
+        namespace_id: uuid.UUID,
+        title: str,
+        content: str,
+        tags: tuple[str, ...] = (),
     ) -> Assessment:
         """Rule-based risk and PII (pipeline/risk.py) under the namespace's policy, in the write
         transaction: every outside write of knowledge text passes here, however it arrives."""
-        namespace = await s.get(Namespace, namespace_id)
-        policy = RiskPolicy.from_config(namespace.config if namespace else {})
-        return assess(title, content, policy)
+        policy = RiskPolicy.from_config(await namespace_config(s, namespace_id))
+        return assess(title, content, policy, tags)
 
     async def _submit_kb_entry(
         self, s: AsyncSession, op: SubmitKbEntry, actor: Actor
@@ -716,7 +723,7 @@ class GovernanceService:
         collection = await load_owned(
             s, KbCollection, op.namespace_id, op.collection_id, "collection", lock=False
         )
-        checked = await self._screen(s, op.namespace_id, op.title, op.content)
+        checked = await self._screen(s, op.namespace_id, op.title, op.content, tuple(op.tags))
         risk = max_risk(op.risk_level, checked.level, collection.default_risk)
         draft = _draft(op, checked)
         route = "auto" if actor.is_reviewer else _route(collection, risk)
@@ -735,6 +742,7 @@ class GovernanceService:
             stage=STAGES[route],
             reason=_reason(op.reason, checked),
             requested_for_user=op.requested_for_user,
+            session_id=op.session_id,
         )
         return await self._create_candidate(s, candidate, actor)
 
@@ -788,6 +796,7 @@ class GovernanceService:
             stage=op.stage,
             status=CandidateStatus.PENDING,
             requested_for_user=op.requested_for_user,
+            session_id=op.session_id,
             expires_at=op.expires_at or utcnow() + CANDIDATE_TTL,
         )
         s.add(candidate)
@@ -806,6 +815,7 @@ class GovernanceService:
             if candidate.expires_at is not None and candidate.expires_at <= utcnow():
                 raise Conflict(f"candidate {candidate.id} expired at {candidate.expires_at}")
             draft, risk = await self._edited(s, candidate, op.draft)
+            risk = max_risk(risk, op.risk_level or RiskLevel.LOW)
             by_user = candidate.stage == CandidateStage.AWAITING_USER and not actor.is_reviewer
             if by_user and op.scope == "personal":  # the user keeps it for themselves
                 await self._create_memory(s, _memory_op(candidate, draft), actor)
@@ -873,6 +883,30 @@ class GovernanceService:
         if entry.status != status and status in KB_TRANSITIONS[entry.status]:
             entry = await self._transition(s, entry, status, None, actor)
         return entry
+
+    async def expire_candidates(self) -> int:
+        """Pending candidates past their expiry become `expired` (a daily worker tick), each in
+        its own transaction: one decided meanwhile is skipped, not the whole sweep."""
+        async with self._sessions() as s:
+            due = list(
+                await s.execute(
+                    select(Candidate.namespace_id, Candidate.id).where(
+                        Candidate.status == CandidateStatus.PENDING,
+                        Candidate.expires_at <= utcnow(),
+                    )
+                )
+            )
+        expired = 0
+        for namespace_id, candidate_id in due:
+            op = DecideCandidate(
+                namespace_id, candidate_id, CandidateStatus.EXPIRED, note="expired"
+            )
+            try:
+                await self.apply(op, SYSTEM)
+            except Conflict:
+                continue  # decided between the scan and now
+            expired += 1
+        return expired
 
     async def _queue_kb(self, s: AsyncSession, entry: KbEntry, job: JobType) -> None:
         status = SyncStatus.PENDING if job == JobType.KB_UPSERT else SyncStatus.DELETING
@@ -998,7 +1032,7 @@ def _draft(op: SubmitKbEntry, checked: Assessment) -> dict[str, Any]:
         "origin": op.origin.value,
         "author_type": op.author_type.value,
         "source_refs": list(op.source_refs),
-        "tags": list(op.tags),
+        "tags": list(checked.tags),
     }
 
 
@@ -1043,3 +1077,9 @@ def _checked_policy(policy: dict[str, str]) -> dict[str, str]:
                 f"{', '.join(ROUTES)} (high always goes to review)"
             )
     return dict(policy)
+
+
+async def namespace_config(s: AsyncSession, namespace_id: uuid.UUID) -> dict[str, Any]:
+    """A namespace's config (design §8); empty for a namespace that has none (or no row)."""
+    namespace = await s.get(Namespace, namespace_id)
+    return dict(namespace.config) if namespace else {}

@@ -796,6 +796,14 @@ llm-steward/
      - 筛查在 governance 里做：`SubmitKbEntry`、`ReviseKbEntry` 和带编辑的 `DecideCandidate` 都在写事务里读 namespace 策略并跑 `pipeline/risk.py`，所以无论从 API、流水线还是 MCP 进来都经过同样的规则。接受卡片时改过的草稿会重新筛查：新加了个人信息或高风险内容，终端用户接受时就转进审核队列，不会直接生效（安全审查发现，2026-11-09）；决定只能改 `title` 和 `content`。
      - 规则风险（`pipeline/risk.py`）：namespace 配置的 `kb.high_risk_keywords`（不分大小写）和内置 PII 检测（手机号、身份证含校验位、银行卡含 Luhn、邮箱、密钥格式）；`memory.pii.action` 为 `redact`（默认，替换为 `[REDACTED:<类型>]`）、`block`（422）或 `allow`；命中都升为 high，理由写进 candidate 的 `reason`，不重复敏感值本身。
      - REST：`/v1/kb/collections`（建和改需要 review scope）、`/v1/kb/entries`（写入 201 = 已生效，202 = 生成了 candidate）、`/v1/kb/entries/{id}/verify|deprecate`（review scope）、`/v1/candidates` 及 `accept|reject`（带 `user_id` 即以该终端用户身份回答）。
+   - P3b LLM 步骤（2026-11-09，测试全用 FakeLLM）：
+     - 开关 `STEWARD_KB_LLM`（默认关）。开启时启动就解析 `kb.risk`、`kb.worthiness`、`kb.draft` 三个角色，缺模型或端点直接启动失败；关闭时风险只看规则，不生成建议，promote 和 suggestions 返回 422。LLM 调用都在数据库事务之外。
+     - 风险标注：每次改动文字（提交、修改、接受时编辑草稿）都先让 `kb.risk` 标注，只能把风险调高（调用方估计、模型、规则、collection 下限取最高），模型和理由写进 `reason`；风险已是 high 时不再调用。`kb.draft` 起草时一并标注自己写的内容，不再多调一次 `kb.risk`。
+     - KB 价值评分（§5 第 5、6 步）：抽取完成后入队 `kb.suggest` 任务（outbox，模型出错单独重试，不拖住记忆抽取）。一次调用给整批新记忆打五项分，阈值在代码里（均值 ≥ `kb.suggest_threshold`，默认 0.7，且普适 ≥ 0.6；分数夹到 0–1，模型给的陌生 id 不采信）；值得的用 `kb.draft` 并发改写成通用表述（最多 4 个同时），以 `ai:kb.draft:<模型>` 身份提交到 namespace 的 `kb.suggest_collection`（默认 `inbox`，首次使用时创建）。每条记忆只评一次：在起草之前就在一个事务里标上 `meta.kb_scored`，任务中途失败重试时不会生成重复卡片（代价是可能丢掉这批建议）。
+     - 防打扰：流水线在起草之前按会话预算挑选，每个会话最多 `kb.max_suggestions_per_session`（默认 2）张卡片，超出的不再生成（宿主自己的 suggestions 不受此限，由宿主决定）；`candidates.session_id`（迁移 0005）记录卡片所属会话。`/v1/episodes` 和 `/v1/retrieve` 的响应带 `suggestions[]`（该用户、该会话的待确认卡片）。
+     - `POST /v1/memories/{id}/promote`（默认问记忆的主人）和 `POST /v1/suggestions`（宿主提议）都先用 `kb.draft` 起草，再按风险分流。
+     - 未处理的 candidate 每天由 worker 统一标为 `expired`（`GovernanceService.expire_candidates`，SYSTEM 身份，有 `(status, expires_at)` 索引）。
+   - 安全审查（2026-11-09，P3a 提交后）发现两条，已修复：邮箱正则的本地部分不受限，一长串字母会让匹配退化成平方级、卡住事件循环（50k 字符要几秒），现在限定长度并锚定起点；tags 原先不经筛查，现在和标题、正文一样脱敏并提升风险，单个 tag 最长 100 字符。
    - [ ] `WeKnoraProvider`（条目同步、文档导入、解析状态轮询、检索）+ 合约测试
    - 验收：high 风险条目在批准前**永远不会**出现在 WeKnora 中；终端用户确认**永远不会**产生 verified；条目废弃后即使停掉 worker、不让它从 WeKnora 删除，检索也不会再返回它（安全网测试）
 5. **P4 联合检索**
