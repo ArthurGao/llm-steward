@@ -412,8 +412,7 @@ def _weknora_app(migrated_url: str, target: _WeKnoraTarget) -> Iterator[Any]:
     from fastapi.testclient import TestClient
 
     from llm_steward.main import create_app
-    from tests.conftest import AppClient, test_settings
-    from tests.integration.test_kb_api import Tenant
+    from tests.conftest import AppClient, Tenant, test_settings
 
     settings = test_settings(
         migrated_url,

@@ -7,7 +7,9 @@ re-reads the object, skips work that no longer applies, and keys provider writes
 Provider calls happen outside any database transaction, so the object can change while one is in
 flight. An upsert therefore confirms its result under a row lock on the object (the same lock
 GovernanceService takes to change it): still effective at the same version → synced; retired in
-the meantime → the push is undone; edited in the meantime → another upsert is queued. A late
+the meantime → the engine's id is recorded and a removal job queued in that same transaction (the
+removal retries until it succeeds; an undo attempted inline would be lost if it failed, since the
+retried push skips a retired object); edited in the meantime → another upsert is queued. A late
 upsert can never leave retired or outdated content in a provider.
 
 Documents (P3d) are parsed in the engine's own time: `kb.doc_ingest` hands the bytes over and
@@ -55,7 +57,8 @@ from llm_steward.providers.base import (
 )
 from llm_steward.services.job_queue import ClaimedJob, describe_error, enqueue
 
-Outcome = Literal["synced", "retired", "outdated"]
+# retired: a removal job is queued; gone: the object row itself was deleted (nothing to queue on)
+Outcome = Literal["synced", "retired", "gone", "outdated"]
 # Parse-status polls: at once, then 2 s doubling up to a minute; a document still parsing after
 # half an hour is given up as failed (and removed from the engine).
 FIRST_POLL = timedelta(seconds=2)
@@ -132,10 +135,8 @@ class SyncService:
         outcome = await self._confirm(
             Memory, memory_id, provider.name, external_id, version=None, job=JobType.MEMORY_UPSERT
         )
-        if outcome == "retired":  # deleted while we were pushing it: take it back out
-            async with self._recording(ObjectType.MEMORY, memory_id, provider.name):
-                await provider.delete(external_id)
-            await self._retired(ObjectType.MEMORY, memory_id, provider.name, external_id)
+        if outcome == "gone":  # erased (per-user hard delete) while we pushed it: undo now
+            await provider.delete(external_id)
 
     async def _memory_remove(self, memory_id: uuid.UUID) -> None:
         provider = self._providers.memory
@@ -184,10 +185,8 @@ class SyncService:
             version=doc.version,
             job=JobType.KB_UPSERT,
         )
-        if outcome == "retired":  # deprecated while we were pushing it: take it back out
-            async with self._recording(ObjectType.KB_ENTRY, entry_id, provider.name):
-                await provider.remove(external_id)
-            await self._retired(ObjectType.KB_ENTRY, entry_id, provider.name, external_id)
+        if outcome == "gone":  # never happens to governed knowledge (invalidated, not deleted)
+            await provider.remove(external_id)
 
     async def _kb_remove(self, entry_id: uuid.UUID) -> None:
         provider = self._providers.kb
@@ -241,20 +240,23 @@ class SyncService:
             doc = await s.scalar(
                 select(KbDocument).where(KbDocument.id == document_id).with_for_update()
             )
+            if doc is None:
+                return  # documents are never deleted (invalidate, never delete)
+            live = doc.state in EFFECTIVE_KB_STATUSES
             await s.execute(
                 update(ExternalRef)
                 .where(*_ref_key(ObjectType.KB_DOCUMENT, document_id, provider.name))
-                .values(external_id=external_id, last_error=None)
+                .values(
+                    external_id=external_id,
+                    last_error=None,
+                    **({} if live else {"sync_status": SyncStatus.DELETING}),
+                )
             )
-            live = doc is not None and doc.state in EFFECTIVE_KB_STATUSES
             if live:
-                assert doc is not None
                 payload = {"document_id": str(document_id), "since": utcnow().isoformat()}
                 enqueue(s, doc.namespace_id, JobType.DOC_STATUS, payload)  # first poll at once
-        if not live:  # taken out while it was uploading: undo the upload
-            async with self._recording(ObjectType.KB_DOCUMENT, document_id, provider.name):
-                await provider.remove(external_id)
-            await self._retired(ObjectType.KB_DOCUMENT, document_id, provider.name, external_id)
+            else:  # taken out while it was uploading: a removal that retries until it is gone
+                enqueue(s, doc.namespace_id, JobType.DOC_REMOVE, {"document_id": str(doc.id)})
 
     async def _doc_status(self, document_id: uuid.UUID, payload: dict[str, Any]) -> None:
         provider, parser = self._providers.kb, self._parser()
@@ -280,8 +282,8 @@ class SyncService:
             doc = await s.scalar(
                 select(KbDocument).where(KbDocument.id == document_id).with_for_update()
             )
-            if doc is None:
-                return
+            if doc is None or doc.state not in EFFECTIVE_KB_STATUSES:
+                return  # taken out meanwhile: its removal owns the ref now
             doc.status, doc.error = status, error
             await s.execute(
                 update(ExternalRef)
@@ -329,7 +331,17 @@ class SyncService:
             obj: Any = await s.scalar(
                 select(model).where(columns.id == object_id).with_for_update()
             )
-            if obj is None or not _effective(obj):
+            if obj is None:
+                return "gone"
+            key = "memory_id" if model is Memory else "entry_id"
+            if not _effective(obj):  # record the copy and queue its removal, atomically
+                await s.execute(
+                    update(ExternalRef)
+                    .where(*_ref_key(object_type, object_id, provider))
+                    .values(external_id=external_id, sync_status=SyncStatus.DELETING)
+                )
+                remove = JobType.MEMORY_REMOVE if model is Memory else JobType.KB_REMOVE
+                enqueue(s, obj.namespace_id, remove, {key: str(object_id)})
                 return "retired"
             if version is not None and obj.version != version:
                 # still pending, but the engine holds a copy now: record its id so the retry
@@ -339,7 +351,6 @@ class SyncService:
                     .where(*_ref_key(object_type, object_id, provider))
                     .values(external_id=external_id)
                 )
-                key = "memory_id" if model is Memory else "entry_id"
                 enqueue(s, obj.namespace_id, job, {key: str(object_id)})
                 return "outdated"
             await s.execute(
@@ -348,16 +359,6 @@ class SyncService:
                 .values(_synced(external_id, version or 1))
             )
             return "synced"
-
-    async def _retired(
-        self, object_type: ObjectType, object_id: uuid.UUID, provider: str, external_id: str
-    ) -> None:
-        await self._update(
-            object_type,
-            object_id,
-            provider,
-            {"external_id": external_id, "sync_status": SyncStatus.DELETED, "last_error": None},
-        )
 
     # external_refs bookkeeping
 
@@ -376,12 +377,11 @@ class SyncService:
         provider: str,
         *,
         synced: str | None = None,
-        version: int | None = None,
         status: SyncStatus | None = None,
     ) -> None:
         values: dict[str, Any] = {"last_error": None}
         if synced is not None:
-            values = _synced(synced, version)
+            values = _synced(synced, None)
         if status is not None:
             values["sync_status"] = status
         await self._update(object_type, object_id, provider, values)

@@ -787,7 +787,7 @@ llm-steward/
        - 一条成立并已修复：进程内模式把 lite-rag 的原始异常写进日志，而存储错误可能带数据库 URL 和密码。现在写日志前用 `lite_rag.errors.redact` 去掉凭据（lite-rag 把 `redact` 从服务端模块移到了 `errors`），有先红后绿的测试。
        - 不成立的一条：Codex 认为"按 namespace 缓存引擎"是先查后建、没加锁，会有竞态。实际上 `_engine` 在事件循环线程里同步执行，查和建之间没有 `await`，不会被别的协程打断；而且引擎本身不持锁，写入由 store 串行化。
      - 留到 P4（联合检索）：lite-rag 一次只查一个 kb，多个 collection 会各自嵌入一次查询、各自 rerank，按分数合并实际上是按名次交错（hybrid 的分数是 RRF）。正确的做法是 lite-rag 提供多 kb 检索（只嵌入一次、只融合一次）。
-   - [ ] collections、entries、candidates、风险分级（含 PII）、KB 价值评分、promote、suggestions、accept / reject
+   - [x] collections、entries、candidates、风险分级（含 PII）、KB 价值评分、promote、suggestions、accept / reject
    - P3a 治理核心（2026-11-09，不含 LLM）：
      - 只有 reviewer 能产生 `verified`（新建或流转）：`admin`，或带 `review` scope 的 API key（用户 2026-11-09 选定，P5 有 Admin 登录前的做法）。review 是 `Actor` 的能力（`can_review`），不是身份：这种 key 在 change_log 里仍记为 `host_app`，审计能分清是人还是 key；终端用户、AI、system 都不能 verify。
      - 外部写入走 `SubmitKbEntry`：风险取调用方估计、规则结果和 collection 的 `default_risk`（下限）三者最高；low → `active`，medium → 有终端用户就生成 `awaiting_user` 卡片、否则 `active`，high → `awaiting_review`，reviewer 提交直接 `verified`。collection 的 `review_policy` 只能改 low / medium 的路由，high 永远进审核。
@@ -807,7 +807,7 @@ llm-steward/
    - 安全审查（2026-11-09，P3b 提交后）发现两条，已修复：
      - 模型写的知识（`author_type=ai`：抽取建议、promote、suggestions）从不自动生效：起草的模型同时给自己写的内容标风险，提示注入可以让它说 "low"。路由本该是"自动生效"时，改为问被提问的用户，没有用户就进审核（reviewer 自己提交的也一样，因为没人看过模型写的内容）。这比 §5 原来的"low 自动生效"更严，只针对模型起草的内容；人写的内容不变。
      - 写进历史的自由文本（调用方或模型给的 `reason`、决定时的 `note`）原先不经筛查，模型的理由可能复述原文里的个人信息。现在一律脱敏（`pipeline.risk.redact_pii`，与 namespace 的 PII 策略无关，因为这些只是关于知识的记录，不是要分享的知识）。
-   - [ ] `WeKnoraProvider`（条目同步、文档导入、解析状态轮询、检索）+ 合约测试
+   - [x] `WeKnoraProvider`（条目同步、文档导入、解析状态轮询、检索）+ 合约测试
    - P3c WeKnoraProvider 条目部分（2026-11-09，接口均在运行中的 v0.9.0 上核对过）：
      - collection ↔ 知识库 `steward-<collection_id>`（标题放在 description），用 `STEWARD_WEKNORA_EMBEDDING_MODEL_ID` 指定的 embedding 模型；条目 ↔ 一条 manual knowledge，创建时必须 `status: publish`（草稿永远不会被索引），external id 是 WeKnora 的 knowledge id，`custom_metadata` 带 `steward_id`、`version`。
      - Provider Protocol 改动：`upsert_entry(entry, collection_ext_id, existing_id=None)`，Syncer 传入上次同步的 external id，WeKnora 据此原地替换（`PUT /knowledge/manual/{id}`），在 WeKnora 里已被删掉时重新创建；native 和 lite-rag 忽略这个参数。
@@ -826,6 +826,25 @@ llm-steward/
      - 检索安全网：KB 命中先按条目反查，没对上的再按文档反查，只返回 active / verified、在有效期内、且解析状态为 ready 的文档；条目返回 `kind: "document"`，`content` 是命中的那一块。每篇文档只取最高分的一块，多块留到 P4。
      - 测试：集成测试两种数据库各 14 条，覆盖：生效与检索、审核、驳回、删除（含安全网与 `as_of` 历史查询）、重复、上传检查、轮询、失败、超时、上传途中被删；26 个变异全部被测试杀死。合约测试新增文档生命周期，native 在默认测试里跑，真实 WeKnora 在 `-m contract` 下跑，另有一条经整个应用的验收：高风险文档批准前 WeKnora 里没有知识库，批准后解析完可检索，删除后先从检索消失、worker 运行后从 WeKnora 删除。
      - 留到以后：URL 导入（`POST /kb/documents` 带 URL，有 SSRF 风险）推到 P5，和限流、鉴权一起做（域名白名单、拒绝内网地址）；lite-rag 的文档导入；重新处理（reprocess）；同一文件的并发上传在 409 检查上有竞态（没有唯一索引，因为状态会变），后果是多一份副本，不影响治理。
+   - 阶段收尾（2026-11-09，P3 全部改动 `git diff b84576c`）：
+     - /simplify（四个角度）改了：
+       - 下线知识（废弃条目、删除文档）原来只在 API 的 review scope 上把关，现在治理层自己检查：只有 reviewer 或 SYSTEM（llm-steward 自己的维护）能做，MCP 等其他调用方也受约束；
+       - 写进 change_log 的理由统一在 `_log` 里脱敏，不再依赖每个操作自己记得做（原来废弃、删除记忆等操作的理由没有脱敏）；
+       - 手机号检测加上 `+86 138 0013 8000`、`138-0013-8000` 这类分组写法（原来只认 11 位连写）；
+       - `role:model` 标签只在 `Provenance.tag` 一处生成；
+       - retrieve 和 episode 的响应里，取建议卡片和检索、读记忆并发执行；
+       - 测试的 `Tenant`、`t` fixture、`REVIEWER` 挪进 conftest，不再从别的测试模块导入。
+       以上每项都有先红后绿的测试。
+     - Codex review（只读，整个 P3）三条，都成立，都先写失败的测试再修：
+       - （high）推送或上传途中对象被下线时，原来在当前任务里直接撤回；撤回失败的话，任务重试会因对象已下线而直接返回，引擎里留下孤立副本（条目、记忆、文档都有，条目和记忆这条路径是 P1 留下的）。现在在同一个加锁事务里记下引擎 id、把 ref 标为 deleting 并排删除任务，删除任务按退避重试直到成功。只有对象行本身被删掉（按用户硬删除记忆）时，才在当前任务里撤回。
+       - （medium）解析状态的轮询结果原来在拿到行锁后不再检查文档状态，文档如果刚被删掉，会把删除任务已经标好的 ref 改回 synced。现在拿到锁后先确认文档仍然生效。
+       - （medium）`describe_error` 原来把异常原文写进 `jobs.error` 和 `external_refs.last_error`；驱动或库的异常可能带出 SQL 参数、请求内容。现在我们自己的错误（adapter 已保证不带响应正文）照旧记录；其他异常的消息先脱敏，再截断。
+     - 跳过、留作后续的：
+       - 条目和文档的状态流转、风险路由合并成一套受治理对象的生命周期，以及拆分 `governance_service.py`（约 1250 行）：改动大，两者语义也有差别（文档没有 verified_by、没有"问终端用户"这条路由）。P5 前再评估。
+       - `UpdateKbEntry` / `CreateKbEntry` 是只给内部和测试用的操作，`UpdateKbEntry` 会绕过筛查直接改条目文字。P5 接入 MCP 之前要决定：删掉，或者改成必须经过筛查。
+       - 会改变行为的优化：建议卡片的条数上限、调用风险 LLM 前先做便宜的校验、过期任务批量处理，留到 P4 有真实负载数据之后。
+       - 条目同步在任务里等待引擎就绪：已有的 pending → confirm 待办。
+     - 最终检查：`uv run pytest` 410 passed（SQLite + PG）；ruff、format、mypy、lint-imports 通过；`-m contract` 12 passed（真实 WeKnora、mem0、lite-rag）。
    - 验收：high 风险条目在批准前**永远不会**出现在 WeKnora 中；终端用户确认**永远不会**产生 verified；条目废弃后即使停掉 worker、不让它从 WeKnora 删除，检索也不会再返回它（安全网测试）
 5. **P4 联合检索**
    - [ ] 并行分发、超时与 `degraded`、反查过滤、RRF、可信度加权、时间衰减、MMR、pinned、上下文模板、token 预算、可选 rerank

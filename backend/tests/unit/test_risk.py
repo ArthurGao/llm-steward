@@ -13,6 +13,9 @@ POLICY = RiskPolicy(high_risk_keywords=("退款政策", "price"), pii_action="re
     ("text", "kind"),
     [
         ("call me on 13812345678 tomorrow", "phone"),
+        ("call +86 138 0013 8000 tomorrow", "phone"),  # grouped, with the country code
+        ("call 138-0013-8000", "phone"),
+        ("call 8613800138000", "phone"),
         ("ID 11010519491231002X please", "cn_id"),
         ("card 4111 1111 1111 1111", "bank_card"),
         ("card 5555-5555-5555-4444", "bank_card"),  # digits above 4: Luhn doubling
@@ -31,6 +34,7 @@ def test_pii_is_found(text: str, kind: str) -> None:
     "text",
     [
         "order 12345678901 shipped",  # 11 digits, not a mobile pattern (starts with 12)
+        "order 123-4567-8901 shipped",  # grouped like a phone, but not a mobile prefix
         "ID 110105194912310021",  # bad checksum: not an ID number
         "card 4111 1111 1111 1112",  # fails Luhn
         "refunds take 3 to 5 business days",

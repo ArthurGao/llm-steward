@@ -9,20 +9,14 @@ from typing import Any
 import pytest
 from sqlalchemy import func, select
 
+from llm_steward.errors import Forbidden
 from llm_steward.models import Job, KbDocumentFile
 from llm_steward.models.enums import DocStatus, JobStatus, JobType
 from llm_steward.providers.base import ENTRY_UPSERT
 from llm_steward.storage.db import session_factory
-from tests.conftest import ADMIN as REVIEWER
-from tests.conftest import AppClient
-from tests.integration.test_kb_api import Tenant
+from tests.conftest import REVIEWER, Tenant
 
 REFUNDS = b"Refunds take 3 to 5 business days.\n\nShipping is free above 50 euros.\n"
-
-
-@pytest.fixture
-def t(app_client: AppClient) -> Tenant:
-    return Tenant(app_client, "acme")
 
 
 def upload(
@@ -357,3 +351,76 @@ def test_a_document_deleted_while_it_uploads_is_taken_back_out(
     t.c.drain()
     assert get(t, doc["id"])["state"] == "deprecated"
     assert in_provider(t, collection) == []
+
+
+def test_only_a_reviewer_can_take_a_document_out(t: Tenant) -> None:
+    """Enforced in governance, not only by the API's review scope."""
+    from llm_steward.models.enums import ActorType
+    from llm_steward.services.governance_service import Actor, RetireKbDocument
+
+    doc = upload(t, t.collection(default_risk="low")).json()["document"]
+    host = Actor(ActorType.HOST_APP, "api_key:host")
+    op = RetireKbDocument(t.ns, uuid.UUID(doc["id"]))
+    with pytest.raises(Forbidden):
+        t.c.call(t.c.services.governance.apply, op, host)
+    assert get(t, doc["id"])["state"] == "active"
+
+
+def test_an_undo_that_fails_is_retried_until_the_engine_copy_is_gone(
+    t: Tenant, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Deleted while uploading, the remove job already ran (no engine id yet), and taking the new
+    copy back out fails once: the removal must be retried, not dropped with the upload job."""
+    from llm_steward.errors import ProviderUnavailable
+    from llm_steward.services.governance_service import RetireKbDocument
+
+    collection = t.collection(default_risk="low")
+    kb = t.c.services.providers.kb
+    ingest, remove = kb.ingest_document, kb.remove
+    failures: list[Exception] = []
+
+    async def ingest_racing(doc: Any, collection_ext_id: str) -> str:
+        await t.c.services.governance.apply(RetireKbDocument(t.ns, doc.document_id), REVIEWER)
+        await t.c.services.worker.drain()  # the remove job runs first and finds nothing
+        external_id = await ingest(doc, collection_ext_id)
+        failures.append(ProviderUnavailable("engine down"))  # the next removal fails once
+        return external_id
+
+    async def flaky_remove(external_id: str) -> None:
+        if failures:
+            raise failures.pop()
+        await remove(external_id)
+
+    monkeypatch.setattr(kb, "ingest_document", ingest_racing)
+    monkeypatch.setattr(kb, "remove", flaky_remove)
+    doc = upload(t, collection).json()["document"]
+    t.c.drain()
+    t.c.make_jobs_due()  # the retry's backoff
+    t.c.drain()
+    assert failures == []  # the failing removal did happen
+    assert in_provider(t, collection) == []
+    assert sync_status(t, doc["id"]) == "deleted"
+
+
+def test_a_late_status_poll_does_not_mark_a_deleted_document_synced(
+    t: Tenant, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from llm_steward.services.governance_service import RetireKbDocument
+
+    collection = t.collection(default_risk="low")
+    kb = t.c.services.providers.kb
+    status = kb.document_status
+
+    async def status_racing(external_id: str) -> DocStatus:
+        reply = await status(external_id)  # READY
+        [doc_id] = [d["id"] for d in listed]
+        await t.c.services.governance.apply(RetireKbDocument(t.ns, uuid.UUID(doc_id)), REVIEWER)
+        await t.c.services.worker.drain()  # the removal completes before the poll records
+        return reply
+
+    listed: list[dict[str, Any]] = []
+    monkeypatch.setattr(kb, "document_status", status_racing)
+    listed.append(upload(t, collection).json()["document"])
+    t.c.drain()
+    assert in_provider(t, collection) == []
+    assert sync_status(t, listed[0]["id"]) == "deleted"

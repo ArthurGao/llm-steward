@@ -15,9 +15,11 @@ from typing import Any
 from sqlalchemy import and_, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from llm_steward.errors import StewardError
 from llm_steward.models import Job
 from llm_steward.models.base import utcnow
 from llm_steward.models.enums import JobStatus, JobType
+from llm_steward.pipeline.risk import redact_pii
 
 ERROR_MAX_CHARS = 500
 
@@ -53,8 +55,14 @@ def enqueue(
 
 
 def describe_error(exc: BaseException) -> str:
-    """Exception type plus a truncated message: enough to debug, too short to carry a payload."""
-    return f"{type(exc).__name__}: {exc}"[:ERROR_MAX_CHARS]
+    """Exception type plus a short message, as stored in jobs.error and external_refs.last_error.
+    Our own errors are written without provider bodies; any other exception (a driver's, a
+    library's) can echo what it was given, so personal data in it is redacted. Redacted before
+    the cut, over a window larger than what is kept, so a value is never cut in half unredacted."""
+    message = (
+        str(exc) if isinstance(exc, StewardError) else redact_pii(str(exc)[: 4 * ERROR_MAX_CHARS])
+    )
+    return f"{type(exc).__name__}: {message}"[:ERROR_MAX_CHARS]
 
 
 class JobQueue:

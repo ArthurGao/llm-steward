@@ -126,6 +126,12 @@ def _require_reviewer(actor: Actor, what: str) -> None:
         raise Forbidden(f"only a reviewer can {what}")
 
 
+def _require_reviewer_or_system(actor: Actor, what: str) -> None:
+    """Taking knowledge out is a reviewer's decision, or llm-steward's own (maintenance)."""
+    if actor.type != ActorType.SYSTEM:
+        _require_reviewer(actor, what)
+
+
 # --- operations -------------------------------------------------------------------------------
 
 
@@ -728,6 +734,8 @@ class GovernanceService:
         _check(KB_TRANSITIONS, "KB entry", entry.status, to)
         if to == KbStatus.VERIFIED:
             _require_reviewer(actor, "verify knowledge")
+        if to == KbStatus.DEPRECATED:
+            _require_reviewer_or_system(actor, "deprecate knowledge")
         now = utcnow()
         entry.status = to
         if to == KbStatus.VERIFIED:
@@ -842,11 +850,13 @@ class GovernanceService:
             raise Conflict(f"this file is already document {same} in the collection")
         checked = await self._screen(s, op.namespace_id, op.title, "")
         risk = max_risk(op.risk_level, checked.level, collection.default_risk)
-        waits = not actor.is_reviewer and _route(collection, risk) == "review"
         if actor.is_reviewer:
             state = KbStatus.VERIFIED
+        elif _route(collection, risk) == "review":
+            state = KbStatus.DRAFT
         else:
-            state = KbStatus.DRAFT if waits else KbStatus.ACTIVE
+            state = KbStatus.ACTIVE
+        waits = state == KbStatus.DRAFT
         doc = KbDocument(
             namespace_id=op.namespace_id,
             collection_id=op.collection_id,
@@ -884,6 +894,7 @@ class GovernanceService:
     async def _retire_kb_document(
         self, s: AsyncSession, op: RetireKbDocument, actor: Actor
     ) -> KbDocument:
+        _require_reviewer_or_system(actor, "take a document out")
         doc = await load_owned(s, KbDocument, op.namespace_id, op.document_id, "document")
         if doc.state != KbStatus.DRAFT:
             return await self._transition_document(s, doc, KbStatus.DEPRECATED, op.reason, actor)
@@ -1094,7 +1105,8 @@ class GovernanceService:
                 after=snapshot(obj),
                 actor_type=actor.type,
                 actor_id=actor.id,
-                reason=reason,
+                # free text about a change: no personal data in history, whichever op carried it
+                reason=redact_pii(reason) if reason else None,
             )
         )
 

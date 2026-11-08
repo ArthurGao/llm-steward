@@ -79,10 +79,6 @@ class SuggestConfig:
         )
 
 
-def _tag(provenance: Provenance) -> str:
-    return f"{provenance.role}:{provenance.model}"
-
-
 @dataclass(frozen=True)
 class Submitted:
     """What a write became: live knowledge, or a candidate waiting for someone."""
@@ -176,7 +172,7 @@ class KbService:
         if self._llm is None or floor == RiskLevel.HIGH:
             return floor, []
         label = await label_risk(self._llm, title, content)
-        return max_risk(floor, label.level), [f"{_tag(label.provenance)}: {label.reason}"]
+        return max_risk(floor, label.level), [f"{label.provenance.tag}: {label.reason}"]
 
     async def _drafted(
         self,
@@ -222,14 +218,14 @@ class KbService:
             collection_id,
             draft.title,
             draft.content,
-            actor=actor or Actor(ActorType.AI, _tag(provenance)),
+            actor=actor or Actor(ActorType.AI, provenance.tag),
             risk_level=RiskLevel(draft.risk_level),
             user_id=user_id,
             session_id=session_id,
             origin=origin,
             author_type=AuthorType.AI,
             source_refs=source_refs,
-            reason=f"drafted by {_tag(provenance)}: {draft.reason}",
+            reason=f"drafted by {provenance.tag}: {draft.reason}",
             labelled=True,
         )
 
@@ -341,7 +337,7 @@ class KbService:
         for memory, drafted in zip(chosen, drafts, strict=True):
             refs = [{"type": "memory", "id": str(memory.id)}]
             if scored_by is not None:
-                refs.append({"type": "llm", "id": _tag(scored_by)})
+                refs.append({"type": "llm", "id": scored_by.tag})
             await self._submit_draft(
                 namespace_id,
                 collection,
@@ -367,13 +363,13 @@ class KbService:
                 continue
             key = (memory.user_id, memory.session_id)
             if key not in left:
-                left[key] = per_session - await self._open_cards(namespace_id, *key)
+                left[key] = per_session - await self._count_open_cards(namespace_id, *key)
             if left[key] > 0:
                 left[key] -= 1
                 out.append(memory)
         return out
 
-    async def _open_cards(
+    async def _count_open_cards(
         self, namespace_id: uuid.UUID, user_id: str | None, session_id: str | None
     ) -> int:
         if user_id is None:

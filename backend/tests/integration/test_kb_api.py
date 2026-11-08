@@ -4,52 +4,7 @@ worker and the native KB provider, on both dialects."""
 import uuid
 from typing import Any
 
-import pytest
-
-from llm_steward.models.enums import ApiScope
-from tests.conftest import AppClient
-
-WRITE = (ApiScope.READ, ApiScope.WRITE)
-REVIEW = (ApiScope.READ, ApiScope.WRITE, ApiScope.REVIEW)
-
-
-class Tenant:
-    """One namespace with a host-app key (read/write) and a reviewer key (review scope)."""
-
-    def __init__(self, c: AppClient, slug: str) -> None:
-        self.c = c
-        self.host, self.ns = c.new_tenant(slug, *WRITE)
-        key = c.call(c.services.namespaces.create_key, slug, REVIEW)
-        self.reviewer = {"Authorization": f"Bearer {key}"}
-
-    def post(self, path: str, body: Any = None, *, as_reviewer: bool = False) -> Any:
-        headers = self.reviewer if as_reviewer else self.host
-        return self.c.http.post(path, json=body or {}, headers=headers)
-
-    def collection(self, **body: Any) -> str:
-        body = {"name": f"c-{uuid.uuid4().hex[:6]}", **body}
-        r = self.post("/v1/kb/collections", body, as_reviewer=True)
-        assert r.status_code == 201, r.text
-        return str(r.json()["id"])
-
-    def submit(self, collection: str, content: str, **body: Any) -> Any:
-        payload = {"collection_id": collection, "title": "Refund time", "content": content, **body}
-        return self.post("/v1/kb/entries", payload)
-
-    def retrieve(self, query: str = "refunds") -> list[str]:
-        body = {"query": query, "sources": ["kb"]}
-        r = self.c.http.post("/v1/retrieve", json=body, headers=self.host)
-        assert r.status_code == 200, r.text
-        return [i["id"] for i in r.json()["items"]]
-
-    def in_provider(self, entry: dict[str, Any]) -> bool:
-        """Whether the KB provider itself returns the entry (no governance filter)."""
-        from llm_steward.providers.base import KbCollectionRef
-
-        kb = self.c.services.providers.kb
-        ref = KbCollectionRef(uuid.UUID(entry["collection_id"]), self.ns, "")
-        hits = self.c.call(kb.search, "refunds", [self.c.call(kb.ensure_collection, ref)], top_k=5)
-        return entry["id"] in {h.external_id for h in hits}
+from tests.conftest import Tenant
 
 
 async def _set_config(engine: Any, namespace_id: uuid.UUID, config: dict[str, Any]) -> None:
@@ -61,11 +16,6 @@ async def _set_config(engine: Any, namespace_id: uuid.UUID, config: dict[str, An
         namespace = await s.get(Namespace, namespace_id)
         assert namespace is not None
         namespace.config = config
-
-
-@pytest.fixture
-def t(app_client: AppClient) -> Tenant:
-    return Tenant(app_client, "acme")
 
 
 def test_low_risk_knowledge_goes_live(t: Tenant) -> None:

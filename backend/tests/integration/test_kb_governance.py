@@ -20,6 +20,7 @@ from llm_steward.models.enums import (
     CandidateStage,
     CandidateStatus,
     CandidateTarget,
+    ChangeOp,
     JobType,
     KbOrigin,
     KbStatus,
@@ -37,9 +38,8 @@ from llm_steward.services.governance_service import (
     TransitionKbEntry,
     UpdateCollection,
 )
-from tests.conftest import ADMIN, governance, kb_entry_op
+from tests.conftest import REVIEWER, governance, kb_entry_op
 
-REVIEWER = ADMIN
 HOST = Actor(ActorType.HOST_APP, "api_key:host")
 ALICE = Actor(ActorType.END_USER, "alice")
 
@@ -405,3 +405,36 @@ async def test_reasons_and_notes_are_redacted_like_the_text(kb: KbStack) -> None
         candidate, REVIEWER, CandidateStatus.REJECTED, note="call 13812345678 first"
     )
     assert decided.decision_note == "call [REDACTED:phone] first"
+
+
+TAKERS_OUT = [a for a in NOT_REVIEWERS if a != SYSTEM]  # SYSTEM: llm-steward's own maintenance
+
+
+@pytest.mark.parametrize("actor", TAKERS_OUT, ids=lambda a: a.type.value)
+async def test_only_a_reviewer_can_take_knowledge_out(kb: KbStack, actor: Actor) -> None:
+    """Enforced in governance, not only by the API's review scope: every caller of apply (the
+    pipeline, MCP later) is held to it."""
+    entry = await kb.submit(RiskLevel.LOW)
+    with pytest.raises(Forbidden):
+        await kb.gov.apply(TransitionKbEntry(kb.ns, entry.id, KbStatus.DEPRECATED), actor)
+    [still] = await kb.entries()
+    assert still.status == KbStatus.ACTIVE
+    retired = await kb.gov.apply(TransitionKbEntry(kb.ns, entry.id, KbStatus.DEPRECATED), REVIEWER)
+    assert retired.status == KbStatus.DEPRECATED
+
+
+async def test_every_reason_written_to_history_is_redacted(kb: KbStack) -> None:
+    """Free text in change_log is redacted where it is written (`_log`), whatever op carried it."""
+    entry = await kb.submit(RiskLevel.LOW)
+    reason = "asked by bob@example.com on +86 138 0013 8000"
+    await kb.gov.apply(
+        TransitionKbEntry(kb.ns, entry.id, KbStatus.DEPRECATED, reason=reason), REVIEWER
+    )
+    async with kb.sessions() as s:
+        logged = await s.scalar(
+            select(ChangeLog.reason).where(
+                ChangeLog.object_id == entry.id, ChangeLog.op == ChangeOp.TRANSITION
+            )
+        )
+    assert logged is not None
+    assert logged == "asked by [REDACTED:email] on [REDACTED:phone]"

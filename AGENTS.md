@@ -41,11 +41,11 @@ If a change must contradict the design, update the design in the same change and
 
 ## Current stage
 
-**P3 — KB governance: WeKnora — in progress** (P0, P1, P2 closed out). The owner's own RAG engine **lite-rag**
+**P4 — joint retrieval — next** (P0–P3 closed out; P3 closed out 2026-11-09). The owner's own RAG engine **lite-rag**
 (`~/Code/AI/lite-rag`) was built first and plugged in as `LiteRagProvider` (S9, 2026-11-09). P3 slices: P3a
-governance core, P3b LLM steps and P3c `WeKnoraProvider` (entries) are committed; P3d documents is next to
-commit, then the stage close-out. Track the checklist in design §11 (ticked items are done
-and verified). After P3: P4 (joint retrieval). `docparse` (RAGFlow) is P7, the frontend workspace P6.
+governance core, P3b LLM steps, P3c `WeKnoraProvider` and P3d documents are done, with the stage close-out
+recorded in design §11 (including the follow-ups it deferred). Track the checklist in design §11 (ticked items
+are done and verified). P4 starts with plan mode. `docparse` (RAGFlow) is P7, the frontend workspace P6.
 
 Decided (2026-11-08): default backends mem0 (in-process Python library) + WeKnora v0.9.0; native and mem0
 embeddings are local fastembed MiniLM (multilingual, 384-d); API keys arrive in P1 (user tokens / admin JWT

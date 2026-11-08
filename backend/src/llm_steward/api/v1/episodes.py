@@ -1,3 +1,5 @@
+import asyncio
+
 from fastapi import APIRouter, Response
 
 from llm_steward.api.deps import ServicesDep, Writer
@@ -24,14 +26,19 @@ async def add_episode(
     memories = []
     if result.status == "processed":
         response.status_code = 200
-        views = await services.memories.get_many(principal.namespace_id, result.memory_ids)
+        views, cards = await asyncio.gather(  # independent reads
+            services.memories.get_many(principal.namespace_id, result.memory_ids),
+            services.kb.cards(scope),
+        )
         memories = [MemoryOut.of(v) for v in views]
+    else:
+        cards = await services.kb.cards(scope)
     return EpisodeAccepted(
         episode_id=result.episode.id,
         status=result.status,
         job_id=result.job_id,
         memories=memories,
-        suggestions=[CandidateOut.model_validate(c) for c in await services.kb.cards(scope)],
+        suggestions=[CandidateOut.model_validate(c) for c in cards],
     )
 
 

@@ -37,9 +37,7 @@ from llm_steward.services.governance_service import (
     UpdateKbEntry,
 )
 from llm_steward.services.namespace_service import NamespaceService
-from tests.conftest import ADMIN, governance, kb_entry_op
-
-REVIEWER = ADMIN
+from tests.conftest import REVIEWER, governance, kb_entry_op
 
 
 @dataclass

@@ -411,3 +411,40 @@ def test_an_outdated_push_hands_its_engine_id_to_the_retry(
     monkeypatch.setattr(kb, "upsert_entry", upsert)
     app_client.drain()
     assert seen[0] is None and seen[1:] and all(e == str(entry.id) for e in seen[1:])
+
+
+def test_a_push_undone_after_a_deprecation_is_retried_until_it_is_gone(
+    app_client: AppClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Deprecated while being pushed, the remove job already ran (nothing synced yet), and taking
+    the pushed copy back out fails once: the removal is retried, not lost with the push job."""
+    from llm_steward.errors import ProviderUnavailable
+
+    _, ns_id = app_client.new_tenant("acme")
+    entry = _kb_entry(app_client, ns_id, KbStatus.ACTIVE)
+    kb = app_client.services.providers.kb
+    upsert, remove = kb.upsert_entry, kb.remove
+    failures = [ProviderUnavailable("engine down")]
+
+    async def upsert_racing(doc: Any, collection: str, existing_id: str | None = None) -> str:
+        await app_client.services.governance.apply(
+            TransitionKbEntry(ns_id, entry.id, KbStatus.DEPRECATED), ADMIN
+        )
+        await app_client.services.worker.drain()  # the remove job runs first
+        return await upsert(doc, collection, existing_id)
+
+    async def flaky_remove(external_id: str) -> None:
+        if failures:
+            raise failures.pop()
+        await remove(external_id)
+
+    monkeypatch.setattr(kb, "upsert_entry", upsert_racing)
+    monkeypatch.setattr(kb, "remove", flaky_remove)
+    app_client.drain()
+    app_client.make_jobs_due()
+    app_client.drain()
+    from llm_steward.providers.base import KbCollectionRef
+
+    ext = app_client.call(kb.ensure_collection, KbCollectionRef(entry.collection_id, ns_id, ""))
+    hits = app_client.call(kb.search, "refunds", [ext], top_k=5)
+    assert failures == [] and hits == []

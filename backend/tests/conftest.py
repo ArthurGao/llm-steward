@@ -41,6 +41,7 @@ if TYPE_CHECKING:
 
 T = TypeVar("T")
 ADMIN = Actor(ActorType.ADMIN, "reviewer@example.test")
+REVIEWER = ADMIN  # an admin acts as a reviewer (P5: an admin's reviewer role)
 
 TEST_SCHEMA = f"{DEFAULT_DB_SCHEMA}_test"
 
@@ -259,3 +260,52 @@ def running_app(
 def app_client(migrated_url: str) -> Iterator[AppClient]:
     with running_app(migrated_url) as client:
         yield client
+
+
+class Tenant:
+    """One namespace in a running app, with a host-app key (read/write) and a reviewer key
+    (review scope)."""
+
+    def __init__(self, c: AppClient, slug: str) -> None:
+        from llm_steward.models.enums import ApiScope
+
+        self.c = c
+        self.host, self.ns = c.new_tenant(slug, ApiScope.READ, ApiScope.WRITE)
+        key = c.call(
+            c.services.namespaces.create_key, slug, (ApiScope.READ, ApiScope.WRITE, ApiScope.REVIEW)
+        )
+        self.reviewer = {"Authorization": f"Bearer {key}"}
+
+    def post(self, path: str, body: Any = None, *, as_reviewer: bool = False) -> Any:
+        headers = self.reviewer if as_reviewer else self.host
+        return self.c.http.post(path, json=body or {}, headers=headers)
+
+    def collection(self, **body: Any) -> str:
+        body = {"name": f"c-{uuid.uuid4().hex[:6]}", **body}
+        r = self.post("/v1/kb/collections", body, as_reviewer=True)
+        assert r.status_code == 201, r.text
+        return str(r.json()["id"])
+
+    def submit(self, collection: str, content: str, **body: Any) -> Any:
+        payload = {"collection_id": collection, "title": "Refund time", "content": content, **body}
+        return self.post("/v1/kb/entries", payload)
+
+    def retrieve(self, query: str = "refunds") -> list[str]:
+        body = {"query": query, "sources": ["kb"]}
+        r = self.c.http.post("/v1/retrieve", json=body, headers=self.host)
+        assert r.status_code == 200, r.text
+        return [i["id"] for i in r.json()["items"]]
+
+    def in_provider(self, entry: dict[str, Any]) -> bool:
+        """Whether the KB provider itself returns the entry (no governance filter)."""
+        from llm_steward.providers.base import KbCollectionRef
+
+        kb = self.c.services.providers.kb
+        ref = KbCollectionRef(uuid.UUID(entry["collection_id"]), self.ns, "")
+        hits = self.c.call(kb.search, "refunds", [self.c.call(kb.ensure_collection, ref)], top_k=5)
+        return entry["id"] in {h.external_id for h in hits}
+
+
+@pytest.fixture
+def t(app_client: AppClient) -> Tenant:
+    return Tenant(app_client, "acme")

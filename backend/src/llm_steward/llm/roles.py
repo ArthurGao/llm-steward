@@ -42,6 +42,12 @@ class Provenance:
 
     role: str
     model: str
+
+    @property
+    def tag(self) -> str:
+        """`role:model`, as recorded with what the answer produced (AGENTS.md rule 10)."""
+        return f"{self.role}:{self.model}"
+
     endpoint: str
 
 

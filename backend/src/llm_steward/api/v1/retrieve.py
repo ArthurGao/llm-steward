@@ -1,3 +1,5 @@
+import asyncio
+
 from fastapi import APIRouter
 
 from llm_steward.api.deps import Reader, ServicesDep
@@ -12,7 +14,8 @@ router = APIRouter(tags=["retrieval"])
 @router.post("/retrieve")
 async def retrieve(body: RetrieveIn, principal: Reader, services: ServicesDep) -> RetrieveOut:
     """Joint search over memory and KB: 200 with `degraded` if a source failed, 503 if all did."""
-    result = await services.retrieval.retrieve(
+    scope = Scope(principal.namespace_id, body.scope.user_id, None, body.scope.session_id)
+    search = services.retrieval.retrieve(
         principal.namespace_id,
         RetrieveRequest(
             query=body.query,
@@ -26,8 +29,7 @@ async def retrieve(body: RetrieveIn, principal: Reader, services: ServicesDep) -
             as_of=body.as_of,
         ),
     )
-    scope = Scope(principal.namespace_id, body.scope.user_id, None, body.scope.session_id)
-    cards = await services.kb.cards(scope)
+    result, cards = await asyncio.gather(search, services.kb.cards(scope))  # independent reads
     return RetrieveOut(
         suggestions=[CandidateOut.model_validate(c) for c in cards],
         retrieval_id=result.retrieval_id,

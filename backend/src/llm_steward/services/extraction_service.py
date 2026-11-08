@@ -162,7 +162,7 @@ class ExtractionService:
                 [Fact(str(m.id), m.content) for m in existing],
             )
             actor = (
-                Actor(ActorType.AI, f"{resolution.provenance.role}:{resolution.provenance.model}")
+                Actor(ActorType.AI, resolution.provenance.tag)
                 if resolution.provenance
                 else Actor(ActorType.SYSTEM, "conflict-compensation")
             )
