@@ -10,6 +10,23 @@
 | Config | `config/config.yaml`, copied verbatim from upstream `v0.9.0` |
 | Secrets | root `.env`: `WEKNORA_DB_PASSWORD`, `WEKNORA_REDIS_PASSWORD`, `WEKNORA_JWT_SECRET`, `WEKNORA_SYSTEM_AES_KEY` |
 
+## First start (bootstrap)
+
+WeKnora has no default account, API key or models. After `docker compose --profile standard up -d`
+(and with Ollama running on the host, `bge-m3:567m` pulled):
+
+```
+set -a; . ./.env; set +a                              # WEKNORA_ADMIN_EMAIL / _PASSWORD
+python deploy/weknora/bootstrap.py >> backend/.env    # gitignored
+```
+
+It registers the owner (WEKNORA_ADMIN_*), registers the embedding model `bge-m3:567m` (type
+`Embedding`, source `local`, 1024 dimensions — WeKnora pulls it from the host's Ollama through
+`OLLAMA_BASE_URL`) and waits until it is `active`, then creates a full-access workspace API key. It
+prints `STEWARD_WEKNORA_URL`, `STEWARD_WEKNORA_API_KEY` and `STEWARD_WEKNORA_EMBEDDING_MODEL_ID`.
+Running it again finds the owner and the model, and creates one more key (delete the old one in the
+UI or `DELETE /api/v1/tenants/{id}/api-keys/{key_id}`).
+
 ## Why WeKnora has its own Postgres
 
 WeKnora's migration `000002_embeddings` runs `CREATE EXTENSION pg_search` and builds a `USING bm25`

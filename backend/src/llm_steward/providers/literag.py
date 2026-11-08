@@ -33,6 +33,7 @@ from llm_steward.providers.base import (
     KbCollectionRef,
     KbEntryDoc,
     ProviderHit,
+    best_hit_per_id,
 )
 
 if TYPE_CHECKING:
@@ -92,7 +93,9 @@ class LiteRagProvider:
             raise ValueError(f"not a lite-rag collection id: {collection_ext_id!r}") from exc
         return f"{self._prefix}/{namespace_id}", f"c-{collection_id}"
 
-    async def upsert_entry(self, entry: KbEntryDoc, collection_ext_id: str) -> str:
+    async def upsert_entry(
+        self, entry: KbEntryDoc, collection_ext_id: str, existing_id: str | None = None
+    ) -> str:
         namespace, kb = self._locate(collection_ext_id)
         doc_id = str(entry.entry_id)
         metadata = {"steward_id": doc_id, "version": entry.version, "tags": list(entry.tags)}
@@ -116,14 +119,12 @@ class LiteRagProvider:
         results = await asyncio.gather(
             *(self._transport.search(ns, kb, query, top_k, filters) for _, ns, kb in located)
         )
-        best: dict[str, ProviderHit] = {}
-        for (collection_ext_id, _, _), hits in zip(located, results, strict=True):
-            for h in hits:
-                external_id = f"{collection_ext_id}#{h.doc_id}"
-                if external_id not in best or h.score > best[external_id].score:
-                    best[external_id] = ProviderHit(external_id, h.score, h.text)
-        ranked = sorted(best.values(), key=lambda h: (-h.score, h.external_id))
-        return ranked[:top_k]
+        hits = (
+            ProviderHit(f"{collection_ext_id}#{h.doc_id}", h.score, h.text)
+            for (collection_ext_id, _, _), found in zip(located, results, strict=True)
+            for h in found
+        )
+        return best_hit_per_id(hits, top_k)
 
     async def health(self) -> ComponentHealth:
         try:

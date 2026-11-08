@@ -5,6 +5,7 @@ degrades accordingly instead of branching on a provider's name.
 """
 
 import uuid
+from collections.abc import Iterable
 from dataclasses import dataclass, field
 from typing import Any, Literal, Protocol
 
@@ -77,6 +78,15 @@ class ProviderHit:
     text: str
 
 
+def best_hit_per_id(hits: Iterable[ProviderHit], top_k: int) -> list[ProviderHit]:
+    """One hit per external id (its best: engines return chunks), best first, ties by id."""
+    best: dict[str, ProviderHit] = {}
+    for hit in hits:
+        if hit.external_id not in best or hit.score > best[hit.external_id].score:
+            best[hit.external_id] = hit
+    return sorted(best.values(), key=lambda h: (-h.score, h.external_id))[:top_k]
+
+
 @dataclass(frozen=True)
 class KbCollectionRef:
     collection_id: uuid.UUID
@@ -135,7 +145,12 @@ class KnowledgeProvider(HealthProbe, Protocol):
 
     async def ensure_collection(self, collection: KbCollectionRef) -> str: ...
 
-    async def upsert_entry(self, entry: KbEntryDoc, collection_ext_id: str) -> str: ...
+    async def upsert_entry(
+        self, entry: KbEntryDoc, collection_ext_id: str, existing_id: str | None = None
+    ) -> str:
+        """Write the entry; returns its external id. `existing_id`: the id it was last synced
+        under, for engines that replace by their own id (WeKnora); others may ignore it."""
+        ...
 
     async def remove(self, external_id: str) -> None: ...
 
@@ -215,7 +230,9 @@ class PendingKnowledgeProvider(_Pending):
     async def ensure_collection(self, collection: KbCollectionRef) -> str:
         raise self._unavailable()
 
-    async def upsert_entry(self, entry: KbEntryDoc, collection_ext_id: str) -> str:
+    async def upsert_entry(
+        self, entry: KbEntryDoc, collection_ext_id: str, existing_id: str | None = None
+    ) -> str:
         raise self._unavailable()
 
     async def remove(self, external_id: str) -> None:

@@ -64,7 +64,13 @@ def build_providers(
             assert store is not None and embedder is not None
             kb = NativeKnowledgeProvider(store, embedder)
         case "weknora":
-            kb = WeKnoraProvider(http, settings.weknora_url, settings.provider_timeout_ms / 1000)
+            kb = WeKnoraProvider(
+                http,
+                settings.weknora_url,
+                settings.weknora_api_key,
+                settings.weknora_embedding_model_id,
+                timeout_s=settings.provider_timeout_ms / 1000,
+            )
         case "ragflow":
             kb = PendingKnowledgeProvider("ragflow", "P7")
         case "literag":

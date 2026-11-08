@@ -365,7 +365,9 @@ def test_a_stale_kb_upsert_cannot_overwrite_a_newer_version(
     original = kb.upsert_entry
     raced = False
 
-    async def upsert_racing_an_edit(doc: Any, collection: str) -> str:
+    async def upsert_racing_an_edit(
+        doc: Any, collection: str, existing_id: str | None = None
+    ) -> str:
         nonlocal raced
         if not raced:  # the first (v1) job stalls while v2 is written and synced
             raced = True
@@ -375,7 +377,7 @@ def test_a_stale_kb_upsert_cannot_overwrite_a_newer_version(
                 UpdateKbEntry(ns_id, entry.id, content="Refunds now take 7 days"), ADMIN
             )
             assert await app_client.services.worker.run_once()
-        return await original(doc, collection)
+        return await original(doc, collection, existing_id)
 
     monkeypatch.setattr(kb, "upsert_entry", upsert_racing_an_edit)
     app_client.drain()

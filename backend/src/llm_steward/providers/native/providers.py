@@ -200,7 +200,9 @@ class NativeKnowledgeProvider(_NativeBase):
         # Collections need no storage of their own: the id is the partition key.
         return f"{collection.namespace_id}:{collection.collection_id}"
 
-    async def upsert_entry(self, entry: KbEntryDoc, collection_ext_id: str) -> str:
+    async def upsert_entry(
+        self, entry: KbEntryDoc, collection_ext_id: str, existing_id: str | None = None
+    ) -> str:
         external_id = str(entry.entry_id)
         await self._write(
             NativeItem(

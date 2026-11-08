@@ -25,6 +25,8 @@ class Settings(BaseSettings):
     kb_provider: KnowledgeProviderName = "weknora"
     weknora_url: str = "http://localhost:8680"
     weknora_api_key: str | None = None
+    # The embedding model new WeKnora knowledge bases use (deploy/weknora/bootstrap.py prints it).
+    weknora_embedding_model_id: str | None = None
     # lite-rag (the owner's own RAG engine): its HTTP service by default, or in-process (extra
     # `literag`, configured by its own LITERAG_* variables or `literag_config`, a lite-rag YAML).
     literag_mode: Literal["http", "inprocess"] = "http"

@@ -10,6 +10,7 @@ from llm_steward.llm.roles import LLMConfigError
 from llm_steward.main import create_app
 from tests.conftest import test_settings
 from tests.fakes.embedder import FakeEmbedder
+from tests.fakes.http import mock_http
 
 WEKNORA = "http://weknora.test:8080"
 
@@ -22,10 +23,6 @@ def _settings(database_url: str, **overrides: str) -> Settings:
 def _get_health(settings: Settings, http: httpx2.AsyncClient | None = None) -> httpx2.Response:
     with TestClient(create_app(settings, http=http, embedder=FakeEmbedder())) as client:
         return client.get("/health")
-
-
-def _mock_http(handler: Callable[[httpx2.Request], httpx2.Response]) -> httpx2.AsyncClient:
-    return httpx2.AsyncClient(transport=httpx2.MockTransport(handler))
 
 
 def test_all_ok_with_native_providers(migrated_url: str) -> None:
@@ -62,7 +59,7 @@ def test_weknora_up_is_reported_ok(migrated_url: str) -> None:
         return httpx2.Response(200, json={"status": "ok"})
 
     settings = _settings(migrated_url, kb_provider="weknora")
-    response = _get_health(settings, _mock_http(handler))
+    response = _get_health(settings, mock_http(handler))
     body = response.json()
     assert response.status_code == 200
     assert body["status"] == "ok"
@@ -103,7 +100,7 @@ def test_weknora_failures_are_reported(
     tmp_path: Path, handler: Callable[[httpx2.Request], httpx2.Response], detail: str
 ) -> None:
     settings = _settings(f"sqlite+aiosqlite:///{tmp_path}/h.db", kb_provider="weknora")
-    response = _get_health(settings, _mock_http(handler))
+    response = _get_health(settings, mock_http(handler))
     body = response.json()
     assert response.status_code == 200
     assert body["status"] == "degraded"
@@ -138,7 +135,7 @@ def test_literag_over_http_is_probed_at_its_url(tmp_path: Path) -> None:
     settings = _settings(
         f"sqlite+aiosqlite:///{tmp_path}/h.db", kb_provider="literag", literag_url=LITERAG
     )
-    body = _get_health(settings, _mock_http(handler)).json()
+    body = _get_health(settings, mock_http(handler)).json()
     assert body["components"]["kb_provider"] == {"name": "literag", "status": "ok", "detail": None}
     assert seen == [f"{LITERAG}/health"]
 
@@ -147,7 +144,7 @@ def test_literag_down_is_reported(tmp_path: Path) -> None:
     settings = _settings(
         f"sqlite+aiosqlite:///{tmp_path}/h.db", kb_provider="literag", literag_url=LITERAG
     )
-    body = _get_health(settings, _mock_http(_refused)).json()
+    body = _get_health(settings, mock_http(_refused)).json()
     assert body["status"] == "degraded"
     assert body["components"]["kb_provider"] == {
         "name": "literag",

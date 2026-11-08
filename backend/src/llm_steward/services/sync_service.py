@@ -114,6 +114,7 @@ class SyncService:
             collection_ext = await self._external_id(
                 s, ObjectType.KB_COLLECTION, collection.id, provider.name
             )
+            existing = await self._external_id(s, ObjectType.KB_ENTRY, entry.id, provider.name)
         doc = KbEntryDoc(
             entry.id, entry.namespace_id, entry.title, entry.content, entry.version, entry.tags
         )
@@ -125,7 +126,7 @@ class SyncService:
                 await self._set(
                     ObjectType.KB_COLLECTION, collection.id, provider.name, synced=collection_ext
                 )
-            external_id = await provider.upsert_entry(doc, collection_ext)
+            external_id = await provider.upsert_entry(doc, collection_ext, existing)
         outcome = await self._confirm(
             KbEntry,
             entry_id,

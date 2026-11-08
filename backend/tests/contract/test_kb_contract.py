@@ -13,6 +13,7 @@ from typing import Any
 
 import httpx2
 import pytest
+from pydantic_settings import BaseSettings, SettingsConfigDict
 from sqlalchemy.engine import make_url
 from sqlalchemy.ext.asyncio import AsyncEngine
 
@@ -20,6 +21,7 @@ from llm_steward.errors import ProviderUnavailable
 from llm_steward.providers.base import KbCollectionRef, KbEntryDoc, KnowledgeProvider
 from llm_steward.providers.literag import HttpTransport, InProcessTransport, LiteRagProvider
 from llm_steward.providers.native.providers import NativeKnowledgeProvider, create_store
+from llm_steward.providers.weknora import WeKnoraProvider
 from llm_steward.storage.db import engine_scope, prepare_schema
 from tests.conftest import TEST_SCHEMA, _pg_url
 from tests.fakes.embedder import FakeEmbedder
@@ -46,8 +48,8 @@ async def check_lifecycle(kb: KnowledgeProvider) -> str:
     in_shipping = await kb.search("refunds", [shipping], top_k=5)
     assert [h.external_id for h in in_shipping] == [other_id]
 
-    again = await kb.upsert_entry(
-        KbEntryDoc(entry.entry_id, NS, "Refund time", "Refunds now take 7 days", 2), refunds
+    again = await kb.upsert_entry(  # as the Syncer calls it: with the id it was synced under
+        KbEntryDoc(entry.entry_id, NS, "Refund time", "Refunds now take 7 days", 2), refunds, eid
     )
     assert again == eid  # the same entry, replaced
     [updated] = await kb.search("refunds", [refunds], top_k=5)
@@ -195,3 +197,132 @@ def test_literag_end_to_end_through_governance(migrated_url: str, literag_runtim
             app.state.services.providers.kb.search, "refunds", [c.collection_ext_id(entry)], top_k=5
         )
         assert in_literag == []  # removed from lite-rag, not just hidden
+
+
+# --- WeKnora v0.9.0 (real engine, -m contract) ----------------------------------------------
+
+
+class _WeKnoraTarget(BaseSettings):
+    """The local `standard` stack (deploy/weknora; key and model from deploy/weknora/bootstrap.py),
+    read from the environment or backend/.env. Missing: the test fails, it never skips."""
+
+    model_config = SettingsConfigDict(
+        env_prefix="STEWARD_WEKNORA_", env_file=".env", extra="ignore"
+    )
+    url: str = "http://127.0.0.1:8680"
+    api_key: str | None = None
+    embedding_model_id: str | None = None
+
+
+@pytest.fixture
+def weknora_target() -> Iterator[_WeKnoraTarget]:
+    """The configured local WeKnora; afterwards, every knowledge base the test created is deleted
+    (listed before and after: governance never drops a collection, so no provider call does)."""
+    target = _WeKnoraTarget()
+    if not (target.api_key and target.embedding_model_id):
+        pytest.fail(
+            "WeKnora contract needs STEWARD_WEKNORA_API_KEY and STEWARD_WEKNORA_EMBEDDING_MODEL_ID "
+            "(docker compose --profile standard up; python deploy/weknora/bootstrap.py)"
+        )
+    before = set(_weknora_kbs(target))
+    yield target
+    for kb_id in set(_weknora_kbs(target)) - before:
+        httpx2.delete(f"{target.url}/api/v1/knowledge-bases/{kb_id}", headers=_auth(target))
+
+
+@pytest.fixture
+async def weknora(weknora_target: _WeKnoraTarget) -> AsyncIterator[WeKnoraProvider]:
+    t = weknora_target
+    async with httpx2.AsyncClient() as http:
+        yield WeKnoraProvider(http, t.url, t.api_key, t.embedding_model_id, timeout_s=10)
+
+
+@pytest.mark.contract
+async def test_weknora(weknora: WeKnoraProvider) -> None:
+    eid = await check_lifecycle(weknora)
+    uuid.UUID(eid)  # WeKnora's own knowledge id
+
+
+@pytest.mark.contract
+def test_weknora_acceptance_through_governance(
+    migrated_url: str, weknora_target: _WeKnoraTarget
+) -> None:
+    """P3 acceptance (design §11), real on both sides: a high-risk entry never reaches WeKnora
+    before a reviewer approves it; a deprecated one leaves retrieval at once — while WeKnora still
+    has it, with the worker stopped — and leaves WeKnora when the worker runs."""
+    from fastapi.testclient import TestClient
+
+    from llm_steward.main import create_app
+    from llm_steward.models.enums import ApiScope
+    from tests.conftest import AppClient, test_settings
+
+    target = weknora_target
+    settings = test_settings(
+        migrated_url,
+        kb_provider="weknora",
+        weknora_url=target.url,
+        weknora_api_key=target.api_key,
+        weknora_embedding_model_id=target.embedding_model_id,
+        provider_timeout_ms=10_000,
+        retrieve_timeout_ms=10_000,
+    )
+    app = create_app(settings, embedder=FakeEmbedder())
+    with TestClient(app) as client:
+        c = AppClient(client, app.state.services)
+        host, _ = c.new_tenant("acme", ApiScope.READ, ApiScope.WRITE)
+        reviewer_key = c.call(
+            c.services.namespaces.create_key,
+            "acme",
+            (ApiScope.READ, ApiScope.WRITE, ApiScope.REVIEW),
+        )
+        reviewer = {"Authorization": f"Bearer {reviewer_key}"}
+        collection = client.post(
+            "/v1/kb/collections", json={"name": "faq", "default_risk": "low"}, headers=reviewer
+        ).json()["id"]
+        body = {
+            "collection_id": collection,
+            "title": "Refund policy",
+            "content": "Refunds take 3 to 5 business days.",
+            "risk_level": "high",
+        }
+        card = client.post("/v1/kb/entries", json=body, headers=host).json()["candidate"]
+        c.drain()
+        assert _weknora_kb(target, collection) is None  # nothing reached WeKnora at all
+
+        def retrieve() -> list[str]:
+            r = client.post(
+                "/v1/retrieve", json={"query": "refunds", "sources": ["kb"]}, headers=host
+            )
+            assert r.status_code == 200 and r.json()["degraded"] == [], r.text
+            return [i["id"] for i in r.json()["items"]]
+
+        approved = client.post(f"/v1/candidates/{card['id']}/accept", headers=reviewer).json()
+        entry = approved["entry"]
+        assert entry["status"] == "verified"
+        c.drain()
+        assert retrieve() == [entry["id"]]
+
+        client.post(f"/v1/kb/entries/{entry['id']}/deprecate", headers=reviewer)
+        assert retrieve() == []  # worker not run: the safety net
+        kb = c.services.providers.kb
+        ext = _weknora_kb(target, collection)  # looked up: ensure_collection would create one
+        assert ext is not None
+        assert c.call(kb.search, "refunds", [ext], top_k=5) != []  # WeKnora still has it
+        c.drain()
+        assert c.call(kb.search, "refunds", [ext], top_k=5) == []
+
+
+def _auth(target: _WeKnoraTarget) -> dict[str, str]:
+    return {"X-API-Key": target.api_key or ""}
+
+
+def _weknora_kbs(target: _WeKnoraTarget) -> dict[str, str]:
+    """name → id of every knowledge base in the WeKnora workspace."""
+    r = httpx2.get(f"{target.url}/api/v1/knowledge-bases", headers=_auth(target))
+    return {kb["id"]: kb["name"] for kb in r.json()["data"]}
+
+
+def _weknora_kb(target: _WeKnoraTarget, collection_id: str) -> str | None:
+    """The WeKnora knowledge base of a llm-steward collection, if it was ever created."""
+    name = f"steward-{collection_id}"
+    return next((i for i, n in _weknora_kbs(target).items() if n == name), None)
