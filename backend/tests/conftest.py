@@ -11,8 +11,10 @@ test_stray_public_version_table_is_ignored). Settings rejects *_test schema name
 
 import asyncio
 import functools
+import os
 import uuid
 from collections.abc import AsyncIterator, Awaitable, Callable, Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, TypeVar
@@ -41,6 +43,10 @@ T = TypeVar("T")
 ADMIN = Actor(ActorType.ADMIN, "reviewer@example.test")
 
 TEST_SCHEMA = f"{DEFAULT_DB_SCHEMA}_test"
+
+# Test setup, not product code: whatever the provider code does, no test run may ever send mem0
+# telemetry (an external side effect). Set before anything imports mem0.
+os.environ["MEM0_TELEMETRY"] = "false"
 
 
 class _TestTarget(BaseSettings):
@@ -217,13 +223,21 @@ def kb_entry_op(
     )
 
 
-@pytest.fixture
-def app_client(migrated_url: str) -> Iterator[AppClient]:
+@contextmanager
+def running_app(url: str, **overrides: Any) -> Iterator[AppClient]:
+    """The app on TEST_SCHEMA with a fake embedder; `overrides` go to create_app (e.g. a fake
+    memory_provider and llm for the extraction pipeline)."""
     from fastapi.testclient import TestClient
 
     from llm_steward.main import create_app
     from tests.fakes.embedder import FakeEmbedder
 
-    app = create_app(test_settings(migrated_url), embedder=FakeEmbedder())
+    app = create_app(test_settings(url), embedder=FakeEmbedder(), **overrides)
     with TestClient(app) as http:
         yield AppClient(http, app.state.services)
+
+
+@pytest.fixture
+def app_client(migrated_url: str) -> Iterator[AppClient]:
+    with running_app(migrated_url) as client:
+        yield client

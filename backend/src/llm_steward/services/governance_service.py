@@ -15,8 +15,16 @@ from typing import Any
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from llm_steward.errors import Conflict, NotFound
-from llm_steward.models import Candidate, ChangeLog, ExternalRef, KbCollection, KbEntry, Memory
+from llm_steward.errors import Conflict, NotFound, Unprocessable
+from llm_steward.models import (
+    Candidate,
+    ChangeLog,
+    Episode,
+    ExternalRef,
+    KbCollection,
+    KbEntry,
+    Memory,
+)
 from llm_steward.models.base import Base, utcnow
 from llm_steward.models.enums import (
     EFFECTIVE_KB_STATUSES,
@@ -28,6 +36,7 @@ from llm_steward.models.enums import (
     CandidateStatus,
     CandidateTarget,
     ChangeOp,
+    EpisodeKind,
     JobType,
     KbOrigin,
     KbStatus,
@@ -37,7 +46,9 @@ from llm_steward.models.enums import (
     RiskLevel,
     SyncStatus,
 )
+from llm_steward.providers.base import Scope
 from llm_steward.services.job_queue import enqueue
+from llm_steward.services.scoping import exact
 
 # Allowed state changes (design §5). Anything else is a 409.
 KB_TRANSITIONS: dict[KbStatus, frozenset[KbStatus]] = {
@@ -89,6 +100,55 @@ class CreateMemory:
     tags: list[str] = field(default_factory=list)
     meta: dict[str, Any] = field(default_factory=dict)
     source_episode_id: uuid.UUID | None = None
+    # Profile memories: one current value per (scope, key); a new value supersedes the old one.
+    key: str | None = None
+
+
+@dataclass(frozen=True)
+class RecordProviderMemory:
+    """A memory the provider produced itself (e.g. mem0 extraction): mirror it as already synced."""
+
+    namespace_id: uuid.UUID
+    external_id: str
+    content: str
+    user_id: str | None = None
+    agent_id: str | None = None
+    session_id: str | None = None
+    source_episode_id: uuid.UUID | None = None
+
+
+@dataclass(frozen=True)
+class SupersedeMemory:
+    """Invalidate, never delete (design §2 #3): the old memory stays queryable with `as_of` and
+    stays in the provider; `by` is the memory that replaces it, if any."""
+
+    namespace_id: uuid.UUID
+    memory_id: uuid.UUID
+    by: uuid.UUID | None = None
+    reason: str | None = None
+
+
+@dataclass(frozen=True)
+class PatchMemory:
+    """Metadata only; new content is a new memory that supersedes this one."""
+
+    namespace_id: uuid.UUID
+    memory_id: uuid.UUID
+    pinned: bool | None = None
+    importance: float | None = None
+    confidence: float | None = None
+    tags: list[str] | None = None
+    meta: dict[str, Any] | None = None
+
+
+@dataclass(frozen=True)
+class CreateEpisode:
+    namespace_id: uuid.UUID
+    kind: EpisodeKind
+    messages: list[dict[str, str]]
+    user_id: str | None = None
+    agent_id: str | None = None
+    session_id: str | None = None
 
 
 @dataclass(frozen=True)
@@ -160,6 +220,10 @@ class DecideCandidate:
 
 Operation = (
     CreateMemory
+    | RecordProviderMemory
+    | SupersedeMemory
+    | PatchMemory
+    | CreateEpisode
     | DeleteMemory
     | CreateCollection
     | CreateKbEntry
@@ -216,10 +280,23 @@ class GovernanceService:
             obj = await self._dispatch(session, op, actor)
         return obj
 
+    async def apply_all(self, ops: list[Operation], actor: Actor) -> list[Any]:
+        """Several operations in one transaction: all of them happen, or none."""
+        async with self._sessions() as session, session.begin():
+            return [await self._dispatch(session, op, actor) for op in ops]
+
     async def _dispatch(self, s: AsyncSession, op: Operation, actor: Actor) -> Any:
         match op:
             case CreateMemory():
                 return await self._create_memory(s, op, actor)
+            case RecordProviderMemory():
+                return await self._record_provider_memory(s, op, actor)
+            case SupersedeMemory():
+                return await self._supersede_memory(s, op, actor)
+            case PatchMemory():
+                return await self._patch_memory(s, op, actor)
+            case CreateEpisode():
+                return await self._create_episode(s, op, actor)
             case DeleteMemory():
                 return await self._delete_memory(s, op, actor)
             case CreateCollection():
@@ -238,12 +315,20 @@ class GovernanceService:
     # memories
 
     async def _create_memory(self, s: AsyncSession, op: CreateMemory, actor: Actor) -> Memory:
+        if op.key and op.session_id:
+            raise Unprocessable(
+                "a profile value (key) belongs to a user, not a session: drop session_id"
+            )
+        previous = await self._current_profile_value(s, op) if op.key else None
+        if previous is not None:  # leave the active slot (unique index) before the new value
+            before = await _retire(s, previous)
         memory = Memory(
             namespace_id=op.namespace_id,
             user_id=op.user_id,
             agent_id=op.agent_id,
             session_id=op.session_id,
             memory_type=op.memory_type,
+            key=op.key,
             content=op.content,
             status=MemoryStatus.ACTIVE,
             origin=op.origin,
@@ -259,9 +344,100 @@ class GovernanceService:
         s.add(memory)
         await s.flush()
         self._log(s, ObjectType.MEMORY, memory, ChangeOp.CREATE, None, actor)
+        if previous is not None:
+            reason = f"profile key {op.key!r} has a new value"
+            self._superseded(s, previous, memory.id, before, actor, reason)
         await _mark_ref(s, ObjectType.MEMORY, memory, self._memory_provider, SyncStatus.PENDING)
         enqueue(s, op.namespace_id, JobType.MEMORY_UPSERT, {"memory_id": str(memory.id)})
         return memory
+
+    @staticmethod
+    async def _current_profile_value(s: AsyncSession, op: CreateMemory) -> Memory | None:
+        scope = Scope(op.namespace_id, op.user_id, op.agent_id)
+        return await s.scalar(
+            select(Memory)
+            .where(
+                *exact(Memory, scope, session=False),
+                Memory.key == op.key,
+                Memory.status == MemoryStatus.ACTIVE,
+            )
+            .with_for_update()
+        )
+
+    async def _record_provider_memory(
+        self, s: AsyncSession, op: RecordProviderMemory, actor: Actor
+    ) -> Memory:
+        memory = Memory(
+            namespace_id=op.namespace_id,
+            user_id=op.user_id,
+            agent_id=op.agent_id,
+            session_id=op.session_id,
+            memory_type="semantic",
+            content=op.content,
+            status=MemoryStatus.ACTIVE,
+            origin=MemoryOrigin.EXTRACTION,
+            valid_from=utcnow(),
+            source_episode_id=op.source_episode_id,
+            content_hash=content_hash(op.content),
+            tags=[],
+            meta={},
+        )
+        s.add(memory)
+        await s.flush()
+        self._log(s, ObjectType.MEMORY, memory, ChangeOp.CREATE, None, actor)
+        # the provider already holds it: the ref is synced from the start, no upsert job
+        await _mark_ref(
+            s, ObjectType.MEMORY, memory, self._memory_provider, SyncStatus.SYNCED, op.external_id
+        )
+        return memory
+
+    async def _supersede_memory(self, s: AsyncSession, op: SupersedeMemory, actor: Actor) -> Memory:
+        memory = await load_owned(s, Memory, op.namespace_id, op.memory_id, "memory")
+        if op.by is not None:
+            await load_owned(s, Memory, op.namespace_id, op.by, "memory", lock=False)
+        before = await _retire(s, memory)
+        self._superseded(s, memory, op.by, before, actor, op.reason)
+        return memory
+
+    def _superseded(
+        self,
+        s: AsyncSession,
+        memory: Memory,
+        by: uuid.UUID | None,
+        before: dict[str, Any],
+        actor: Actor,
+        reason: str | None,
+    ) -> None:
+        """Second half of a supersede: name the successor (if any) and log the transition."""
+        memory.superseded_by = by
+        self._log(s, ObjectType.MEMORY, memory, ChangeOp.TRANSITION, before, actor, reason)
+
+    async def _patch_memory(self, s: AsyncSession, op: PatchMemory, actor: Actor) -> Memory:
+        memory = await load_owned(s, Memory, op.namespace_id, op.memory_id, "memory")
+        if memory.status != MemoryStatus.ACTIVE:
+            raise Conflict(f"a {memory.status.value!r} memory cannot be edited")
+        before = snapshot(memory)
+        for attr in ("pinned", "importance", "confidence", "tags", "meta"):
+            value = getattr(op, attr)
+            if value is not None:
+                setattr(memory, attr, value)
+        await s.flush()
+        self._log(s, ObjectType.MEMORY, memory, ChangeOp.UPDATE, before, actor)
+        return memory
+
+    async def _create_episode(self, s: AsyncSession, op: CreateEpisode, actor: Actor) -> Episode:
+        episode = Episode(
+            namespace_id=op.namespace_id,
+            kind=op.kind,
+            user_id=op.user_id,
+            agent_id=op.agent_id,
+            session_id=op.session_id,
+            content={"messages": list(op.messages)},
+        )
+        s.add(episode)
+        await s.flush()
+        self._log(s, ObjectType.EPISODE, episode, ChangeOp.CREATE, None, actor)
+        return episode
 
     async def _delete_memory(self, s: AsyncSession, op: DeleteMemory, actor: Actor) -> Memory:
         memory = await load_owned(s, Memory, op.namespace_id, op.memory_id, "memory")
@@ -427,10 +603,26 @@ class GovernanceService:
         )
 
 
+async def _retire(s: AsyncSession, memory: Memory) -> dict[str, Any]:
+    """First half of a supersede: leave the active state (and with it any unique active slot);
+    returns the snapshot from before."""
+    _check(MEMORY_TRANSITIONS, "memory", memory.status, MemoryStatus.SUPERSEDED)
+    before = snapshot(memory)
+    memory.status, memory.valid_to = MemoryStatus.SUPERSEDED, utcnow()
+    await s.flush()
+    return before
+
+
 async def _mark_ref(
-    s: AsyncSession, object_type: ObjectType, obj: Any, provider: str, status: SyncStatus
+    s: AsyncSession,
+    object_type: ObjectType,
+    obj: Any,
+    provider: str,
+    status: SyncStatus,
+    external_id: str | None = None,
 ) -> None:
-    """Open (or re-open) the object's `external_refs` row; the Syncer records the outcome on it."""
+    """Open (or re-open) the object's `external_refs` row; the Syncer records the outcome on it.
+    With `external_id`, the provider already holds version 1 (status SYNCED)."""
     ref = await s.scalar(
         select(ExternalRef).where(
             ExternalRef.object_type == object_type,
@@ -446,6 +638,11 @@ async def _mark_ref(
                 object_id=obj.id,
                 provider=provider,
                 sync_status=status,
+                **(
+                    {"external_id": external_id, "synced_version": 1, "last_synced_at": utcnow()}
+                    if external_id
+                    else {}
+                ),
             )
         )
     else:

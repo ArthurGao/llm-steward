@@ -5,8 +5,16 @@ from fastapi import APIRouter, Query
 
 from llm_steward.api.deps import Reader, ServicesDep, Writer
 from llm_steward.models.enums import MemoryStatus
-from llm_steward.schemas.memories import MemoryCreate, MemoryOut, MemoryPage
-from llm_steward.services.governance_service import CreateMemory
+from llm_steward.schemas.memories import (
+    ChangeOut,
+    MemoryBrief,
+    MemoryCreate,
+    MemoryHistoryOut,
+    MemoryOut,
+    MemoryPage,
+    MemoryPatch,
+)
+from llm_steward.services.governance_service import CreateMemory, PatchMemory
 from llm_steward.services.memory_service import MAX_PAGE, MemoryFilter
 
 router = APIRouter(prefix="/memories", tags=["memories"])
@@ -20,12 +28,13 @@ async def create_memory(body: MemoryCreate, principal: Writer, services: Service
         user_id=body.user_id,
         agent_id=body.agent_id,
         session_id=body.session_id,
-        memory_type=body.memory_type,
+        memory_type="profile" if body.key else body.memory_type,
         pinned=body.pinned,
         importance=body.importance,
         confidence=body.confidence,
         tags=body.tags,
         meta=body.metadata,
+        key=body.key,
     )
     view = await services.memories.create(op, infer=body.infer, actor=principal.actor)
     return MemoryOut.of(view)
@@ -63,3 +72,33 @@ async def delete_memory(
     """Soft delete: the memory becomes `deleted` and is removed from the provider by the Syncer."""
     view = await services.memories.delete(principal.namespace_id, memory_id, actor=principal.actor)
     return MemoryOut.of(view)
+
+
+@router.patch("/{memory_id}")
+async def patch_memory(
+    memory_id: uuid.UUID, body: MemoryPatch, principal: Writer, services: ServicesDep
+) -> MemoryOut:
+    """Pin, re-weight or re-tag. New content is a new memory (POST) that supersedes this one."""
+    op = PatchMemory(
+        principal.namespace_id,
+        memory_id,
+        pinned=body.pinned,
+        importance=body.importance,
+        confidence=body.confidence,
+        tags=body.tags,
+        meta=body.metadata,
+    )
+    return MemoryOut.of(await services.memories.patch(op, actor=principal.actor))
+
+
+@router.get("/{memory_id}/history")
+async def memory_history(
+    memory_id: uuid.UUID, principal: Reader, services: ServicesDep
+) -> MemoryHistoryOut:
+    """Every change to this memory, and every version of the fact (the supersede chain)."""
+    h = await services.memories.history(principal.namespace_id, memory_id)
+    return MemoryHistoryOut(
+        memory_id=memory_id,
+        changes=[ChangeOut.model_validate(c) for c in h.changes],
+        chain=[MemoryBrief.model_validate(m) for m in h.chain],
+    )

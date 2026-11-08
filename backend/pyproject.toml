@@ -15,6 +15,7 @@ dependencies = [
     "httpx2>=2.16",
     "typer>=0.15",
     "jinja2>=3.1",
+    "openai>=1.60",
 ]
 
 [project.optional-dependencies]
@@ -23,6 +24,13 @@ native = [
     "sqlite-vec>=0.1.9",
     "fastembed>=0.9.1",
     "jieba>=0.42.1",
+]
+# Default memory engine (design §2): mem0 in-process on PostgreSQL/pgvector, local MiniLM embeddings.
+# Pinned exactly: upgrading mem0 requires the contract tests (`pytest -m contract`) to pass first.
+mem0 = [
+    "mem0ai==2.2.1",
+    "psycopg[binary,pool]>=3.2",
+    "fastembed>=0.9.1",
 ]
 
 [project.scripts]
@@ -47,8 +55,8 @@ line-length = 100
 
 [tool.ruff.lint]
 select = ["E", "F", "W", "I", "UP", "B", "ASYNC", "RUF"]
-# Full-width punctuation is intentional in the Chinese prompt context (prompts/context_render.j2).
-allowed-confusables = ["：", "（", "）"]
+# Full-width punctuation is intentional: Chinese prompt context and sentence splitting.
+allowed-confusables = ["：", "（", "）", "！", "？"]
 
 [tool.mypy]
 strict = true
@@ -57,16 +65,17 @@ packages = ["llm_steward"]
 mypy_path = "src"
 
 [[tool.mypy.overrides]]
-# No type information shipped by these (native extra).
-module = ["sqlite_vec", "jieba"]
+# No type information shipped by these (native / mem0 extras).
+module = ["sqlite_vec", "jieba", "mem0", "mem0.*"]
 ignore_missing_imports = true
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 asyncio_mode = "auto"
 asyncio_default_fixture_loop_scope = "function"
-# `-m model` downloads and runs the real local embedding model (~220 MB, once); deselected by default.
-addopts = "-m 'not model'"
+# Opt-in, deselected by default: `-m model` (real local embedding model, ~220 MB once) and
+# `-m contract` (adapters against real engines, e.g. mem0 on the local PostgreSQL).
+addopts = "-m 'not model and not contract'"
 markers = [
     "model: runs the real fastembed model (opt-in: uv run pytest -m model)",
     "contract: adapter contract against a real external engine (opt-in: uv run pytest -m contract)",
@@ -83,6 +92,7 @@ layers = [
     "llm_steward.api | llm_steward.mcp",
     "llm_steward.services",
     "llm_steward.providers | llm_steward.pipeline",
+    "llm_steward.llm",
     "llm_steward.models",
     "llm_steward.storage",
 ]
@@ -94,6 +104,7 @@ source_modules = [
     "llm_steward.services",
     "llm_steward.providers",
     "llm_steward.pipeline",
+    "llm_steward.llm",
     "llm_steward.models",
     "llm_steward.storage",
 ]

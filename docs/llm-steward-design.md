@@ -173,7 +173,7 @@ GovernanceService 是唯一的写入出口；同步器（Syncer）通过任务�
 | 自有库 | PostgreSQL 18 + pgvector（本地共用的 PG 容器，CI 用 `pgvector/pgvector:pg18`）；native 模式用 SQLite | 与 mem0 共用一个 PG 实例；WeKnora 自带 ParadeDB |
 | Memory | `mem0ai`（锁定版本） | 见第 2 节 |
 | KB 客户端 | httpx2（httpx 的后继，Starlette 1.x TestClient 也用它）调用 WeKnora / RAGFlow 的 REST API | 锁定版本，由合约测试保护 |
-| LLM / Embedding | LiteLLM | 治理层自己的 LLM 调用（风险分级、KB 价值评分、起草、冲突判断）与 provider 的配置分开 |
+| LLM / Embedding | OpenAI SDK，走任意 OpenAI 兼容端点（本地开发用 llm-gateway，生产用厂商端点）；按「角色」配置模型（`memory.extract`、`memory.resolve` …），调用点不写模型名 | 治理层自己的 LLM 调用（风险分级、KB 价值评分、起草、冲突判断）与 provider 的配置分开。原定 LiteLLM，P2 改为 OpenAI SDK：mem0 已自带该依赖，依赖树更小（2026-11-08） |
 | native 实现 | sqlite-vec（`vec0`）+ FTS5 + jieba + fastembed | 零依赖、离线可跑 |
 | 后台任务 | 数据库任务表（outbox）+ asyncio worker | llm-steward 本身不依赖 Redis（WeKnora 自带的 Redis 只供 WeKnora 使用），两种数据库都能用 |
 | MCP | 官方 `mcp` Python SDK（streamable HTTP），挂载在 `/mcp` | 与 REST 共用 service 和鉴权 |
@@ -335,7 +335,7 @@ flowchart TB
 1. **缓冲**：按 `(namespace, user, session)` 累积。触发 flush 的条件：超过 `buffer_tokens`（默认 1024）、空闲超过 `buffer_idle`（默认 30 分钟）、显式 `flush`，或请求带 `mode=sync`。
 2. **Provider 抽取并写入**：调用 `MemoryProvider.add(messages, scope)`。mem0 负责抽取事实并存储，返回变更列表；native provider 用内置的 `extract_facts` prompt 完成同样的工作。
 3. **镜像与记录**：把变更写入 `memories` 镜像、`external_refs` 和 `change_log`（`actor_type=provider`），并关联 `source_episode_id`。
-4. **冲突补偿**：如果 provider 不支持 `update` 能力，或本次只返回了 ADD（mem0 新算法就是这样），就对每条新记忆在同一 scope 内取相似度 ≥ 0.75 的 top-5（profile 类型按 `key` 查找），由 `ConflictResolver` 判断 UPDATE / DELETE / NOOP。UPDATE 时旧记忆在镜像中标记 `superseded`、写入 `valid_to`，并调用 `provider.delete(old)`；NOOP 时删除新写入的重复项。
+4. **冲突补偿**：如果 provider 能抽取（`extract`）但不声明 `resolves_conflicts` 能力（mem0 2.2.1 只会 ADD，就是这样；P2 起以能力判定，2026-11-08），就对每条新记忆在同一 scope 内取相似度 ≥ 0.75 的 top-5（profile 类型按 `key` 查找），由 `ConflictResolver` 判断 UPDATE / DELETE / NOOP。UPDATE 时旧记忆在镜像中标记 `superseded`、写入 `valid_to` 和 `superseded_by`，**保留在 provider 中**（遵循「失效而不删除」，`as_of` 才能查到旧值；常规检索由安全网按状态过滤）；DELETE 同样只标记失效；NOOP 时删除新写入的重复项。（原文为 `provider.delete(old)`，P2 实现时按第 2 节原则 3 修正，2026-11-08）
 5. **KB 价值评分与风险分级**：治理层自己的 LLM 调用（每次 flush 批量一次），对新记忆给出五项评分（复用性、增量、时效、普适、可信，各 0–1）和 `risk_level`。
 6. **KB 建议**：五项均值 ≥ `kb_suggest_threshold`（默认 0.7）且"普适" ≥ 0.6 时，用 `draft_kb_entry` prompt 改写为通用表述，生成一条 `target_type=kb_entry` 的 candidate。
 7. **同步**：candidate 生效为 KB 条目后，入队 `sync.upsert`，由 worker 推送到 KB provider（第 3 节的 outbox）。
@@ -561,7 +561,7 @@ memory:
         properties: {order_id: {type: string}, event: {enum: [refund, cancel, complain]}}
   profile_keys: [name, city, language, plan]
   buffer: {tokens: 1024, idle_minutes: 30}
-  conflict_compensation: auto  # auto（provider 不支持 update 时启用）| always | off
+  conflict_compensation: auto  # auto（provider 能 extract 但无 resolves_conflicts 时启用）| always | off
   pii: {action: redact}        # block | redact | allow
 
 kb:
@@ -705,7 +705,7 @@ llm-steward/
 │   │   │   ├── worthiness.py      # KB 价值五项评分
 │   │   │   ├── risk.py            # 规则 + PII + LLM
 │   │   │   └── maintenance.py     # 过期、整合、反馈、缺口报告
-│   │   ├── llm/                   # LiteLLM 封装、reranker
+│   │   ├── llm/                   # 角色层（roles.py）、OpenAI 兼容客户端（client.py）
 │   │   ├── storage/db.py          # engine / session，按 URL 选择方言
 │   │   ├── plugins/               # Hook 等其他可替换组件
 │   │   ├── prompts/               # *.j2 默认模板
@@ -763,8 +763,17 @@ llm-steward/
      - native 的混合检索中，一条全文命中至少要覆盖查询一半的词才参与 RRF 融合，否则一个通用词（"user"/"用户"）就会压过向量检索的正确结果（真实模型测试发现）。
    - 验收：两种自有库上测试全部通过；native 通过合约测试；namespace 之间完全隔离
 3. **P2 Memory：接入 mem0**
-   - [ ] `Mem0Provider`（`AsyncMemory` + pgvector）、缓冲与 flush、镜像同步、冲突补偿、对账任务
-   - [ ] `/memories/{id}/history`、profile key、pinned
+   - [x] `Mem0Provider`（`AsyncMemory` + pgvector）、缓冲与 flush、镜像同步、冲突补偿、对账任务
+   - [x] `/memories/{id}/history`、profile key、pinned
+   - 实现说明（2026-11-08）：
+     - mem0 2.2.1 锁定版本，进程内运行，表放在 provider 自己创建的 `mem0` schema；遥测强制关闭，`MEM0_DIR` 移到数据目录（不写 `~/.mem0`）；embedding 用本地 MiniLM。
+     - mem0 检索必须带主体 id：共享记忆以 `__shared__` 用户存储，检索分别查本人与共享两次；namespace 写入元数据并在每次检索中过滤。
+     - 冲突补偿：provider 能 `extract` 却没有 `resolves_conflicts` 能力时，由 `memory.resolve` 角色判断；模型指向候选之外的记忆时由代码兜底为 ADD。抽取出的记忆在 `change_log` 中记录 `memory.extract:<model>` 作为来源。
+     - profile key 是用户级（加 agent）的：一个用户每个 key 只有一个当前值，带 `session_id` 的 profile 写入返回 422。`GET /v1/profile` 与检索前置的 pinned/profile 用同一个查询。
+     - 抽取任务重试时从已写入的镜像继续，不会再次调用 `provider.add`；`add` 成功、镜像提交之前进程崩溃时仍可能重复（mem0 没有幂等 key），由对账报告孤儿记录。
+     - 阶段收尾 review 中推迟的项（2026-11-08）：抽取任务最终失败（`failed`）后，其 episode 已标记处理，需要人工重放——放到 P5 的 admin「重试失败任务」；冲突补偿逐条串行、mem0 每次检索查两次（本人 + 共享）、episode token 数每次重算——在有真实负载数据后（P4）再优化。
+     - 新操作者类型 `host_app`（API key 写入），与 llm-steward 自己的 `system` 写入区分。
+     - 合约测试 `pytest -m contract` 默认不跑，CI 不跑；真实 LLM 只在手动验证时经 llm-gateway 调用。
    - 验收：Mem0Provider 通过合约测试；金标测试——先写入"我住北京"，再写入"我搬到上海了"，得到旧记录 superseded、新记录 active，检索只返回上海，`as_of` 能查到北京
 4. **P3 KB 治理：接入 WeKnora**
    - [ ] collections、entries、candidates、风险分级（含 PII）、KB 价值评分、promote、suggestions、accept / reject

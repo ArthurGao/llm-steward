@@ -43,6 +43,8 @@ def _ref_key(object_type: ObjectType, object_id: uuid.UUID, provider: str) -> An
 
 
 class SyncService:
+    JOB_TYPES = (JobType.MEMORY_UPSERT, JobType.MEMORY_REMOVE, JobType.KB_UPSERT, JobType.KB_REMOVE)
+
     def __init__(self, sessions: async_sessionmaker[AsyncSession], providers: Providers) -> None:
         self._sessions = sessions
         self._providers = providers
@@ -57,6 +59,8 @@ class SyncService:
                 await self._kb_upsert(uuid.UUID(job.payload["entry_id"]))
             case JobType.KB_REMOVE:
                 await self._kb_remove(uuid.UUID(job.payload["entry_id"]))
+            case _:
+                raise ValueError(f"not a sync job: {job.type!r}")
 
     # memories
 

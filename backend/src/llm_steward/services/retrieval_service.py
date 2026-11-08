@@ -3,8 +3,8 @@
 Each provider is searched in parallel under its own timeout. Hits are mapped back to governed
 objects through `external_refs`; anything unknown, no longer effective, outside its validity window
 or outside the caller's scope is dropped. That is the safety net: even while sync lags behind,
-deprecated knowledge is never served. Results are fused by reciprocal rank. Trust weights, decay,
-MMR, pinned memories and token budgets arrive in P4.
+deprecated knowledge is never served. Results are fused by reciprocal rank, after the caller's core
+memories (pinned, profile values). Trust weights, decay, MMR and token budgets arrive in P4.
 """
 
 import asyncio
@@ -33,6 +33,8 @@ from llm_steward.models.enums import (
 )
 from llm_steward.providers.base import ProviderHit, Providers, Scope
 from llm_steward.ranking import rrf_scores
+from llm_steward.services.memory_service import core_memories
+from llm_steward.services.scoping import visible
 
 log = logging.getLogger(__name__)
 
@@ -40,6 +42,9 @@ log = logging.getLogger(__name__)
 CANDIDATES_PER_RESULT = 3
 MIN_CANDIDATES = 10
 Source = Literal["memory", "kb"]
+_MEMORY_CURRENT = (MemoryStatus.ACTIVE,)
+_MEMORY_HISTORY = (MemoryStatus.ACTIVE, MemoryStatus.SUPERSEDED)  # deleted stays out
+_KB_HISTORY = (*EFFECTIVE_KB_STATUSES, KbStatus.DEPRECATED)
 
 _templates = Environment(
     loader=PackageLoader("llm_steward", "prompts"),
@@ -59,6 +64,8 @@ class RetrieveRequest:
     collections: tuple[str, ...] | None = None  # collection names; None = all
     top_k: int = 8
     with_context: bool = False
+    # Retrieve what was valid at that moment (superseded memories included); no pinned prepend.
+    as_of: datetime | None = None
 
 
 @dataclass(frozen=True)
@@ -70,6 +77,7 @@ class RetrievedItem:
     status: str
     verified: bool
     score: float = 0.0
+    pinned: bool = False  # always-present core memory (design §6 step 8), not a search hit
 
 
 @dataclass(frozen=True)
@@ -121,8 +129,10 @@ class RetrievalService:
             raise ProviderUnavailable(f"every source failed: {', '.join(degraded)}")
 
         async with self._sessions() as s, s.begin():
-            rankings = await self._resolve(s, namespace_id, scope, hits)
-            fused = _fuse(rankings, req.top_k)
+            rankings = await self._resolve(s, namespace_id, scope, hits, req.as_of)
+            pinned = [] if req.as_of else _core_items(await core_memories(s, scope))
+            seen = {p.id for p in pinned}
+            fused = pinned + [i for i in _fuse(rankings, req.top_k) if i.id not in seen]
             retrieval_id = self._log(s, namespace_id, req, fused, latency_ms)
         context = _render(fused) if req.with_context else None
         return RetrieveResult(retrieval_id, fused, degraded, context)
@@ -160,18 +170,18 @@ class RetrievalService:
         namespace_id: uuid.UUID,
         scope: Scope,
         hits: dict[Source, list[ProviderHit]],
+        as_of: datetime | None,
     ) -> list[list[RetrievedItem]]:
         """Map provider hits to governed objects, keeping each provider's order; drop whatever
-        governance would not serve."""
-        now = utcnow()
+        governance would not serve (at `as_of`, what was valid then)."""
         rankings: list[list[RetrievedItem]] = []
         if hits.get("memory"):
-            known = await self._memories(s, namespace_id, scope, hits["memory"], now)
+            known = await self._memories(s, namespace_id, scope, hits["memory"], as_of)
             rankings.append(
                 [known[h.external_id] for h in hits["memory"] if h.external_id in known]
             )
         if hits.get("kb"):
-            known = await self._entries(s, namespace_id, hits["kb"], now)
+            known = await self._entries(s, namespace_id, hits["kb"], as_of)
             rankings.append([known[h.external_id] for h in hits["kb"] if h.external_id in known])
         dropped = sum(len(h) for h in hits.values()) - sum(len(r) for r in rankings)
         if dropped:
@@ -184,8 +194,9 @@ class RetrievalService:
         namespace_id: uuid.UUID,
         scope: Scope,
         hits: list[ProviderHit],
-        now: datetime,
+        as_of: datetime | None,
     ) -> dict[str, RetrievedItem]:
+        now = as_of or utcnow()
         query = (
             select(ExternalRef.external_id, Memory)
             .join(Memory, Memory.id == ExternalRef.object_id)
@@ -194,21 +205,13 @@ class RetrievalService:
                 ExternalRef.provider == self._providers.memory.name,
                 ExternalRef.namespace_id == namespace_id,
                 ExternalRef.external_id.in_([h.external_id for h in hits]),
-                Memory.namespace_id == namespace_id,
-                Memory.status == MemoryStatus.ACTIVE,
+                *visible(Memory, scope, session=True),
+                Memory.status.in_(_MEMORY_HISTORY if as_of else _MEMORY_CURRENT),
                 Memory.valid_from <= now,
                 or_(Memory.valid_to.is_(None), Memory.valid_to > now),
                 or_(Memory.expires_at.is_(None), Memory.expires_at > now),
             )
         )
-        for column, value in (
-            (Memory.user_id, scope.user_id),
-            (Memory.agent_id, scope.agent_id),
-            (Memory.session_id, scope.session_id),
-        ):
-            # own scope or shared; a caller with no user_id only sees shared memories
-            visible = or_(column.is_(None), column == value) if value else column.is_(None)
-            query = query.where(visible)
         rows = await s.execute(query)
         return {
             eid: RetrievedItem("memory", m.id, m.content, None, m.status.value, False)
@@ -217,8 +220,13 @@ class RetrievalService:
         }
 
     async def _entries(
-        self, s: AsyncSession, namespace_id: uuid.UUID, hits: list[ProviderHit], now: datetime
+        self,
+        s: AsyncSession,
+        namespace_id: uuid.UUID,
+        hits: list[ProviderHit],
+        as_of: datetime | None,
     ) -> dict[str, RetrievedItem]:
+        now = as_of or utcnow()
         query = (
             select(ExternalRef.external_id, KbEntry)
             .join(KbEntry, KbEntry.id == ExternalRef.object_id)
@@ -228,7 +236,7 @@ class RetrievalService:
                 ExternalRef.namespace_id == namespace_id,
                 ExternalRef.external_id.in_([h.external_id for h in hits]),
                 KbEntry.namespace_id == namespace_id,
-                KbEntry.status.in_(EFFECTIVE_KB_STATUSES),
+                KbEntry.status.in_(_KB_HISTORY if as_of else EFFECTIVE_KB_STATUSES),
                 KbEntry.valid_from <= now,
                 or_(KbEntry.valid_to.is_(None), KbEntry.valid_to > now),
             )
@@ -286,3 +294,10 @@ def _render(items: list[RetrievedItem]) -> str:
         )
         .strip()
     )
+
+
+def _core_items(memories: list[Memory]) -> list[RetrievedItem]:
+    return [
+        RetrievedItem("memory", m.id, m.content, m.key, m.status.value, False, 1.0, True)
+        for m in memories
+    ]

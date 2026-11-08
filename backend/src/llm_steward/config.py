@@ -29,7 +29,21 @@ class Settings(BaseSettings):
     # Per-provider budget for one /v1/retrieve search; a slower provider is reported as degraded.
     retrieve_timeout_ms: int = Field(default=800, gt=0)
 
-    llm_model: str = "anthropic/claude-haiku-5-5"
+    # LLM role layer (llm/roles.py). Call sites name a role; these say which endpoint and model
+    # serve it. Dev: llm-gateway (http://127.0.0.1:8787/v1, gpt-sub / claude-sub). Prod: a vendor.
+    llm_base_url: str | None = None
+    llm_api_key: str | None = None
+    llm_model: str | None = None  # default model for every role
+    llm_roles: dict[str, str] = Field(default_factory=dict)  # role -> model override (JSON in env)
+    llm_timeout_s: float = Field(default=60.0, gt=0)
+
+    # Episode buffer (design §5 step 1): flush past this many tokens, or after this long idle.
+    buffer_tokens: int = Field(default=1024, gt=0)
+    buffer_idle_minutes: int = Field(default=30, gt=0)
+    # Daily drift check between a memory provider and the mirror.
+    reconcile_interval_hours: int = Field(default=24, gt=0)
+    # Local state some engines keep on disk (mem0's history database).
+    data_dir: str = "./data"
 
     # Native provider only: local fastembed model (downloaded once, then offline) and its cache.
     embedding_model: str = "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2"

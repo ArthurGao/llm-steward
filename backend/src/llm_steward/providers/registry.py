@@ -3,15 +3,17 @@
 Everything else talks to providers through their Protocol, never by name (backend/AGENTS.md).
 """
 
+from pathlib import Path
+
 import httpx2
 from sqlalchemy.ext.asyncio import AsyncEngine
 
 from llm_steward.config import Settings
+from llm_steward.llm.roles import Role, resolve
 from llm_steward.providers.base import (
     KnowledgeProvider,
     MemoryProvider,
     PendingKnowledgeProvider,
-    PendingMemoryProvider,
     Providers,
 )
 from llm_steward.providers.native.embedding import Embedder, FastEmbedEmbedder
@@ -31,8 +33,11 @@ def build_providers(
     http: httpx2.AsyncClient,
     engine: AsyncEngine,
     embedder: Embedder | None,
+    *,
+    memory: MemoryProvider | None = None,
 ) -> Providers:
-    """`embedder` is required when a native provider is configured (see `uses_native`)."""
+    """`embedder` is required when a native provider is configured (see `uses_native`). A given
+    `memory` provider (tests) replaces the configured one, which is then not built at all."""
     store = None
     if uses_native(settings):
         if embedder is None:
@@ -41,15 +46,15 @@ def build_providers(
 
         store = create_store(engine, embedder, settings.db_schema)
 
-    memory: MemoryProvider
-    match settings.memory_provider:
-        case "native":
-            from llm_steward.providers.native.providers import NativeMemoryProvider
+    if memory is None:
+        match settings.memory_provider:
+            case "native":
+                from llm_steward.providers.native.providers import NativeMemoryProvider
 
-            assert store is not None and embedder is not None
-            memory = NativeMemoryProvider(store, embedder)
-        case "mem0":
-            memory = PendingMemoryProvider("mem0", "P2")
+                assert store is not None and embedder is not None
+                memory = NativeMemoryProvider(store, embedder)
+            case "mem0":
+                memory = build_mem0(settings)
 
     kb: KnowledgeProvider
     match settings.kb_provider:
@@ -64,3 +69,23 @@ def build_providers(
             kb = PendingKnowledgeProvider("ragflow", "P7")
 
     return Providers(memory=memory, kb=kb)
+
+
+def build_mem0(settings: Settings) -> MemoryProvider:
+    """mem0 on the governance PostgreSQL (schema mem0), local MiniLM embeddings, extraction through
+    the `memory.extract` role (fails here, at startup, when that role cannot be served)."""
+    from llm_steward.providers.mem0_provider import Mem0Provider, build_mem0_config
+    from llm_steward.providers.native.embedding import model_dim
+
+    extract = resolve(settings, Role.MEMORY_EXTRACT)
+    config = build_mem0_config(
+        embedding_model=settings.embedding_model,
+        embedding_dims=model_dim(settings.embedding_model),
+        llm_model=extract.model,
+        llm_base_url=extract.base_url,
+        llm_api_key=extract.api_key,
+        history_db_path=str(Path(settings.data_dir) / "mem0_history.db"),
+    )
+    return Mem0Provider(
+        config, database_url=settings.database_url, model_cache_dir=settings.model_cache_dir
+    )

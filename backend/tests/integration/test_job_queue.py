@@ -122,7 +122,7 @@ async def test_a_hanging_handler_fails_before_its_lease_runs_out(
 
     queue = JobQueue(q.sessions, lease=timedelta(seconds=0.2), backoff_base_s=10)
     job_id = await q.add()
-    assert await Worker(queue, Hanging()).run_once()  # type: ignore[arg-type]
+    assert await Worker(queue, Hanging().handle).run_once()
     job = await q.job(job_id)
     assert job.status == JobStatus.PENDING
     assert job.error is not None and job.error.startswith("TimeoutError")

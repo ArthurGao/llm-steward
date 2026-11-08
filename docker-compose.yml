@@ -37,6 +37,11 @@ services:
       STEWARD_MEMORY_PROVIDER: mem0
       STEWARD_KB_PROVIDER: weknora
       STEWARD_WEKNORA_URL: http://weknora-app:8080
+      # mem0 extracts through the LLM role layer; without these the service refuses to start.
+      # llm-gateway is loopback-only by design, so a container needs a vendor endpoint here.
+      STEWARD_LLM_BASE_URL: ${STEWARD_LLM_BASE_URL:-}
+      STEWARD_LLM_API_KEY: ${STEWARD_LLM_API_KEY:-}
+      STEWARD_LLM_MODEL: ${STEWARD_LLM_MODEL:-}
     extra_hosts:
       - "host.docker.internal:host-gateway"
     depends_on:

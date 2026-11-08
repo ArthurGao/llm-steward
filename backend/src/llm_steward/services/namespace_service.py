@@ -36,7 +36,7 @@ class Principal:
     @property
     def actor(self) -> Actor:
         """Writes made with an API key are attributed to that key (the host app's server)."""
-        return Actor(ActorType.SYSTEM, f"api_key:{self.key_id}")
+        return Actor(ActorType.HOST_APP, f"api_key:{self.key_id}")
 
 
 def _hash(secret: str) -> str:

@@ -7,7 +7,7 @@ import uuid
 from datetime import datetime
 from typing import Any
 
-from sqlalchemy import ForeignKey, Index, String, Text, UniqueConstraint
+from sqlalchemy import ForeignKey, Index, String, Text, UniqueConstraint, func, text
 from sqlalchemy.orm import Mapped, mapped_column
 
 from llm_steward.models.base import Base, CreatedMixin, IdMixin, TimestampMixin, enum_column
@@ -69,6 +69,19 @@ class AdminUser(IdMixin, CreatedMixin, Base):
 
 class Episode(IdMixin, CreatedMixin, Base):
     __tablename__ = "episodes"
+    __table_args__ = (
+        # The buffer: unprocessed episodes of one scope (rows leave the index once extracted).
+        Index(
+            "ix_episodes_buffer",
+            "namespace_id",
+            func.coalesce(text("user_id"), ""),
+            func.coalesce(text("agent_id"), ""),
+            func.coalesce(text("session_id"), ""),
+            "created_at",
+            postgresql_where=text("processed_at IS NULL"),
+            sqlite_where=text("processed_at IS NULL"),
+        ),
+    )
     namespace_id: Mapped[uuid.UUID] = _namespace_fk()
     kind: Mapped[EpisodeKind] = mapped_column(enum_column(EpisodeKind, "episode_kind"))
     user_id: Mapped[str | None] = mapped_column(String(200))
@@ -80,7 +93,21 @@ class Episode(IdMixin, CreatedMixin, Base):
 
 class Memory(IdMixin, TimestampMixin, Base):
     __tablename__ = "memories"
-    __table_args__ = (Index("ix_memories_scope", "namespace_id", "user_id", "agent_id", "status"),)
+    __table_args__ = (
+        Index("ix_memories_scope", "namespace_id", "user_id", "agent_id", "status"),
+        Index("ix_memories_superseded_by", "superseded_by"),  # history walks the chain backwards
+        # One current value per profile key and scope; NULL scope parts compare equal via COALESCE.
+        Index(
+            "uq_memories_active_profile_key",
+            "namespace_id",
+            func.coalesce(text("user_id"), ""),
+            func.coalesce(text("agent_id"), ""),
+            "key",
+            unique=True,
+            postgresql_where=text("status = 'active' AND key IS NOT NULL"),
+            sqlite_where=text("status = 'active' AND key IS NOT NULL"),
+        ),
+    )
     namespace_id: Mapped[uuid.UUID] = _namespace_fk()
     user_id: Mapped[str | None] = mapped_column(String(200))
     agent_id: Mapped[str | None] = mapped_column(String(200))

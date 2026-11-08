@@ -39,14 +39,16 @@ If a change must contradict the design, update the design in the same change and
 
 ## Current stage
 
-**P1 — governance core on the native provider** (P0 closed out). Track the checklist in design §11 (ticked
-items are done and verified). Next: P2 (mem0). `docparse` (RAGFlow) is P7, the frontend workspace P6.
+**P2 — memory: mem0 behind the governance layer** (P0, P1 closed out). Track the checklist in design §11
+(ticked items are done and verified). Next: P3 (KB governance, WeKnora). `docparse` (RAGFlow) is P7, the
+frontend workspace P6.
 
-Decided (2026-11-08): default backends mem0 (in-process Python library) + WeKnora v0.9.0; native embeddings are
-local fastembed MiniLM (multilingual, 384-d); API keys arrive in P1 (user tokens / admin JWT stay in P5).
+Decided (2026-11-08): default backends mem0 (in-process Python library) + WeKnora v0.9.0; native and mem0
+embeddings are local fastembed MiniLM (multilingual, 384-d); API keys arrive in P1 (user tokens / admin JWT
+stay in P5); API-key writes are actor `host_app`; real LLM calls in local development go through llm-gateway
+subscription profiles — **only when the user has started the gateway and asked for it**; tests use FakeLLM.
 
 Open questions (design §11) — do not decide them silently; ask, or implement the conservative option behind config:
-- Governance-layer LLM (risk grading, KB worthiness, drafting — P2/P3): network API allowed, or local by default?
 - WeKnora's own embedding model (configured inside WeKnora, P3): local (Ollama) or a remote API?
 - License (design suggests Apache-2.0).
 - TypeScript SDK in v1?
@@ -76,7 +78,8 @@ Open questions (design §11) — do not decide them silently; ask, or implement 
 
 ## Tech stack
 
-- Backend: Python 3.12, uv, FastAPI + Pydantic v2, SQLAlchemy 2.0 async + Alembic, LiteLLM, official `mcp` SDK
+- Backend: Python 3.12, uv, FastAPI + Pydantic v2, SQLAlchemy 2.1 async + Alembic, OpenAI SDK (role layer over any
+  OpenAI-compatible endpoint), mem0 2.2.1 (pinned), official `mcp` SDK
   (streamable HTTP at `/mcp`, plus stdio), structlog, Prometheus `/metrics`.
 - Governance DB: PostgreSQL + pgvector (`standard`) or SQLite (`native`). llm-steward and mem0 share one database,
   schemas `steward` and `mem0`. WeKnora runs its own ParadeDB (it needs `pg_search`) and Redis —
@@ -103,6 +106,7 @@ Backend (run from `backend/`; `.env` is read from the current directory):
 uv run pytest                      # every DB test on SQLite and PostgreSQL
 uv run ruff check && uv run ruff format --check && uv run mypy && uv run lint-imports
 uv run pytest -m model             # opt-in: the real local embedding model (downloads ~220 MB once)
+uv run pytest -m contract          # opt-in: adapters against real engines (mem0 on the local PG)
 uv run steward migrate             # alembic upgrade head on STEWARD_DATABASE_URL
 uv run steward ns create <slug>    # a namespace (no HTTP route creates one)
 uv run steward key create <slug>   # prints an API key once: Authorization: Bearer stw_<prefix>_<secret>

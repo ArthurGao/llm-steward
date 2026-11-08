@@ -24,7 +24,7 @@ backend/
     providers/                # base.py (Protocols), registry.py (the only name → instance map), weknora.py,
                               # native/ (store_sqlite / store_pg, embedding, text, providers)
     pipeline/                 # buffer, conflict, worthiness, risk, maintenance
-    llm/                      # LiteLLM wrapper, reranker
+    llm/                      # role layer (roles.py) + OpenAI-compatible client (client.py)
     storage/db.py             # engine/session, dialect chosen from the URL
     plugins/, prompts/*.j2, jobs/, embedded.py
   tests/
@@ -37,8 +37,9 @@ backend/
 
 - `api/`, `mcp/` → `services/` → `providers/`, `pipeline/`, `storage/`. No reverse imports.
 - `services/` never imports FastAPI. `providers/` never imports `services/`.
-- Providers are called **only** by the Syncer (`sync_service.py`), `RetrievalService` and the health service
-  (`health()` probes). API handlers never touch a provider directly.
+- Providers are called **only** by the Syncer (`sync_service.py`), `RetrievalService`, the memory pipeline
+  (`ExtractionService`: add/search, `ReconcileService`: list) and the health service (`health()` probes).
+  API handlers never touch a provider directly.
 - MCP tools and REST endpoints share the same services and auth; MCP is not a second implementation.
 
 ## Rules
@@ -50,8 +51,9 @@ backend/
 3. **Outbox, not inline calls.** A service that changes something a provider must know about enqueues a `jobs` row
    in the same transaction (`sync.upsert`, `sync.remove`, `ingest`, `extract`). Workers claim jobs with
    `locked_until` and retry with backoff; handlers must be idempotent.
-4. **Capabilities drive fallbacks.** Read `provider.capabilities`: no `update` → conflict compensation on; no
-   `metadata_filter` → over-fetch and filter in the governance layer. Never branch on provider name.
+4. **Capabilities drive fallbacks.** Read `provider.capabilities`: `extract` without `resolves_conflicts` →
+   conflict compensation on; no `metadata_filter` → over-fetch and filter in the governance layer. Never branch
+   on provider name.
 5. **Every LLM call** uses a named Jinja2 template in `prompts/` with a Pydantic output model (structured output).
    No inline prompt strings.
 6. **Provider timeouts.** Each provider call in retrieval has its own timeout (default 800 ms); on timeout return the
@@ -60,8 +62,13 @@ backend/
    pagination (cursor = last UUIDv7).
 8. **Default deny.** Every `/v1` route depends on `require(<scope>)`; the open paths are exactly
    `api/deps.UNAUTHENTICATED_PATHS`, pinned by a test. By-id reads and writes filter by the caller's namespace.
-9. **Provider-owned tables** (`native_*`) are created by the provider on first use, never by a migration, and
-   are excluded from autogenerate (`models.base.include_in_migrations`).
+9. **Provider-owned tables** (`native_*`, the `mem0` schema) are created by the provider on first use, never
+   by a migration; `native_*` is excluded from autogenerate (`models.base.include_in_migrations`).
+10. **LLM calls name a role** (`llm/roles.py`), never a model or vendor; config maps roles to models. No
+    fallback chain: a failed call raises. Store the provenance (`role:model`) with what the call produced.
+    A role that cannot be served fails at startup. Tests use `tests/fakes/llm.py` — never the gateway.
+11. **mem0** is imported only by `providers/mem0_provider.py`, after `prepare_mem0_environment()`
+    (telemetry off, `MEM0_DIR` in the data dir). Tests force `MEM0_TELEMETRY=false` in `conftest.py`.
 
 ## Testing
 

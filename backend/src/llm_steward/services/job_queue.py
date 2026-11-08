@@ -65,7 +65,8 @@ class JobQueue:
         self._backoff_base_s = backoff_base_s
         self._backoff_cap_s = backoff_cap_s
 
-    async def claim(self) -> ClaimedJob | None:
+    async def claim(self, job_id: uuid.UUID | None = None) -> ClaimedJob | None:
+        """The next claimable job, or that specific one (a request processing its own job)."""
         now = utcnow()
         claimable = or_(
             and_(Job.status == JobStatus.PENDING, Job.run_after <= now),
@@ -73,19 +74,18 @@ class JobQueue:
             and_(Job.status == JobStatus.RUNNING, Job.locked_until < now),
         )
         async with self._sessions() as session, session.begin():
-            job_id = await session.scalar(
-                select(Job.id)
-                .where(claimable)
-                .order_by(Job.run_after)
-                .limit(1)
-                .with_for_update(skip_locked=True)
+            candidates = select(Job.id).where(claimable)
+            if job_id is not None:
+                candidates = candidates.where(Job.id == job_id)
+            picked = await session.scalar(
+                candidates.order_by(Job.run_after).limit(1).with_for_update(skip_locked=True)
             )
-            if job_id is None:
+            if picked is None:
                 return None
             row = (
                 await session.execute(
                     update(Job)
-                    .where(Job.id == job_id, claimable)
+                    .where(Job.id == picked, claimable)
                     .values(
                         status=JobStatus.RUNNING,
                         locked_until=now + self._lease,

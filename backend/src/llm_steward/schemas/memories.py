@@ -2,7 +2,7 @@ import uuid
 from datetime import datetime
 from typing import Any
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 from llm_steward.models.enums import MemoryOrigin, MemoryStatus, SyncStatus
 from llm_steward.services.memory_service import MemoryView
@@ -14,6 +14,14 @@ class MemoryCreate(BaseModel):
     agent_id: str | None = Field(default=None, max_length=200)
     session_id: str | None = Field(default=None, max_length=200)
     memory_type: str = Field(default="semantic", max_length=64)
+    key: str | None = Field(
+        default=None,
+        max_length=200,
+        description=(
+            "Profile key (e.g. user.city): one current value per user (and agent); a new value "
+            "supersedes the old one. Not allowed together with session_id."
+        ),
+    )
     tags: list[str] = Field(default_factory=list, max_length=50)
     metadata: dict[str, Any] = Field(default_factory=dict)
     pinned: bool = False
@@ -83,3 +91,49 @@ class MemoryOut(BaseModel):
 class MemoryPage(BaseModel):
     items: list[MemoryOut]
     next_cursor: uuid.UUID | None
+
+
+class MemoryPatch(BaseModel):
+    pinned: bool | None = None
+    importance: float | None = Field(default=None, ge=0, le=1)
+    confidence: float | None = Field(default=None, ge=0, le=1)
+    tags: list[str] | None = Field(default=None, max_length=50)
+    metadata: dict[str, Any] | None = None
+
+
+class MemoryBrief(BaseModel):
+    """One version of a fact in a supersede chain."""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    id: uuid.UUID
+    content: str
+    status: MemoryStatus
+    valid_from: datetime
+    valid_to: datetime | None
+    superseded_by: uuid.UUID | None
+
+
+class ChangeOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: uuid.UUID
+    op: str
+    actor_type: str
+    actor_id: str | None
+    reason: str | None
+    before: dict[str, Any] | None
+    after: dict[str, Any] | None
+    created_at: datetime
+
+
+class MemoryHistoryOut(BaseModel):
+    memory_id: uuid.UUID
+    changes: list[ChangeOut]
+    chain: list[MemoryBrief]
+
+
+class ProfileOut(BaseModel):
+    user_id: str
+    values: dict[str, str]  # profile key -> current value
+    pinned: list[MemoryBrief]

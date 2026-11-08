@@ -88,6 +88,7 @@ class ObjectType(StrEnum):
     KB_DOCUMENT = "kb_document"
     KB_COLLECTION = "kb_collection"
     CANDIDATE = "candidate"
+    EPISODE = "episode"
 
 
 class SyncStatus(StrEnum):
@@ -102,8 +103,9 @@ class ActorType(StrEnum):
     AI = "ai"
     END_USER = "end_user"
     ADMIN = "admin"
-    SYSTEM = "system"
-    PROVIDER = "provider"
+    SYSTEM = "system"  # llm-steward's own writes (maintenance, compensation)
+    PROVIDER = "provider"  # content produced by a memory/KB engine (e.g. mem0 extraction)
+    HOST_APP = "host_app"  # an integrating app's server, via its API key
 
 
 class ChangeOp(StrEnum):
@@ -117,6 +119,8 @@ class JobType(StrEnum):
     MEMORY_REMOVE = "sync.memory_remove"
     KB_UPSERT = "sync.kb_upsert"
     KB_REMOVE = "sync.kb_remove"
+    MEMORY_EXTRACT = "memory.extract"
+    MEMORY_RECONCILE = "memory.reconcile"
 
 
 class JobStatus(StrEnum):

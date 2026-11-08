@@ -14,6 +14,9 @@ ComponentStatus = Literal["ok", "error", "not_implemented"]
 
 # Memory capabilities
 EXTRACT = "extract"
+# The engine itself resolves a new fact against existing ones on add (UPDATE / DELETE events);
+# without it, llm-steward runs conflict compensation (design §5 step 4).
+RESOLVES_CONFLICTS = "resolves_conflicts"
 UPDATE = "update"
 DELETE = "delete"
 METADATA_FILTER = "metadata_filter"
@@ -54,6 +57,7 @@ class MemoryEvent:
     op: Literal["ADD", "UPDATE", "DELETE"]
     external_id: str
     content: str | None = None
+    produced_by: str | None = None  # `role:model` when an LLM produced it (extraction)
 
 
 @dataclass(frozen=True)

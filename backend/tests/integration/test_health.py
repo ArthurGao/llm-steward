@@ -6,6 +6,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from llm_steward.config import Settings
+from llm_steward.llm.roles import LLMConfigError
 from llm_steward.main import create_app
 from tests.conftest import test_settings
 from tests.fakes.embedder import FakeEmbedder
@@ -51,21 +52,30 @@ def test_database_down_returns_503(unreachable_db_url: str) -> None:
     assert body["components"]["database"]["name"] == "postgresql"
 
 
-def test_weknora_up_and_mem0_not_implemented_is_degraded(migrated_url: str) -> None:
+def test_weknora_up_is_reported_ok(migrated_url: str) -> None:
+    # Was "…and mem0 not implemented": mem0 is implemented since P2, so the memory side now uses
+    # native here; startup validation of mem0 is covered by the test below.
     seen: list[str] = []
 
     def handler(request: httpx2.Request) -> httpx2.Response:
         seen.append(str(request.url))
         return httpx2.Response(200, json={"status": "ok"})
 
-    settings = _settings(migrated_url, memory_provider="mem0", kb_provider="weknora")
+    settings = _settings(migrated_url, kb_provider="weknora")
     response = _get_health(settings, _weknora(handler))
     body = response.json()
     assert response.status_code == 200
-    assert body["status"] == "degraded"
+    assert body["status"] == "ok"
     assert seen == [f"{WEKNORA}/health"]
     assert body["components"]["kb_provider"] == {"name": "weknora", "status": "ok", "detail": None}
-    assert body["components"]["memory_provider"]["status"] == "not_implemented"
+
+
+def test_mem0_without_an_llm_for_its_roles_refuses_to_start(migrated_url: str) -> None:
+    """KB llm-app-architecture §1.5: a role that cannot be served fails at startup, not at the
+    first extraction."""
+    settings = _settings(migrated_url, memory_provider="mem0")
+    with pytest.raises(LLMConfigError, match=r"memory\.extract"):
+        _get_health(settings)
 
 
 def _server_error(request: httpx2.Request) -> httpx2.Response:

@@ -10,6 +10,8 @@ from fastapi import FastAPI
 from llm_steward.api import errors, system
 from llm_steward.api import v1 as api_v1
 from llm_steward.config import Settings
+from llm_steward.llm.client import LLM
+from llm_steward.providers.base import MemoryProvider
 from llm_steward.providers.native.embedding import Embedder
 from llm_steward.services.container import runtime
 
@@ -21,13 +23,17 @@ def create_app(
     *,
     http: httpx2.AsyncClient | None = None,
     embedder: Embedder | None = None,
+    memory_provider: MemoryProvider | None = None,
+    llm: LLM | None = None,
 ) -> FastAPI:
-    """Build the app. `http` and `embedder` are injectable: tests stub the network and the model."""
+    """Build the app. `http`, `embedder`, `memory_provider` and `llm` are injectable for tests."""
     settings = settings or Settings()
 
     @asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:
-        async with runtime(settings, http=http, embedder=embedder) as services:
+        async with runtime(
+            settings, http=http, embedder=embedder, memory_provider=memory_provider, llm=llm
+        ) as services:
             app.state.services = services
             stop = asyncio.Event()
             background: list[asyncio.Task[None]] = []

@@ -1,4 +1,5 @@
 import uuid
+from datetime import datetime
 from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field
@@ -17,6 +18,9 @@ class RetrieveIn(BaseModel):
     collections: list[str] | None = None
     top_k: int = Field(default=8, ge=1, le=50)
     format: Literal["items", "context"] = "items"
+    as_of: datetime | None = Field(
+        default=None, description="What was valid at this moment (superseded memories included)."
+    )
 
 
 class RetrievedItemOut(BaseModel):
@@ -29,6 +33,7 @@ class RetrievedItemOut(BaseModel):
     status: str
     verified: bool
     score: float
+    pinned: bool
 
 
 class RetrieveOut(BaseModel):

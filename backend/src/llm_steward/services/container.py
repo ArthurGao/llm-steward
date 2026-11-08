@@ -1,28 +1,41 @@
-"""Wires one runtime: engine, HTTP client, embedder, providers and services.
+"""Wires one runtime: engine, HTTP client, embedder, providers, LLM roles and services.
 
 `runtime()` is the single place both entry points (the API lifespan and `steward worker`) build
-from, so they can never drift apart in how providers are configured.
+from, so they can never drift apart in how providers are configured. A configuration that cannot
+serve a needed LLM role fails here, at startup (KB llm-app-architecture §1.5).
 """
 
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
+from datetime import timedelta
+from typing import Any
 
 import httpx2
 from sqlalchemy.ext.asyncio import AsyncEngine
 
 from llm_steward.config import Settings
-from llm_steward.providers.base import Providers
+from llm_steward.llm.client import LLM, OpenAICompatibleLLM
+from llm_steward.llm.roles import Role
+from llm_steward.models.enums import JobType
+from llm_steward.providers.base import MemoryProvider, Providers
 from llm_steward.providers.native.embedding import Embedder
 from llm_steward.providers.registry import build_embedder, build_providers, uses_native
+from llm_steward.services.episode_service import EpisodeService
+from llm_steward.services.extraction_service import ExtractionService, compensates
 from llm_steward.services.governance_service import GovernanceService
-from llm_steward.services.job_queue import JobQueue
+from llm_steward.services.job_queue import ClaimedJob, JobQueue
 from llm_steward.services.memory_service import MemoryService
 from llm_steward.services.namespace_service import NamespaceService
+from llm_steward.services.reconcile_service import ReconcileService, schedule_reconcile
 from llm_steward.services.retrieval_service import RetrievalService
 from llm_steward.services.sync_service import SyncService
-from llm_steward.services.worker import Worker
+from llm_steward.services.worker import Tick, Worker
 from llm_steward.storage.db import engine_scope, session_factory
+
+Handler = Callable[[ClaimedJob], Awaitable[Any]]
+
+IDLE_FLUSH_EVERY_S = 60.0
 
 
 @dataclass(frozen=True)
@@ -33,16 +46,65 @@ class Services:
     governance: GovernanceService
     namespaces: NamespaceService
     memories: MemoryService
+    episodes: EpisodeService
+    reconcile: ReconcileService
     retrieval: RetrievalService
     worker: Worker
 
 
+def build_llm(settings: Settings, providers: Providers) -> LLM | None:
+    """`memory.resolve` is needed exactly when conflict compensation runs."""
+    if not compensates(providers.memory):
+        return None
+    return OpenAICompatibleLLM(settings, (Role.MEMORY_RESOLVE,))
+
+
 def build_services(
-    settings: Settings, engine: AsyncEngine, providers: Providers, embedder: Embedder | None
+    settings: Settings,
+    engine: AsyncEngine,
+    providers: Providers,
+    embedder: Embedder | None,
+    llm: LLM | None,
 ) -> Services:
     sessions = session_factory(engine)
     governance = GovernanceService(
         sessions, memory_provider=providers.memory.name, kb_provider=providers.kb.name
+    )
+    sync = SyncService(sessions, providers)
+    extraction = ExtractionService(sessions, governance, providers.memory, llm)
+    reconcile = ReconcileService(sessions, providers.memory)
+    handlers: dict[JobType, Handler] = {
+        **dict.fromkeys(SyncService.JOB_TYPES, sync.handle),
+        JobType.MEMORY_EXTRACT: extraction.handle,
+        JobType.MEMORY_RECONCILE: reconcile.handle,
+    }
+    missing = set(JobType) - set(handlers)
+    if missing:
+        raise RuntimeError(f"no handler for job types {sorted(missing)}")
+
+    async def dispatch(job: ClaimedJob) -> Any:
+        return await handlers[job.type](job)
+
+    worker = Worker(
+        JobQueue(sessions),
+        dispatch,
+        ticks=(
+            # late-bound: `episodes` is built below, with the worker's run_job
+            Tick("flush idle episode buffers", IDLE_FLUSH_EVERY_S, lambda: episodes.flush_idle()),
+            Tick(
+                "schedule reconcile",
+                settings.reconcile_interval_hours * 3600.0,
+                lambda: schedule_reconcile(sessions),
+            ),
+        ),
+    )
+    episodes = EpisodeService(
+        sessions,
+        governance,
+        providers.memory,
+        worker.run_job,
+        buffer_tokens=settings.buffer_tokens,
+        buffer_idle=timedelta(minutes=settings.buffer_idle_minutes),
     )
     return Services(
         engine=engine,
@@ -51,10 +113,12 @@ def build_services(
         governance=governance,
         namespaces=NamespaceService(sessions),
         memories=MemoryService(sessions, governance, providers.memory),
+        episodes=episodes,
+        reconcile=reconcile,
         retrieval=RetrievalService(
             sessions, providers, timeout_s=settings.retrieve_timeout_ms / 1000
         ),
-        worker=Worker(JobQueue(sessions), SyncService(sessions, providers)),
+        worker=worker,
     )
 
 
@@ -64,15 +128,18 @@ async def runtime(
     *,
     http: httpx2.AsyncClient | None = None,
     embedder: Embedder | None = None,
+    memory_provider: MemoryProvider | None = None,
+    llm: LLM | None = None,
 ) -> AsyncIterator[Services]:
-    """`http` and `embedder` are injectable (tests stub the network and the model); whatever is
-    created here is also closed here."""
+    """`http`, `embedder`, `memory_provider` and `llm` are injectable (tests stub the network, the
+    model and the engine); whatever is created here is also closed here."""
     async with engine_scope(settings.database_url, schema=settings.db_schema) as engine:
         client = http or httpx2.AsyncClient()
         try:
             embed = embedder or (build_embedder(settings) if uses_native(settings) else None)
-            providers = build_providers(settings, client, engine, embed)
-            yield build_services(settings, engine, providers, embed)
+            providers = build_providers(settings, client, engine, embed, memory=memory_provider)
+            roles = llm or build_llm(settings, providers)
+            yield build_services(settings, engine, providers, embed, roles)
         finally:
             if http is None:
                 await client.aclose()

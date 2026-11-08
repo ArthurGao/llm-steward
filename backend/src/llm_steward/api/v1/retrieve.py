@@ -21,6 +21,7 @@ async def retrieve(body: RetrieveIn, principal: Reader, services: ServicesDep) -
             collections=tuple(body.collections) if body.collections is not None else None,
             top_k=body.top_k,
             with_context=body.format == "context",
+            as_of=body.as_of,
         ),
     )
     return RetrieveOut(
