@@ -146,6 +146,8 @@ class KbCollection(IdMixin, CreatedMixin, Base):
 
 class KbEntry(IdMixin, TimestampMixin, Base):
     __tablename__ = "kb_entries"
+    # GET /v1/kb/entries: newest first by status (P3)
+    __table_args__ = (Index("ix_kb_entries_list", "namespace_id", "status", "id"),)
     namespace_id: Mapped[uuid.UUID] = _namespace_fk()
     collection_id: Mapped[uuid.UUID] = mapped_column(
         ForeignKey("kb_collections.id", ondelete="CASCADE"), index=True
@@ -190,6 +192,11 @@ class KbDocument(IdMixin, TimestampMixin, Base):
 
 class Candidate(IdMixin, CreatedMixin, Base):
     __tablename__ = "candidates"
+    __table_args__ = (
+        # the review queue and an end user's cards (P3), without reading decided history
+        Index("ix_candidates_queue", "namespace_id", "status", "stage", "id"),
+        Index("ix_candidates_user", "namespace_id", "requested_for_user", "status", "id"),
+    )
     namespace_id: Mapped[uuid.UUID] = _namespace_fk()
     target_type: Mapped[CandidateTarget] = mapped_column(
         enum_column(CandidateTarget, "candidate_target")

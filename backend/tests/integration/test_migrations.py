@@ -15,7 +15,7 @@ from llm_steward.storage.db import engine_scope
 from tests.conftest import TEST_SCHEMA
 from tests.fakes.embedder import FakeEmbedder
 
-HEAD = "0003"
+HEAD = "0004"
 
 
 def _state(url: str) -> tuple[tuple[str, ...], bool]:

@@ -3,19 +3,23 @@
 `GovernanceService.apply(op, actor)` writes the object, a `change_log` row and any outbox job in ONE
 transaction. Only effective knowledge is ever queued for a provider (rule 3): drafts, candidates and
 rejected entries never are.
+
+KB writes from outside (the API, the pipeline) are *submitted* (design §5): the risk level and the
+collection's review policy decide whether they go live, ask the end user, or wait for a reviewer.
+Only a reviewer can make knowledge `verified`; an end user's confirmation never does.
 """
 
 import hashlib
 import uuid
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timedelta
 from enum import Enum
-from typing import Any
+from typing import Any, Literal, cast
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from llm_steward.errors import Conflict, NotFound, Unprocessable
+from llm_steward.errors import Conflict, Forbidden, NotFound, Unprocessable
 from llm_steward.models import (
     Candidate,
     ChangeLog,
@@ -24,6 +28,7 @@ from llm_steward.models import (
     KbCollection,
     KbEntry,
     Memory,
+    Namespace,
 )
 from llm_steward.models.base import Base, utcnow
 from llm_steward.models.enums import (
@@ -46,6 +51,7 @@ from llm_steward.models.enums import (
     RiskLevel,
     SyncStatus,
 )
+from llm_steward.pipeline.risk import Assessment, RiskPolicy, assess
 from llm_steward.providers.base import Scope
 from llm_steward.services.job_queue import enqueue
 from llm_steward.services.scoping import exact
@@ -75,11 +81,45 @@ CANDIDATE_TRANSITIONS: dict[CandidateStatus, frozenset[CandidateStatus]] = {
 
 @dataclass(frozen=True)
 class Actor:
+    """Who acts (recorded in change_log), and whether they may review: an admin, or an API key
+    with the `review` scope, which still acts as the host app (P5: an admin's reviewer role)."""
+
     type: ActorType
     id: str | None = None
+    can_review: bool = False
+
+    @property
+    def is_reviewer(self) -> bool:
+        return self.type == ActorType.ADMIN or self.can_review
 
 
 SYSTEM = Actor(ActorType.SYSTEM)  # llm-steward's own writes (maintenance jobs)
+
+# Review routes (design §5): live at once, ask the end user, or wait for a reviewer. A collection's
+# `review_policy` ({"low": route, "medium": route}) may change low and medium; high always waits.
+Route = Literal["auto", "user", "review"]
+ROUTES: tuple[Route, ...] = ("auto", "user", "review")
+DEFAULT_ROUTES: dict[RiskLevel, Route] = {
+    RiskLevel.LOW: "auto",
+    RiskLevel.MEDIUM: "user",
+    RiskLevel.HIGH: "review",
+}
+RISK_ORDER = (RiskLevel.LOW, RiskLevel.MEDIUM, RiskLevel.HIGH)
+STAGES: dict[Route, CandidateStage] = {
+    "user": CandidateStage.AWAITING_USER,
+    "review": CandidateStage.AWAITING_REVIEW,
+}
+EDITABLE = frozenset({"title", "content"})  # what a decision may change in a draft
+CANDIDATE_TTL = timedelta(days=7)  # unanswered cards expire (design §5)
+
+
+def max_risk(*levels: RiskLevel) -> RiskLevel:
+    return max(levels, key=RISK_ORDER.index)
+
+
+def _require_reviewer(actor: Actor, what: str) -> None:
+    if not actor.is_reviewer:
+        raise Forbidden(f"only a reviewer can {what}")
 
 
 # --- operations -------------------------------------------------------------------------------
@@ -163,6 +203,15 @@ class CreateCollection:
     namespace_id: uuid.UUID
     name: str
     default_risk: RiskLevel = RiskLevel.MEDIUM
+    review_policy: dict[str, str] = field(default_factory=dict)
+
+
+@dataclass(frozen=True)
+class UpdateCollection:
+    namespace_id: uuid.UUID
+    collection_id: uuid.UUID
+    default_risk: RiskLevel | None = None
+    review_policy: dict[str, str] | None = None
 
 
 @dataclass(frozen=True)
@@ -177,6 +226,40 @@ class CreateKbEntry:
     status: KbStatus = KbStatus.DRAFT
     source_refs: list[dict[str, Any]] = field(default_factory=list)
     tags: list[str] = field(default_factory=list)
+
+
+@dataclass(frozen=True)
+class SubmitKbEntry:
+    """New knowledge from outside, routed by risk (design §5): a reviewer's goes live verified;
+    otherwise low → active, medium → ask `requested_for_user` (active when there is none), high →
+    the review queue. The text is screened here (rules, personal data); `risk_level` is the
+    caller's estimate, which the rules and the collection's default can only raise."""
+
+    namespace_id: uuid.UUID
+    collection_id: uuid.UUID
+    title: str
+    content: str
+    risk_level: RiskLevel
+    origin: KbOrigin
+    author_type: AuthorType
+    requested_for_user: str | None = None
+    source_refs: list[dict[str, Any]] = field(default_factory=list)
+    tags: list[str] = field(default_factory=list)
+    reason: str | None = None
+
+
+@dataclass(frozen=True)
+class ReviseKbEntry:
+    """A new version of knowledge from outside: it applies at once, unless the entry is verified
+    or the new text is high risk and the author is not a reviewer — then it waits in the review
+    queue as an UPDATE candidate and the entry is unchanged."""
+
+    namespace_id: uuid.UUID
+    entry_id: uuid.UUID
+    title: str | None = None
+    content: str | None = None
+    risk_level: RiskLevel = RiskLevel.LOW  # the caller's estimate; the rules can only raise it
+    reason: str | None = None
 
 
 @dataclass(frozen=True)
@@ -208,14 +291,21 @@ class CreateCandidate:
     target_id: uuid.UUID | None = None
     reason: str | None = None
     requested_for_user: str | None = None
+    expires_at: datetime | None = None  # default: CANDIDATE_TTL from now
 
 
 @dataclass(frozen=True)
 class DecideCandidate:
+    """Accept (materialise the draft), reject or expire. `draft` overrides fields of the draft
+    (the user or reviewer edited it); `scope` is the end user's choice when accepting a card:
+    `personal` keeps it as their memory, `team` sends it on as knowledge."""
+
     namespace_id: uuid.UUID
     candidate_id: uuid.UUID
     to: CandidateStatus
     note: str | None = None
+    draft: dict[str, Any] | None = None
+    scope: Literal["personal", "team"] = "team"
 
 
 Operation = (
@@ -226,7 +316,10 @@ Operation = (
     | CreateEpisode
     | DeleteMemory
     | CreateCollection
+    | UpdateCollection
     | CreateKbEntry
+    | SubmitKbEntry
+    | ReviseKbEntry
     | UpdateKbEntry
     | TransitionKbEntry
     | CreateCandidate
@@ -301,8 +394,14 @@ class GovernanceService:
                 return await self._delete_memory(s, op, actor)
             case CreateCollection():
                 return await self._create_collection(s, op, actor)
+            case UpdateCollection():
+                return await self._update_collection(s, op, actor)
             case CreateKbEntry():
                 return await self._create_kb_entry(s, op, actor)
+            case SubmitKbEntry():
+                return await self._submit_kb_entry(s, op, actor)
+            case ReviseKbEntry():
+                return await self._revise_kb_entry(s, op, actor)
             case UpdateKbEntry():
                 return await self._update_kb_entry(s, op, actor)
             case TransitionKbEntry():
@@ -457,7 +556,10 @@ class GovernanceService:
         self, s: AsyncSession, op: CreateCollection, actor: Actor
     ) -> KbCollection:
         collection = KbCollection(
-            namespace_id=op.namespace_id, name=op.name, default_risk=op.default_risk
+            namespace_id=op.namespace_id,
+            name=op.name,
+            default_risk=op.default_risk,
+            review_policy=_checked_policy(op.review_policy),
         )
         s.add(collection)
         await s.flush()
@@ -467,10 +569,30 @@ class GovernanceService:
         )
         return collection
 
+    async def _update_collection(
+        self, s: AsyncSession, op: UpdateCollection, actor: Actor
+    ) -> KbCollection:
+        collection = await load_owned(
+            s, KbCollection, op.namespace_id, op.collection_id, "collection"
+        )
+        before = snapshot(collection)
+        if op.default_risk is not None:
+            collection.default_risk = op.default_risk
+        if op.review_policy is not None:
+            collection.review_policy = _checked_policy(op.review_policy)
+        await s.flush()
+        self._log(s, ObjectType.KB_COLLECTION, collection, ChangeOp.UPDATE, before, actor)
+        return collection
+
     async def _create_kb_entry(self, s: AsyncSession, op: CreateKbEntry, actor: Actor) -> KbEntry:
-        await load_owned(s, KbCollection, op.namespace_id, op.collection_id, "collection")
+        # scopes the collection to the namespace; no row lock (the FK keeps it from going away)
+        await load_owned(
+            s, KbCollection, op.namespace_id, op.collection_id, "collection", lock=False
+        )
         if op.status not in (KbStatus.DRAFT, *EFFECTIVE_KB_STATUSES):
             raise Conflict(f"a KB entry cannot be created as {op.status.value!r}")
+        if op.status == KbStatus.VERIFIED:
+            _require_reviewer(actor, "create verified knowledge")
         now = utcnow()
         entry = KbEntry(
             namespace_id=op.namespace_id,
@@ -496,20 +618,57 @@ class GovernanceService:
             await self._queue_kb(s, entry, JobType.KB_UPSERT)
         return entry
 
+    async def _create_from_draft(
+        self,
+        s: AsyncSession,
+        namespace_id: uuid.UUID,
+        draft: dict[str, Any],
+        risk: RiskLevel,
+        status: KbStatus,
+        actor: Actor,
+        extra_refs: tuple[dict[str, Any], ...] = (),
+    ) -> KbEntry:
+        """A draft (`_draft`, or a candidate's) becomes an entry: the one place the two meet."""
+        create = CreateKbEntry(
+            namespace_id=namespace_id,
+            collection_id=uuid.UUID(draft["collection_id"]),
+            title=draft["title"],
+            content=draft["content"],
+            risk_level=risk,
+            origin=KbOrigin(draft.get("origin", KbOrigin.MANUAL)),
+            author_type=AuthorType(draft.get("author_type", AuthorType.HUMAN)),
+            status=status,
+            source_refs=[*draft.get("source_refs", []), *extra_refs],
+            tags=list(draft.get("tags", [])),
+        )
+        return await self._create_kb_entry(s, create, actor)
+
     async def _update_kb_entry(self, s: AsyncSession, op: UpdateKbEntry, actor: Actor) -> KbEntry:
         entry = await load_owned(s, KbEntry, op.namespace_id, op.entry_id, "KB entry")
+        return await self._edit(s, entry, op.title, op.content, op.reason, actor)
+
+    async def _edit(
+        self,
+        s: AsyncSession,
+        entry: KbEntry,
+        title: str | None,
+        content: str | None,
+        reason: str | None,
+        actor: Actor,
+    ) -> KbEntry:
+        """A new version of `entry` (locked by the caller); nothing when the text is unchanged."""
         if entry.status not in (KbStatus.DRAFT, *EFFECTIVE_KB_STATUSES):
             raise Conflict(f"a {entry.status.value!r} KB entry cannot be edited")
         before = snapshot(entry)
-        entry.title = op.title if op.title is not None else entry.title
-        entry.content = op.content if op.content is not None else entry.content
+        entry.title = title if title is not None else entry.title
+        entry.content = content if content is not None else entry.content
         new_hash = content_hash(entry.title, entry.content)
         if new_hash == entry.content_hash:
             return entry  # nothing changed: no new version, no log, no sync
         entry.content_hash = new_hash
         entry.version += 1
         await s.flush()
-        self._log(s, ObjectType.KB_ENTRY, entry, ChangeOp.UPDATE, before, actor, op.reason)
+        self._log(s, ObjectType.KB_ENTRY, entry, ChangeOp.UPDATE, before, actor, reason)
         if entry.status in EFFECTIVE_KB_STATUSES:
             await self._queue_kb(s, entry, JobType.KB_UPSERT)
         return entry
@@ -518,24 +677,101 @@ class GovernanceService:
         self, s: AsyncSession, op: TransitionKbEntry, actor: Actor
     ) -> KbEntry:
         entry = await load_owned(s, KbEntry, op.namespace_id, op.entry_id, "KB entry")
+        return await self._transition(s, entry, op.to, op.reason, actor)
+
+    async def _transition(
+        self, s: AsyncSession, entry: KbEntry, to: KbStatus, reason: str | None, actor: Actor
+    ) -> KbEntry:
         before = snapshot(entry)
         was_effective = entry.status in EFFECTIVE_KB_STATUSES
-        _check(KB_TRANSITIONS, "KB entry", entry.status, op.to)
+        _check(KB_TRANSITIONS, "KB entry", entry.status, to)
+        if to == KbStatus.VERIFIED:
+            _require_reviewer(actor, "verify knowledge")
         now = utcnow()
-        entry.status = op.to
-        if op.to == KbStatus.VERIFIED:
+        entry.status = to
+        if to == KbStatus.VERIFIED:
             entry.verified_by, entry.verified_at = actor.id, now
-        if op.to in (KbStatus.DEPRECATED, KbStatus.REJECTED):
+        if to in (KbStatus.DEPRECATED, KbStatus.REJECTED):
             entry.valid_to = now
         await s.flush()
-        self._log(s, ObjectType.KB_ENTRY, entry, ChangeOp.TRANSITION, before, actor, op.reason)
-        if op.to in EFFECTIVE_KB_STATUSES:
+        self._log(s, ObjectType.KB_ENTRY, entry, ChangeOp.TRANSITION, before, actor, reason)
+        if to in EFFECTIVE_KB_STATUSES:
             await self._queue_kb(s, entry, JobType.KB_UPSERT)
         elif was_effective:
             await self._queue_kb(s, entry, JobType.KB_REMOVE)
         return entry
 
-    # candidates (state only in P1; materialising an accepted candidate arrives in P3)
+    async def _screen(
+        self, s: AsyncSession, namespace_id: uuid.UUID, title: str, content: str
+    ) -> Assessment:
+        """Rule-based risk and PII (pipeline/risk.py) under the namespace's policy, in the write
+        transaction: every outside write of knowledge text passes here, however it arrives."""
+        namespace = await s.get(Namespace, namespace_id)
+        policy = RiskPolicy.from_config(namespace.config if namespace else {})
+        return assess(title, content, policy)
+
+    async def _submit_kb_entry(
+        self, s: AsyncSession, op: SubmitKbEntry, actor: Actor
+    ) -> KbEntry | Candidate:
+        collection = await load_owned(
+            s, KbCollection, op.namespace_id, op.collection_id, "collection", lock=False
+        )
+        checked = await self._screen(s, op.namespace_id, op.title, op.content)
+        risk = max_risk(op.risk_level, checked.level, collection.default_risk)
+        draft = _draft(op, checked)
+        route = "auto" if actor.is_reviewer else _route(collection, risk)
+        if route == "user" and op.requested_for_user is None:
+            route = "auto"  # nobody to ask: medium goes live (design §5)
+        if route == "auto":
+            status = KbStatus.VERIFIED if actor.is_reviewer else KbStatus.ACTIVE
+            return await self._create_from_draft(s, op.namespace_id, draft, risk, status, actor)
+        candidate = CreateCandidate(
+            namespace_id=op.namespace_id,
+            target_type=CandidateTarget.KB_ENTRY,
+            op=CandidateOp.ADD,
+            draft=draft,
+            risk_level=risk,
+            origin=CANDIDATE_ORIGIN[op.origin],
+            stage=STAGES[route],
+            reason=_reason(op.reason, checked),
+            requested_for_user=op.requested_for_user,
+        )
+        return await self._create_candidate(s, candidate, actor)
+
+    async def _revise_kb_entry(
+        self, s: AsyncSession, op: ReviseKbEntry, actor: Actor
+    ) -> KbEntry | Candidate:
+        entry = await load_owned(s, KbEntry, op.namespace_id, op.entry_id, "KB entry")
+        collection = await load_owned(
+            s, KbCollection, op.namespace_id, entry.collection_id, "collection", lock=False
+        )
+        checked = await self._screen(
+            s,
+            op.namespace_id,
+            op.title if op.title is not None else entry.title,
+            op.content if op.content is not None else entry.content,
+        )
+        title = checked.title if op.title is not None else None
+        content = checked.content if op.content is not None else None
+        risk = max_risk(op.risk_level, checked.level, collection.default_risk)
+        waits = entry.status == KbStatus.VERIFIED or _route(collection, risk) == "review"
+        if actor.is_reviewer or not waits:
+            return await self._edit(s, entry, title, content, _reason(op.reason, checked), actor)
+        draft = {k: v for k, v in (("title", title), ("content", content)) if v is not None}
+        candidate = CreateCandidate(
+            namespace_id=op.namespace_id,
+            target_type=CandidateTarget.KB_ENTRY,
+            op=CandidateOp.UPDATE,
+            target_id=entry.id,
+            draft=draft,
+            risk_level=risk,
+            origin=CandidateOrigin.API,
+            stage=CandidateStage.AWAITING_REVIEW,
+            reason=_reason(op.reason, checked),
+        )
+        return await self._create_candidate(s, candidate, actor)
+
+    # candidates
 
     async def _create_candidate(
         self, s: AsyncSession, op: CreateCandidate, actor: Actor
@@ -552,6 +788,7 @@ class GovernanceService:
             stage=op.stage,
             status=CandidateStatus.PENDING,
             requested_for_user=op.requested_for_user,
+            expires_at=op.expires_at or utcnow() + CANDIDATE_TTL,
         )
         s.add(candidate)
         await s.flush()
@@ -564,12 +801,78 @@ class GovernanceService:
         candidate = await load_owned(s, Candidate, op.namespace_id, op.candidate_id, "candidate")
         before = snapshot(candidate)
         _check(CANDIDATE_TRANSITIONS, "candidate", candidate.status, op.to)
+        _check_decider(candidate, actor, op.to)
+        if op.to == CandidateStatus.ACCEPTED and candidate.target_type == CandidateTarget.KB_ENTRY:
+            if candidate.expires_at is not None and candidate.expires_at <= utcnow():
+                raise Conflict(f"candidate {candidate.id} expired at {candidate.expires_at}")
+            draft, risk = await self._edited(s, candidate, op.draft)
+            by_user = candidate.stage == CandidateStage.AWAITING_USER and not actor.is_reviewer
+            if by_user and op.scope == "personal":  # the user keeps it for themselves
+                await self._create_memory(s, _memory_op(candidate, draft), actor)
+            elif by_user and risk == RiskLevel.HIGH:  # useful is not correct: a reviewer decides
+                candidate.stage = CandidateStage.AWAITING_REVIEW
+                candidate.draft, candidate.risk_level = draft, risk
+                await s.flush()
+                self._log(
+                    s, ObjectType.CANDIDATE, candidate, ChangeOp.UPDATE, before, actor, op.note
+                )
+                return candidate
+            else:
+                status = KbStatus.ACTIVE if by_user else KbStatus.VERIFIED
+                candidate.risk_level = risk
+                entry = await self._materialise(s, candidate, draft, status, actor)
+                candidate.target_id = entry.id  # an ADD now names what it created
         candidate.status = op.to
         candidate.decided_by, candidate.decided_at = actor.id, utcnow()
         candidate.decision_note = op.note
         await s.flush()
         self._log(s, ObjectType.CANDIDATE, candidate, ChangeOp.TRANSITION, before, actor, op.note)
         return candidate
+
+    async def _edited(
+        self, s: AsyncSession, candidate: Candidate, edits: dict[str, Any] | None
+    ) -> tuple[dict[str, Any], RiskLevel]:
+        """The draft with the decider's edits, screened again: an edit can add personal data or a
+        high-risk subject, and must not slip past the rules a submission went through."""
+        if not edits:
+            return dict(candidate.draft), candidate.risk_level
+        unknown = sorted(set(edits) - EDITABLE)
+        if unknown:
+            raise Unprocessable(
+                f"a decision can only edit title and content, not {', '.join(unknown)}"
+            )
+        draft = {**candidate.draft, **edits}
+        checked = await self._screen(
+            s, candidate.namespace_id, draft.get("title", ""), draft.get("content", "")
+        )
+        for key, value in (("title", checked.title), ("content", checked.content)):
+            if key in draft:
+                draft[key] = value
+        return draft, max_risk(candidate.risk_level, checked.level)
+
+    async def _materialise(
+        self,
+        s: AsyncSession,
+        candidate: Candidate,
+        draft: dict[str, Any],
+        status: KbStatus,
+        actor: Actor,
+    ) -> KbEntry:
+        """An accepted KB candidate becomes knowledge with `status` (ACTIVE from an end user,
+        VERIFIED from a reviewer), in the same transaction as the decision."""
+        ns = candidate.namespace_id
+        if candidate.op == CandidateOp.ADD:
+            ref = {"type": "candidate", "id": str(candidate.id)}
+            return await self._create_from_draft(
+                s, ns, draft, candidate.risk_level, status, actor, (ref,)
+            )
+        entry = await load_owned(s, KbEntry, ns, _target(candidate), "KB entry")
+        if candidate.op == CandidateOp.DELETE:
+            return await self._transition(s, entry, KbStatus.DEPRECATED, None, actor)
+        entry = await self._edit(s, entry, draft.get("title"), draft.get("content"), None, actor)
+        if entry.status != status and status in KB_TRANSITIONS[entry.status]:
+            entry = await self._transition(s, entry, status, None, actor)
+        return entry
 
     async def _queue_kb(self, s: AsyncSession, entry: KbEntry, job: JobType) -> None:
         status = SyncStatus.PENDING if job == JobType.KB_UPSERT else SyncStatus.DELETING
@@ -668,3 +971,75 @@ async def load_owned[T: Base](
     if obj is None:
         raise NotFound(f"{kind} {object_id} not found")
     return obj
+
+
+CANDIDATE_ORIGIN: dict[KbOrigin, CandidateOrigin] = {
+    KbOrigin.MANUAL: CandidateOrigin.API,
+    KbOrigin.IMPORT: CandidateOrigin.API,
+    KbOrigin.PROMOTED_MEMORY: CandidateOrigin.PROMOTE,
+    KbOrigin.USER_SUGGESTION: CandidateOrigin.USER_SUGGESTION,
+    KbOrigin.EXTRACTION: CandidateOrigin.EXTRACTION,
+}
+
+
+def _route(collection: KbCollection, risk: RiskLevel) -> Route:
+    """The collection's route for `risk`; high always goes to review, whatever the policy says."""
+    if risk == RiskLevel.HIGH:
+        return "review"
+    return cast(Route, (collection.review_policy or {}).get(risk.value, DEFAULT_ROUTES[risk]))
+
+
+def _draft(op: SubmitKbEntry, checked: Assessment) -> dict[str, Any]:
+    """A submission as a draft (JSON): what a candidate holds and `_create_from_draft` reads."""
+    return {
+        "collection_id": str(op.collection_id),
+        "title": checked.title,
+        "content": checked.content,
+        "origin": op.origin.value,
+        "author_type": op.author_type.value,
+        "source_refs": list(op.source_refs),
+        "tags": list(op.tags),
+    }
+
+
+def _reason(given: str | None, checked: Assessment) -> str | None:
+    return "; ".join([*([given] if given else []), *checked.reasons]) or None
+
+
+def _memory_op(candidate: Candidate, draft: dict[str, Any]) -> CreateMemory:
+    return CreateMemory(
+        namespace_id=candidate.namespace_id,
+        content=draft["content"],
+        user_id=candidate.requested_for_user,
+        source_episode_id=candidate.source_episode_id,
+    )
+
+
+def _target(candidate: Candidate) -> uuid.UUID:
+    if candidate.target_id is None:
+        raise Unprocessable(f"{candidate.op.value} candidate {candidate.id} names no target")
+    return candidate.target_id
+
+
+def _check_decider(candidate: Candidate, actor: Actor, to: CandidateStatus) -> None:
+    """The review queue is a reviewer's; a card is the asked user's (or a reviewer's). Expiry is
+    llm-steward's own (SYSTEM)."""
+    if to == CandidateStatus.EXPIRED and actor.type == ActorType.SYSTEM:
+        return
+    if candidate.stage == CandidateStage.AWAITING_REVIEW:
+        _require_reviewer(actor, "decide a candidate in the review queue")
+    elif not actor.is_reviewer:
+        asked = candidate.requested_for_user
+        if actor.type != ActorType.END_USER or actor.id != asked:
+            raise Forbidden(f"only the asked user {asked!r} (or a reviewer) can answer this card")
+
+
+def _checked_policy(policy: dict[str, str]) -> dict[str, str]:
+    """A collection may route low and medium risk; high always goes to review."""
+    for risk, route in policy.items():
+        if risk not in (RiskLevel.LOW, RiskLevel.MEDIUM) or route not in ROUTES:
+            raise Unprocessable(
+                f"review_policy {risk!r}: {route!r} — only low/medium can be routed, to one of "
+                f"{', '.join(ROUTES)} (high always goes to review)"
+            )
+    return dict(policy)

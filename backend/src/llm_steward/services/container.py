@@ -25,6 +25,7 @@ from llm_steward.services.episode_service import EpisodeService
 from llm_steward.services.extraction_service import ExtractionService, compensates
 from llm_steward.services.governance_service import GovernanceService
 from llm_steward.services.job_queue import ClaimedJob, JobQueue
+from llm_steward.services.kb_service import KbService
 from llm_steward.services.memory_service import MemoryService
 from llm_steward.services.namespace_service import NamespaceService
 from llm_steward.services.reconcile_service import ReconcileService, schedule_reconcile
@@ -46,6 +47,7 @@ class Services:
     governance: GovernanceService
     namespaces: NamespaceService
     memories: MemoryService
+    kb: KbService
     episodes: EpisodeService
     reconcile: ReconcileService
     retrieval: RetrievalService
@@ -113,6 +115,7 @@ def build_services(
         governance=governance,
         namespaces=NamespaceService(sessions),
         memories=MemoryService(sessions, governance, providers.memory),
+        kb=KbService(sessions, governance),
         episodes=episodes,
         reconcile=reconcile,
         retrieval=RetrievalService(

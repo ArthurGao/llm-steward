@@ -171,8 +171,8 @@ async def test_illegal_transitions_conflict(
     stack: Stack, path: tuple[KbStatus, ...], illegal: KbStatus
 ) -> None:
     entry = await stack.entry(KbStatus.DRAFT)
-    for step in path:
-        await stack.apply(TransitionKbEntry(stack.ns, entry.id, step))
+    for step in path:  # as a reviewer: since P3 only a reviewer may verify
+        await stack.apply(TransitionKbEntry(stack.ns, entry.id, step), REVIEWER)
     with pytest.raises(Conflict):
         await stack.apply(TransitionKbEntry(stack.ns, entry.id, illegal))
 

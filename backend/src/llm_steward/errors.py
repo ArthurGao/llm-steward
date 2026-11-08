@@ -17,6 +17,13 @@ class NotFound(StewardError):
     code = "not_found"
 
 
+class Forbidden(StewardError):
+    """The caller may not do this (e.g. only a reviewer can make knowledge verified)."""
+
+    status = 403
+    code = "forbidden"
+
+
 class Conflict(StewardError):
     """E.g. an illegal state transition."""
 

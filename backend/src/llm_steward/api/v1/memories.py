@@ -15,7 +15,8 @@ from llm_steward.schemas.memories import (
     MemoryPatch,
 )
 from llm_steward.services.governance_service import CreateMemory, PatchMemory
-from llm_steward.services.memory_service import MAX_PAGE, MemoryFilter
+from llm_steward.services.memory_service import MemoryFilter
+from llm_steward.services.paging import MAX_PAGE
 
 router = APIRouter(prefix="/memories", tags=["memories"])
 

@@ -18,10 +18,10 @@ from llm_steward.services.governance_service import (
     PatchMemory,
     load_owned,
 )
+from llm_steward.services.paging import page
 from llm_steward.services.scoping import visible
 from llm_steward.storage.db import json_array_contains
 
-MAX_PAGE = 200
 CORE_MAX = 20
 
 
@@ -100,15 +100,12 @@ class MemoryService:
                 query = query.where(column == value)
         if filters.tag is not None:
             query = query.where(json_array_contains(Memory.tags, filters.tag))
-        if cursor is not None:
-            query = query.where(Memory.id < cursor)
-        query = query.order_by(Memory.id.desc()).limit(min(limit, MAX_PAGE) + 1)
         async with self._sessions() as s:
-            rows = list(await s.scalars(query))
-            page, more = rows[:limit], len(rows) > limit
-            statuses = await self._sync_statuses(s, [m.id for m in page])
-        views = [MemoryView(m, statuses.get(m.id, SyncStatus.PENDING)) for m in page]
-        return views, (page[-1].id if more else None)
+            memories: list[Memory]
+            memories, next_cursor = await page(s, query, Memory, cursor, limit)
+            statuses = await self._sync_statuses(s, [m.id for m in memories])
+        views = [MemoryView(m, statuses.get(m.id, SyncStatus.PENDING)) for m in memories]
+        return views, next_cursor
 
     async def get_many(
         self, namespace_id: uuid.UUID, memory_ids: list[uuid.UUID]

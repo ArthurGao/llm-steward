@@ -35,8 +35,16 @@ class Principal:
 
     @property
     def actor(self) -> Actor:
-        """Writes made with an API key are attributed to that key (the host app's server)."""
-        return Actor(ActorType.HOST_APP, f"api_key:{self.key_id}")
+        """Writes made with an API key are attributed to that key (the host app's server). A key
+        with the `review` scope may also review (decided 2026-11-09, until Admin login in P5)."""
+        return Actor(
+            ActorType.HOST_APP, f"api_key:{self.key_id}", can_review=ApiScope.REVIEW in self.scopes
+        )
+
+    def acting_for(self, user_id: str) -> Actor:
+        """The end user the host app speaks for (design §7: the key-holding server is trusted with
+        user ids). REST and MCP both build it here."""
+        return Actor(ActorType.END_USER, user_id)
 
 
 def _hash(secret: str) -> str:

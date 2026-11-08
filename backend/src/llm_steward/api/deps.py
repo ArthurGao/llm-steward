@@ -55,3 +55,4 @@ def require(scope: ApiScope) -> Callable[..., Awaitable[Principal]]:
 
 Reader = Annotated[Principal, Depends(require(ApiScope.READ))]
 Writer = Annotated[Principal, Depends(require(ApiScope.WRITE))]
+Reviewer = Annotated[Principal, Depends(require(ApiScope.REVIEW))]
