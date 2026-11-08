@@ -172,6 +172,13 @@ class SyncService:
             if obj is None or not _effective(obj):
                 return "retired"
             if version is not None and obj.version != version:
+                # still pending, but the engine holds a copy now: record its id so the retry
+                # replaces that copy instead of creating a second one nothing would remove
+                await s.execute(
+                    update(ExternalRef)
+                    .where(*_ref_key(object_type, object_id, provider))
+                    .values(external_id=external_id)
+                )
                 key = "memory_id" if model is Memory else "entry_id"
                 enqueue(s, obj.namespace_id, job, {key: str(object_id)})
                 return "outdated"

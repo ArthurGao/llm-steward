@@ -385,3 +385,29 @@ def test_a_stale_kb_upsert_cannot_overwrite_a_newer_version(
     hits = app_client.call(kb.search, "refunds", [app_client.collection_ext_id(entry)], top_k=5)
     assert [h_.text.splitlines()[-1] for h_ in hits] == ["Refunds now take 7 days"]
     assert _ref(app_client, str(entry.id)).synced_version == 2
+
+
+def test_an_outdated_push_hands_its_engine_id_to_the_retry(
+    app_client: AppClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The entry changed while it was being pushed: the retry must replace what the engine just
+    stored (its id is recorded), not create a second copy that nothing would ever remove."""
+    _, ns_id = app_client.new_tenant("acme")
+    entry = _kb_entry(app_client, ns_id, KbStatus.ACTIVE)
+    kb = app_client.services.providers.kb
+    original = kb.upsert_entry
+    seen: list[str | None] = []
+
+    async def upsert(doc: Any, collection: str, existing_id: str | None = None) -> str:
+        seen.append(existing_id)
+        if len(seen) == 1:  # an edit lands while the first push is in flight
+            from llm_steward.services.governance_service import UpdateKbEntry
+
+            await app_client.services.governance.apply(
+                UpdateKbEntry(ns_id, entry.id, content="Refunds now take 7 days"), ADMIN
+            )
+        return await original(doc, collection, existing_id)
+
+    monkeypatch.setattr(kb, "upsert_entry", upsert)
+    app_client.drain()
+    assert seen[0] is None and seen[1:] and all(e == str(entry.id) for e in seen[1:])
