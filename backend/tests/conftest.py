@@ -185,6 +185,19 @@ class AppClient:
         """Run the outbox worker until nothing is claimable (the in-process worker is off)."""
         return self.call(self.services.worker.drain)
 
+    def set_config(self, namespace_id: uuid.UUID, config: dict[str, Any]) -> None:
+        """A namespace's config (design §8); no route sets it yet (`steward ns apply` later)."""
+        from llm_steward.models import Namespace
+        from llm_steward.storage.db import session_factory
+
+        async def write() -> None:
+            async with session_factory(self.services.engine)() as s, s.begin():
+                namespace = await s.get(Namespace, namespace_id)
+                assert namespace is not None
+                namespace.config = config
+
+        self.call(write)
+
     def make_jobs_due(self) -> None:
         """Make every waiting job claimable now (e.g. parse-status polls scheduled ahead)."""
         from sqlalchemy import update

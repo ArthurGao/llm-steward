@@ -13,15 +13,36 @@ class RetrieveScope(BaseModel):
     session_id: str | None = None
 
 
+class RetrieveFilters(BaseModel):
+    tags: list[str] = Field(default_factory=list, max_length=20, description="All of them (AND).")
+    metadata: dict[str, str | int | float | bool] = Field(
+        default_factory=dict, description="Exact values; KB documents carry none."
+    )
+
+
 class RetrieveIn(BaseModel):
     query: str = Field(min_length=1, max_length=4_000)
     scope: RetrieveScope = Field(default_factory=RetrieveScope)
     sources: list[Literal["memory", "kb"]] = Field(default=["memory", "kb"], min_length=1)
     collections: list[str] | None = None
-    top_k: int = Field(default=8, ge=1, le=50)
+    top_k: int | None = Field(
+        default=None, ge=1, le=50, description="Default: the namespace's (8)."
+    )
     format: Literal["items", "context"] = "items"
     as_of: datetime | None = Field(
         default=None, description="What was valid at this moment (superseded memories included)."
+    )
+    memory_types: list[str] | None = Field(default=None, description="Memory types to include.")
+    filters: RetrieveFilters = Field(default_factory=RetrieveFilters)
+    include_pinned: bool = Field(
+        default=True, description="Put the user's pinned memories and profile values first."
+    )
+    rerank: bool = Field(default=False, description="Re-score the fused candidates (P4d).")
+    token_budget: int | None = Field(
+        default=None,
+        ge=1,
+        le=100_000,
+        description="Default: the namespace's (2000). Estimated tokens of the returned items.",
     )
 
 

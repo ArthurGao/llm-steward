@@ -27,6 +27,12 @@ async def retrieve(body: RetrieveIn, principal: Reader, services: ServicesDep) -
             top_k=body.top_k,
             with_context=body.format == "context",
             as_of=body.as_of,
+            memory_types=tuple(body.memory_types) if body.memory_types is not None else None,
+            tags=tuple(body.filters.tags),
+            metadata=dict(body.filters.metadata),
+            include_pinned=body.include_pinned,
+            rerank=body.rerank,
+            token_budget=body.token_budget,
         ),
     )
     result, cards = await asyncio.gather(search, services.kb.cards(scope))  # independent reads

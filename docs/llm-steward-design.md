@@ -853,6 +853,20 @@ llm-steward/
      - 手机号检测回退：新正则的开头排除了 `+`，`+13812345678` 不再匹配。现在开头只排除数字，前缀允许 `+86` 或单个 `+`。
      - 记忆在推送途中被整行删除（按用户硬删除，规则 6 的例外）时，原来在当前任务里直接撤回，撤回失败就留下副本。现在 `_confirm` 在同一个事务里排 `sync.memory_remove`，payload 带上引擎 id；删除任务直接删这个 id，失败按退避重试。按用户硬删除的接口本身在 P5。
    - P4a（2026-11-09）：lite-rag S10 加了多 kb 检索（`search_kbs`、`POST /v1/search`，每个 kb 都要被 key 覆盖；lite-rag 自己的收尾 /simplify + Codex 无发现，提交 6d52f90）。`LiteRagProvider` 每个 lite-rag namespace 只调一次，查询只嵌入一次，多个 collection 只融合一次、只 rerank 一次；pin 从 df84939 升到 6d52f90，`-m contract` 通过（进程内与 HTTP）。lite-rag 的 BM25 是按 kb 各自统计 IDF 的，跨 kb 合并是近似值（见 lite-rag 设计 §5）。
+   - P4b 打分（2026-11-09，测试先行）：
+     - 最终分 = RRF × 权重。权重在反查时按 §6 公式算好：
+       - 可信度：verified 1.0、active 0.9；置信度 < 0.5 的记忆再 × 0.8。
+       - 重要性：记忆用自己的值，KB 内容按 0.5 计；加成系数 0.3。
+       - 衰减：半衰期按记忆类型，episodic 默认 30 天，其余记忆和 KB 不衰减。
+     - 这些默认值在代码里，命名空间配置可以覆盖：`retrieval.trust_weights`、`retrieval.importance_boost`、`retrieval.top_k`、`retrieval.token_budget`、`memory.types[].half_life_days`。配置每次请求读一次，和查 collection 共用一个会话。
+     - 去冗余：MMR（λ = 0.7）在融合后的前 3·top_k 条里挑。相似度是词面的 Jaccard，拉丁文按词、中文按相邻两字，不加载 jieba，检索路径上不跑模型。每选一条只增量更新各候选的最大重叠度：审查时实测旧写法在 n=150、k=50 时约 700 ms，增量写法约 8 ms。
+     - token 预算：按 MMR 的顺序挑，放不下的跳过，并且不参与去重，下一条放得下的顶上，直到凑够 top_k；常驻记忆排最前，计入预算但不计入 top_k。`format=context` 时按每条渲染后的文本计算，保证上下文本身不超预算。
+     - token 估算全项目只有一份（`ranking.estimate_tokens`，事件缓冲也用它）：中文字符各算 1，其余 ⌈字符数 / 4⌉。
+     - 新请求参数：`memory_types`、`filters.tags`（全部匹配）、`filters.metadata`（值完全相等），在安全网之后过滤，KB 文档没有标签和元数据，带这两种过滤时被排除；`include_pinned`、`token_budget`；`top_k` 默认取命名空间配置；`rerank: true` 在 P4d 之前返回 422。带过滤条件时向 provider 多要 3 倍候选，减少过滤后结果不够的情况。
+     - 排序在数据库事务之外进行，日志用单独的短事务写。
+     - 留到以后：
+       - 声明了 `metadata_filter` 的 provider（native、mem0）实际忽略 `filters` 参数，所以过滤条件还没有下推，放在 P4 收尾处理。
+       - 命名空间配置改成一个 Pydantic 模型、写入时校验，和 P5 的 `steward ns apply` 一起做；现在配置写错会让检索报 500。
    - 验收：用 Fake provider 注入 2 秒延迟，响应仍在超时预算内返回并标记 degraded；在小型标注集（20–30 条 query）上 recall@8 达标（阈值在建立基线后确定）
 6. **P5 接入与安全**
    - [ ] API key、user token、Admin JWT、限流、幂等、Problem Details、webhooks

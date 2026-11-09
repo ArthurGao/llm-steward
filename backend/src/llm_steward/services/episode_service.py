@@ -19,6 +19,7 @@ from llm_steward.models import Episode
 from llm_steward.models.base import utcnow
 from llm_steward.models.enums import EpisodeKind, JobType
 from llm_steward.providers.base import EXTRACT, MemoryProvider, Scope
+from llm_steward.ranking import estimate_tokens
 from llm_steward.services.governance_service import Actor, CreateEpisode, GovernanceService
 from llm_steward.services.job_queue import enqueue
 from llm_steward.services.scoping import exact
@@ -34,12 +35,6 @@ class Ingested:
     status: Status
     job_id: uuid.UUID | None = None
     memory_ids: list[uuid.UUID] = field(default_factory=list)  # set when processed
-
-
-def estimate_tokens(text: str) -> int:
-    """Rough and cheap: a CJK character is about one token, other text about four characters."""
-    cjk = sum(1 for ch in text if "㐀" <= ch <= "鿿")
-    return cjk + (len(text) - cjk) // 4
 
 
 class EpisodeService:

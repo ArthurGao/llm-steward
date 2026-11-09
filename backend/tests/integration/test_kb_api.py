@@ -1,21 +1,7 @@
 """The KB and candidate API (design §5, §7; P3 acceptance), end to end through the app, the
 worker and the native KB provider, on both dialects."""
 
-import uuid
-from typing import Any
-
 from tests.conftest import Tenant
-
-
-async def _set_config(engine: Any, namespace_id: uuid.UUID, config: dict[str, Any]) -> None:
-    """A namespace's config (design §8) — no API sets it yet (`steward ns apply` comes later)."""
-    from llm_steward.models import Namespace
-    from llm_steward.storage.db import session_factory
-
-    async with session_factory(engine)() as s, s.begin():
-        namespace = await s.get(Namespace, namespace_id)
-        assert namespace is not None
-        namespace.config = config
 
 
 def test_low_risk_knowledge_goes_live(t: Tenant) -> None:
@@ -91,7 +77,7 @@ def test_personal_data_is_redacted_and_sent_to_review(t: Tenant) -> None:
 
 
 def test_a_namespace_keyword_marks_knowledge_high_risk(t: Tenant) -> None:
-    t.c.call(_set_config, t.c.services.engine, t.ns, {"kb": {"high_risk_keywords": ["法律"]}})
+    t.c.set_config(t.ns, {"kb": {"high_risk_keywords": ["法律"]}})
     r = t.submit(t.collection(default_risk="low"), "本条款受法律约束")
     assert r.status_code == 202 and r.json()["candidate"]["stage"] == "awaiting_review"
 

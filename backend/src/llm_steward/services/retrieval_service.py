@@ -3,8 +3,12 @@
 Each provider is searched in parallel under its own timeout. Hits are mapped back to governed
 objects through `external_refs`; anything unknown, no longer effective, outside its validity window
 or outside the caller's scope is dropped. That is the safety net: even while sync lags behind,
-deprecated knowledge is never served. Results are fused by reciprocal rank, after the caller's core
-memories (pinned, profile values). Trust weights, decay, MMR and token budgets arrive in P4.
+deprecated knowledge is never served. The request's filters (memory types, tags, metadata) apply
+after it. Results are fused by reciprocal rank, weighted by trust, importance and time decay
+(each item's weight is computed where it is resolved), thinned by MMR, put after the caller's
+core memories (pinned, profile values) and cut to the token budget (design §6, `ranking`).
+Defaults live in code; the namespace config (`retrieval.*`, `memory.types[].half_life_days`)
+overrides them.
 """
 
 import asyncio
@@ -12,6 +16,7 @@ import dataclasses
 import logging
 import time
 import uuid
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any, Literal
@@ -20,7 +25,7 @@ from jinja2 import Environment, PackageLoader
 from sqlalchemy import or_, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from llm_steward.errors import ProviderUnavailable
+from llm_steward.errors import ProviderUnavailable, Unprocessable
 from llm_steward.ids import uuid7
 from llm_steward.models import (
     ExternalRef,
@@ -40,7 +45,16 @@ from llm_steward.models.enums import (
     SyncStatus,
 )
 from llm_steward.providers.base import ProviderHit, Providers, Scope
-from llm_steward.ranking import rrf_scores
+from llm_steward.ranking import (
+    IMPORTANCE_BOOST,
+    estimate_tokens,
+    fit_budget,
+    mmr,
+    rrf_scores,
+    similarity_terms,
+    weigh,
+)
+from llm_steward.services.governance_service import namespace_config
 from llm_steward.services.memory_service import core_memories
 from llm_steward.services.scoping import visible
 
@@ -54,6 +68,60 @@ ItemKind = Literal["memory", "entry", "document"]
 _MEMORY_CURRENT = (MemoryStatus.ACTIVE,)
 _MEMORY_HISTORY = (MemoryStatus.ACTIVE, MemoryStatus.SUPERSEDED)  # deleted stays out
 _KB_HISTORY = (*EFFECTIVE_KB_STATUSES, KbStatus.DEPRECATED)
+
+# Scoring defaults (design §6); the namespace config overrides them (`Scoring.from_config`).
+TOP_K = 8
+TOKEN_BUDGET = 2000
+FILTER_WIDENING = 3  # filters run on what the providers return: ask them for more
+MMR_POOL = 3  # MMR picks from the best top_k * MMR_POOL fused items
+TRUST = {"verified": 1.0, "active": 0.9}
+LOW_CONFIDENCE, LOW_CONFIDENCE_FACTOR = 0.5, 0.8  # an unsure memory counts less
+KB_IMPORTANCE = 0.5  # KB items have no importance of their own: neutral
+HALF_LIVES = {"episodic": 30.0}  # days; other memory types and KB never decay
+
+
+@dataclass(frozen=True)
+class Scoring:
+    top_k: int = TOP_K
+    token_budget: int = TOKEN_BUDGET
+    trust: dict[str, float] = field(default_factory=lambda: dict(TRUST))
+    importance_boost: float = IMPORTANCE_BOOST
+    half_lives: dict[str, float] = field(default_factory=lambda: dict(HALF_LIVES))
+
+    @classmethod
+    def from_config(cls, config: dict[str, Any]) -> "Scoring":
+        retrieval = config.get("retrieval") or {}
+        types = (config.get("memory") or {}).get("types") or []
+        half_lives = dict(HALF_LIVES) | {
+            t["name"]: float(t["half_life_days"])
+            for t in types
+            if isinstance(t, dict) and t.get("name") and t.get("half_life_days")
+        }
+        return cls(
+            top_k=int(retrieval.get("top_k", TOP_K)),
+            token_budget=int(retrieval.get("token_budget", TOKEN_BUDGET)),
+            trust=dict(TRUST) | dict(retrieval.get("trust_weights") or {}),
+            importance_boost=float(retrieval.get("importance_boost", IMPORTANCE_BOOST)),
+            half_lives=half_lives,
+        )
+
+    def memory_weight(self, m: Memory, now: datetime) -> float:
+        """trust (an unsure memory counts less) x importance x decay by its type's half-life."""
+        unsure = LOW_CONFIDENCE_FACTOR if m.confidence < LOW_CONFIDENCE else 1.0
+        return weigh(
+            1.0,
+            trust=self.trust["active"] * unsure,
+            importance=m.importance,
+            age_days=(now - m.valid_from).total_seconds() / 86400,
+            half_life_days=self.half_lives.get(m.memory_type),
+            boost=self.importance_boost,
+        )
+
+    def kb_weight(self, verified: bool) -> float:
+        """KB items: trust only, neutral importance, and knowledge does not decay with age."""
+        trust = self.trust["verified" if verified else "active"]
+        return trust * (1 + self.importance_boost * KB_IMPORTANCE)
+
 
 _templates = Environment(
     loader=PackageLoader("llm_steward", "prompts"),
@@ -71,10 +139,25 @@ class RetrieveRequest:
     session_id: str | None = None
     sources: tuple[Source, ...] = ("memory", "kb")
     collections: tuple[str, ...] | None = None  # collection names; None = all
-    top_k: int = 8
+    top_k: int | None = None  # None: the namespace's (default 8)
     with_context: bool = False
     # Retrieve what was valid at that moment (superseded memories included); no pinned prepend.
     as_of: datetime | None = None
+    memory_types: tuple[str, ...] | None = None  # None: every type
+    tags: tuple[str, ...] = ()  # every one of them (AND); KB documents have none
+    metadata: dict[str, Any] = field(default_factory=dict)  # exact values; documents have none
+    include_pinned: bool = True
+    rerank: bool = False
+    token_budget: int | None = None  # None: the namespace's (default 2000)
+
+    @property
+    def filtered(self) -> bool:
+        return self.memory_types is not None or bool(self.tags) or bool(self.metadata)
+
+    def matches(self, tags: list[str], meta: dict[str, Any]) -> bool:
+        return set(self.tags) <= set(tags) and all(
+            k in meta and meta[k] == v for k, v in self.metadata.items()
+        )
 
 
 @dataclass(frozen=True)
@@ -88,6 +171,7 @@ class RetrievedItem:
     score: float = 0.0
     pinned: bool = False  # always-present core memory (design §6 step 8), not a search hit
     kind: ItemKind = field(kw_only=True)  # a KB hit is an entry or a chunk of a document
+    weight: float = field(default=1.0, kw_only=True)  # trust x importance x decay (step 6)
 
 
 @dataclass(frozen=True)
@@ -111,11 +195,20 @@ class RetrievalService:
         self._timeout_s = timeout_s
 
     async def retrieve(self, namespace_id: uuid.UUID, req: RetrieveRequest) -> RetrieveResult:
+        if req.rerank:
+            raise Unprocessable("rerank is not available: no reranker is configured")
         scope = Scope(namespace_id, req.user_id, req.agent_id, req.session_id)
-        candidates = max(req.top_k * CANDIDATES_PER_RESULT, MIN_CANDIDATES)
-        collection_ext_ids = []
-        if "kb" in req.sources:
-            collection_ext_ids = await self._collection_ext_ids(namespace_id, req.collections)
+        async with self._sessions() as s:  # one session for both reads before the search
+            scoring = Scoring.from_config(await namespace_config(s, namespace_id))
+            collection_ext_ids = (
+                await self._collection_ext_ids(s, namespace_id, req.collections)
+                if "kb" in req.sources
+                else []
+            )
+        top_k = req.top_k or scoring.top_k
+        # Filters run after the safety net, on what the providers returned: ask for more.
+        widen = FILTER_WIDENING if req.filtered else 1
+        candidates = max(top_k * CANDIDATES_PER_RESULT * widen, MIN_CANDIDATES)
         searches: dict[Source, Any] = {}
         if "memory" in req.sources:
             searches["memory"] = self._providers.memory.search(req.query, scope, top_k=candidates)
@@ -138,14 +231,20 @@ class RetrievalService:
         if searches and not hits:
             raise ProviderUnavailable(f"every source failed: {', '.join(degraded)}")
 
+        now = req.as_of or utcnow()  # one clock for validity and age
+        async with self._sessions() as s:
+            rankings = await self._resolve(s, namespace_id, scope, hits, req, scoring, now)
+            core = req.include_pinned and req.as_of is None
+            pinned = _core_items(await core_memories(s, scope)) if core else []
+        # Ranking is CPU work: no connection is held while it runs.
+        seen = {p.id for p in pinned}
+        ranked = [i for i in _fuse(rankings) if i.id not in seen]
+        cost = _line_cost if req.with_context else _text_cost
+        items = _select(pinned, ranked, top_k, req.token_budget or scoring.token_budget, cost)
         async with self._sessions() as s, s.begin():
-            rankings = await self._resolve(s, namespace_id, scope, hits, req.as_of)
-            pinned = [] if req.as_of else _core_items(await core_memories(s, scope))
-            seen = {p.id for p in pinned}
-            fused = pinned + [i for i in _fuse(rankings, req.top_k) if i.id not in seen]
-            retrieval_id = self._log(s, namespace_id, req, fused, latency_ms)
-        context = _render(fused) if req.with_context else None
-        return RetrieveResult(retrieval_id, fused, degraded, context)
+            retrieval_id = self._log(s, namespace_id, req, items, latency_ms)
+        context = _render(items) if req.with_context else None
+        return RetrieveResult(retrieval_id, items, degraded, context)
 
     async def _timed(self, search: Any) -> tuple[Any, int]:
         started = time.perf_counter()
@@ -157,7 +256,7 @@ class RetrievalService:
         return result, int((time.perf_counter() - started) * 1000)
 
     async def _collection_ext_ids(
-        self, namespace_id: uuid.UUID, names: tuple[str, ...] | None
+        self, s: AsyncSession, namespace_id: uuid.UUID, names: tuple[str, ...] | None
     ) -> list[str]:
         query = (
             select(ExternalRef.external_id)
@@ -171,8 +270,7 @@ class RetrievalService:
         )
         if names is not None:
             query = query.where(KbCollection.name.in_(names))
-        async with self._sessions() as s:
-            return [eid for eid in await s.scalars(query) if eid]
+        return [eid for eid in await s.scalars(query) if eid]
 
     async def _resolve(
         self,
@@ -180,21 +278,23 @@ class RetrievalService:
         namespace_id: uuid.UUID,
         scope: Scope,
         hits: dict[Source, list[ProviderHit]],
-        as_of: datetime | None,
+        req: RetrieveRequest,
+        scoring: Scoring,
+        now: datetime,
     ) -> list[list[RetrievedItem]]:
         """Map provider hits to governed objects, keeping each provider's order; drop whatever
         governance would not serve (at `as_of`, what was valid then)."""
         rankings: list[list[RetrievedItem]] = []
         if hits.get("memory"):
-            known = await self._memories(s, namespace_id, scope, hits["memory"], as_of)
+            known = await self._memories(s, namespace_id, scope, hits["memory"], req, scoring, now)
             rankings.append(
                 [known[h.external_id] for h in hits["memory"] if h.external_id in known]
             )
         if hits.get("kb"):
-            known = await self._entries(s, namespace_id, hits["kb"], as_of)
+            known = await self._entries(s, namespace_id, hits["kb"], req, scoring, now)
             rest = [h for h in hits["kb"] if h.external_id not in known]
             if rest:  # not an entry: maybe a document's chunk
-                known |= await self._documents(s, namespace_id, rest, as_of)
+                known |= await self._documents(s, namespace_id, rest, req, scoring, now)
             rankings.append([known[h.external_id] for h in hits["kb"] if h.external_id in known])
         dropped = sum(len(h) for h in hits.values()) - sum(len(r) for r in rankings)
         if dropped:
@@ -207,9 +307,10 @@ class RetrievalService:
         namespace_id: uuid.UUID,
         scope: Scope,
         hits: list[ProviderHit],
-        as_of: datetime | None,
+        req: RetrieveRequest,
+        scoring: Scoring,
+        now: datetime,
     ) -> dict[str, RetrievedItem]:
-        now = as_of or utcnow()
         query = (
             select(ExternalRef.external_id, Memory)
             .join(Memory, Memory.id == ExternalRef.object_id)
@@ -219,19 +320,28 @@ class RetrievalService:
                 ExternalRef.namespace_id == namespace_id,
                 ExternalRef.external_id.in_([h.external_id for h in hits]),
                 *visible(Memory, scope, session=True),
-                Memory.status.in_(_MEMORY_HISTORY if as_of else _MEMORY_CURRENT),
+                Memory.status.in_(_MEMORY_HISTORY if req.as_of else _MEMORY_CURRENT),
                 Memory.valid_from <= now,
                 or_(Memory.valid_to.is_(None), Memory.valid_to > now),
                 or_(Memory.expires_at.is_(None), Memory.expires_at > now),
             )
         )
+        if req.memory_types is not None:
+            query = query.where(Memory.memory_type.in_(req.memory_types))
         rows = await s.execute(query)
         return {
             eid: RetrievedItem(
-                "memory", m.id, m.content, None, m.status.value, False, kind="memory"
+                "memory",
+                m.id,
+                m.content,
+                None,
+                m.status.value,
+                False,
+                kind="memory",
+                weight=scoring.memory_weight(m, now),
             )
             for eid, m in rows
-            if eid
+            if eid and req.matches(m.tags, m.meta)
         }
 
     async def _entries(
@@ -239,9 +349,10 @@ class RetrievalService:
         s: AsyncSession,
         namespace_id: uuid.UUID,
         hits: list[ProviderHit],
-        as_of: datetime | None,
+        req: RetrieveRequest,
+        scoring: Scoring,
+        now: datetime,
     ) -> dict[str, RetrievedItem]:
-        now = as_of or utcnow()
         query = (
             select(ExternalRef.external_id, KbEntry)
             .join(KbEntry, KbEntry.id == ExternalRef.object_id)
@@ -251,7 +362,7 @@ class RetrievalService:
                 ExternalRef.namespace_id == namespace_id,
                 ExternalRef.external_id.in_([h.external_id for h in hits]),
                 KbEntry.namespace_id == namespace_id,
-                KbEntry.status.in_(_KB_HISTORY if as_of else EFFECTIVE_KB_STATUSES),
+                KbEntry.status.in_(_KB_HISTORY if req.as_of else EFFECTIVE_KB_STATUSES),
                 KbEntry.valid_from <= now,
                 or_(KbEntry.valid_to.is_(None), KbEntry.valid_to > now),
             )
@@ -266,9 +377,10 @@ class RetrievalService:
                 e.status.value,
                 e.status == KbStatus.VERIFIED,
                 kind="entry",
+                weight=scoring.kb_weight(e.status == KbStatus.VERIFIED),
             )
             for eid, e in rows
-            if eid
+            if eid and req.matches(e.tags, e.meta)
         }
 
     async def _documents(
@@ -276,11 +388,15 @@ class RetrievalService:
         s: AsyncSession,
         namespace_id: uuid.UUID,
         hits: list[ProviderHit],
-        as_of: datetime | None,
+        req: RetrieveRequest,
+        scoring: Scoring,
+        now: datetime,
     ) -> dict[str, RetrievedItem]:
         """Hits on document chunks: served only for a live (or, at `as_of`, then live) document
-        the engine has finished parsing. The content is the matching chunk, not the file."""
-        now = as_of or utcnow()
+        the engine has finished parsing. The content is the matching chunk, not the file. A
+        document has no tags or metadata: a request that filters on them gets none."""
+        if req.tags or req.metadata:
+            return {}
         query = (
             select(ExternalRef.external_id, KbDocument)
             .join(KbDocument, KbDocument.id == ExternalRef.object_id)
@@ -290,7 +406,7 @@ class RetrievalService:
                 ExternalRef.namespace_id == namespace_id,
                 ExternalRef.external_id.in_([h.external_id for h in hits]),
                 KbDocument.namespace_id == namespace_id,
-                KbDocument.state.in_(_KB_HISTORY if as_of else EFFECTIVE_KB_STATUSES),
+                KbDocument.state.in_(_KB_HISTORY if req.as_of else EFFECTIVE_KB_STATUSES),
                 KbDocument.status == DocStatus.READY,
                 KbDocument.created_at <= now,
                 or_(KbDocument.valid_to.is_(None), KbDocument.valid_to > now),
@@ -306,6 +422,7 @@ class RetrievalService:
                 d.state.value,
                 d.state == KbStatus.VERIFIED,
                 kind="document",
+                weight=scoring.kb_weight(d.state == KbStatus.VERIFIED),
             )
             for h in hits
             if (d := documents.get(h.external_id)) is not None
@@ -330,6 +447,10 @@ class RetrievalService:
                 "sources": list(req.sources),
                 "collections": list(req.collections) if req.collections else None,
                 "top_k": req.top_k,
+                "memory_types": list(req.memory_types) if req.memory_types else None,
+                "tags": list(req.tags),
+                "metadata": req.metadata,
+                "token_budget": req.token_budget,
             },
             results=[{"source": i.source, "id": str(i.id), "score": i.score} for i in items],
             latency_ms=latency_ms,
@@ -338,12 +459,55 @@ class RetrievalService:
         return entry.id
 
 
-def _fuse(rankings: list[list[RetrievedItem]], top_k: int) -> list[RetrievedItem]:
-    """Reciprocal rank fusion: provider scores are not comparable across engines, ranks are."""
+def _fuse(rankings: list[list[RetrievedItem]]) -> list[RetrievedItem]:
+    """Reciprocal rank fusion (provider scores are not comparable across engines, ranks are),
+    times each item's weight; best first, ties by id."""
     scores = rrf_scores([[item.id for item in ranking] for ranking in rankings])
     items = {item.id: item for ranking in rankings for item in ranking}
-    best = sorted(scores.items(), key=lambda kv: kv[1], reverse=True)[:top_k]
-    return [dataclasses.replace(items[item_id], score=score) for item_id, score in best]
+    weighted = [
+        dataclasses.replace(items[i], score=rel * items[i].weight) for i, rel in scores.items()
+    ]
+    return sorted(weighted, key=lambda item: (-item.score, item.id))
+
+
+def _select(
+    pinned: list[RetrievedItem],
+    ranked: list[RetrievedItem],
+    top_k: int,
+    budget: int,
+    cost: Callable[[RetrievedItem], int],
+) -> list[RetrievedItem]:
+    """Pinned first (they count against the budget, not against `top_k`), then up to `top_k`
+    of the best fused items in MMR order. An item too long for what is left of the budget is
+    passed over (and does not count for diversity): the next one that fits takes its place."""
+    kept = fit_budget(pinned, cost, budget)
+    left = budget - sum(cost(i) for i in kept)
+    pool = {i.id: i for i in ranked[: top_k * MMR_POOL]}
+
+    def fits(item_id: uuid.UUID) -> bool:
+        nonlocal left
+        c = cost(pool[item_id])
+        if c > left:
+            return False
+        left -= c
+        return True
+
+    terms = [(i.id, i.score, similarity_terms(_text(i))) for i in pool.values()]
+    return kept + [pool[i] for i in mmr(terms, top_k, accept=fits)]
+
+
+def _text(item: RetrievedItem) -> str:
+    return f"{item.title or ''} {item.content}"
+
+
+def _text_cost(item: RetrievedItem) -> int:
+    return estimate_tokens(_text(item))
+
+
+def _line_cost(item: RetrievedItem) -> int:
+    """For format=context: the item as rendered (its heading included, so a context can never
+    exceed the budget: the full render shares headings)."""
+    return estimate_tokens(_render([item]))
 
 
 def _render(items: list[RetrievedItem]) -> str:
