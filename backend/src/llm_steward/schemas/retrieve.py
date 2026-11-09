@@ -80,3 +80,9 @@ class RetrieveOut(BaseModel):
         description="What failed or ran out of time; the rest of the response stands."
     )
     context: str | None = None
+
+
+class FeedbackIn(BaseModel):
+    item_id: uuid.UUID = Field(description="One of the items this retrieval returned.")
+    helpful: bool
+    note: str | None = Field(default=None, max_length=2000, description="Personal data redacted.")

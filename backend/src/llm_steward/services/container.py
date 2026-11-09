@@ -46,6 +46,7 @@ Handler = Callable[[ClaimedJob], Awaitable[Any]]
 log = logging.getLogger(__name__)
 IDLE_FLUSH_EVERY_S = 60.0
 EXPIRE_EVERY_S = 24 * 3600.0  # candidates expire after days (governance CANDIDATE_TTL)
+HITS_EVERY_S = 30.0  # hit counts lag retrievals by at most this (design §6 step 9)
 
 
 @dataclass(frozen=True)
@@ -95,6 +96,13 @@ def build_services(
         sessions, governance, providers.memory, llm, on_extracted=kb.queue_suggestions
     )
     reconcile = ReconcileService(sessions, providers.memory)
+    retrieval = RetrievalService(
+        sessions,
+        providers,
+        timeout_s=settings.retrieve_timeout_ms / 1000,
+        reranker=reranker,
+        rerank_timeout_s=settings.rerank_timeout_ms / 1000,
+    )
     handlers: dict[JobType, Handler] = {
         **dict.fromkeys(SyncService.JOB_TYPES, sync.handle),
         JobType.MEMORY_EXTRACT: extraction.handle,
@@ -115,6 +123,7 @@ def build_services(
             # late-bound: `episodes` is built below, with the worker's run_job
             Tick("flush idle episode buffers", IDLE_FLUSH_EVERY_S, lambda: episodes.flush_idle()),
             Tick("expire unanswered candidates", EXPIRE_EVERY_S, governance.expire_candidates),
+            Tick("count retrieval hits", HITS_EVERY_S, retrieval.count_hits),
             Tick(
                 "schedule reconcile",
                 settings.reconcile_interval_hours * 3600.0,
@@ -147,13 +156,7 @@ def build_services(
         ),
         episodes=episodes,
         reconcile=reconcile,
-        retrieval=RetrievalService(
-            sessions,
-            providers,
-            timeout_s=settings.retrieve_timeout_ms / 1000,
-            reranker=reranker,
-            rerank_timeout_s=settings.rerank_timeout_ms / 1000,
-        ),
+        retrieval=retrieval,
         worker=worker,
     )
 

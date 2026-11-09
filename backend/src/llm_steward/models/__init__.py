@@ -13,6 +13,7 @@ from llm_steward.models.tables import (
     KbEntry,
     Memory,
     Namespace,
+    RetrievalFeedback,
     RetrievalLog,
 )
 
@@ -31,5 +32,6 @@ __all__ = [
     "KbEntry",
     "Memory",
     "Namespace",
+    "RetrievalFeedback",
     "RetrievalLog",
 ]

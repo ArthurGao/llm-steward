@@ -185,6 +185,18 @@ class AppClient:
         """Run the outbox worker until nothing is claimable (the in-process worker is off)."""
         return self.call(self.services.worker.drain)
 
+    def get(self, model: Any, object_id: Any) -> Any:
+        """One row by primary key (a str id is parsed), read in its own session."""
+        from llm_steward.storage.db import session_factory
+
+        key = uuid.UUID(object_id) if isinstance(object_id, str) else object_id
+
+        async def read() -> Any:
+            async with session_factory(self.services.engine)() as s:
+                return await s.get(model, key)
+
+        return self.call(read)
+
     def set_config(self, namespace_id: uuid.UUID, config: dict[str, Any]) -> None:
         """A namespace's config (design §8); no route sets it yet (`steward ns apply` later)."""
         from llm_steward.models import Namespace

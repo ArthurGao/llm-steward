@@ -285,12 +285,33 @@ class ChangeLog(IdMixin, CreatedMixin, Base):
 
 class RetrievalLog(IdMixin, CreatedMixin, Base):
     __tablename__ = "retrieval_logs"
+    # the hit-count pass reads the logs it has not counted yet, oldest first (P4e)
+    __table_args__ = (Index("ix_retrieval_logs_uncounted", "counted", "id"),)
     namespace_id: Mapped[uuid.UUID] = _namespace_fk()
     query: Mapped[str] = mapped_column(Text)
     filters: Mapped[dict[str, Any]] = mapped_column(default=dict)
-    results: Mapped[list[dict[str, Any]]] = mapped_column(default=list)
+    results: Mapped[list[dict[str, Any]]] = mapped_column(default=list)  # what was returned
     latency_ms: Mapped[dict[str, Any]] = mapped_column(default=dict)
-    feedback: Mapped[dict[str, Any] | None]
+    feedback: Mapped[dict[str, Any] | None]  # unused since P4e: see RetrievalFeedback
+    left_out: Mapped[list[dict[str, Any]]] = mapped_column(default=list)  # candidates, and why
+    counted: Mapped[bool] = mapped_column(default=False)  # its hits are in the counters
+
+
+class RetrievalFeedback(IdMixin, CreatedMixin, Base):
+    """Was a returned item helpful (design §7)? One row per answer, so windowed questions ("what
+    was unhelpful this week") are a query, not a scan of log JSON."""
+
+    __tablename__ = "retrieval_feedback"
+    __table_args__ = (Index("ix_retrieval_feedback_recent", "namespace_id", "created_at"),)
+    namespace_id: Mapped[uuid.UUID] = _namespace_fk()
+    retrieval_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("retrieval_logs.id", ondelete="CASCADE"), index=True
+    )
+    item_id: Mapped[uuid.UUID]
+    kind: Mapped[str] = mapped_column(String(16))  # memory | entry | document
+    helpful: Mapped[bool]
+    note: Mapped[str | None] = mapped_column(Text)  # redacted
+    given_by: Mapped[str | None] = mapped_column(String(200))
 
 
 class Job(IdMixin, TimestampMixin, Base):

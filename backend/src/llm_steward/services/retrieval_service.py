@@ -16,13 +16,14 @@ import dataclasses
 import logging
 import time
 import uuid
+from collections import Counter
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any, Literal
 
 from jinja2 import Environment, PackageLoader
-from sqlalchemy import or_, select
+from sqlalchemy import or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from llm_steward.errors import ProviderUnavailable, Unprocessable
@@ -33,6 +34,7 @@ from llm_steward.models import (
     KbDocument,
     KbEntry,
     Memory,
+    RetrievalFeedback,
     RetrievalLog,
 )
 from llm_steward.models.base import utcnow
@@ -44,6 +46,7 @@ from llm_steward.models.enums import (
     ObjectType,
     SyncStatus,
 )
+from llm_steward.pipeline.risk import redact_pii
 from llm_steward.providers.base import ProviderHit, Providers, Reranker, Scope
 from llm_steward.ranking import (
     IMPORTANCE_BOOST,
@@ -54,7 +57,7 @@ from llm_steward.ranking import (
     similarity_terms,
     weigh,
 )
-from llm_steward.services.governance_service import namespace_config
+from llm_steward.services.governance_service import load_owned, namespace_config
 from llm_steward.services.memory_service import core_memories
 from llm_steward.services.scoping import visible
 
@@ -77,6 +80,7 @@ FILTER_WIDENING = 3  # filters run on what the providers return: ask them for mo
 MMR_POOL = 3  # MMR picks from the best top_k * MMR_POOL fused items
 CHUNK_SEPARATOR = "\n…\n"  # between a document's chunks in one item
 RERANK_TOP_N = 30  # design §6 step 5
+HIT_BATCH = 500  # retrievals counted per pass of the hit-count tick
 TRUST = {"verified": 1.0, "active": 0.9}
 LOW_CONFIDENCE, LOW_CONFIDENCE_FACTOR = 0.5, 0.8  # an unsure memory counts less
 KB_IMPORTANCE = 0.5  # KB items have no importance of their own: neutral
@@ -175,6 +179,7 @@ class RetrievedItem:
     pinned: bool = False  # always-present core memory (design §6 step 8), not a search hit
     kind: ItemKind = field(kw_only=True)  # a KB hit is an entry or a chunk of a document
     weight: float = field(default=1.0, kw_only=True)  # trust x importance x decay (step 6)
+    rel: float = field(default=0.0, kw_only=True)  # fused (RRF) relevance before the weight
     # a document's matching chunks, best first; `content` is them joined (CHUNK_SEPARATOR)
     passages: tuple[str, ...] = field(default=(), kw_only=True)
 
@@ -252,11 +257,101 @@ class RetrievalService:
         if req.rerank and self._reranker is not None and ranked:
             ranked, reranked_by = await self._rerank(req.query, ranked, degraded, latency_ms)
         cost = _line_cost if req.with_context else _text_cost
-        items = _select(pinned, ranked, top_k, req.token_budget or scoring.token_budget, cost)
+        budget = req.token_budget or scoring.token_budget
+        items, left_out = _select(pinned, ranked, top_k, budget, cost)
+        ranks = {i.id: rank for r in rankings for rank, i in enumerate(r, start=1)}
         async with self._sessions() as s, s.begin():
-            retrieval_id = self._log(s, namespace_id, req, items, latency_ms, reranked_by)
+            retrieval_id = self._log(
+                s, namespace_id, req, items, left_out, ranks, latency_ms, reranked_by
+            )
         context = _render(items) if req.with_context else None
         return RetrieveResult(retrieval_id, items, degraded, context)
+
+    async def feedback(
+        self,
+        namespace_id: uuid.UUID,
+        retrieval_id: uuid.UUID,
+        item_id: uuid.UUID,
+        *,
+        helpful: bool,
+        note: str | None,
+        by: str | None,
+    ) -> None:
+        """Feedback on one returned item (design §7): a row of its own (the note redacted) and,
+        for a KB entry, its helpful / unhelpful count, at once (feedback is rare: no queue).
+        404: no such retrieval in this namespace; 422: the item was not one it returned."""
+        async with self._sessions() as s, s.begin():
+            log_row = await load_owned(
+                s, RetrievalLog, namespace_id, retrieval_id, "retrieval", lock=False
+            )
+            returned = {r["id"]: r for r in log_row.results}
+            row = returned.get(str(item_id))
+            if row is None:
+                raise Unprocessable(f"{item_id} was not returned by retrieval {retrieval_id}")
+            s.add(
+                RetrievalFeedback(
+                    namespace_id=namespace_id,
+                    retrieval_id=retrieval_id,
+                    item_id=item_id,
+                    kind=row["kind"],
+                    helpful=helpful,
+                    note=redact_pii(note) if note else None,
+                    given_by=by,
+                )
+            )
+            if row["kind"] == "entry":
+                counter = KbEntry.helpful_count if helpful else KbEntry.unhelpful_count
+                await s.execute(
+                    update(KbEntry)
+                    .where(KbEntry.namespace_id == namespace_id, KbEntry.id == item_id)
+                    .values({counter: counter + 1, KbEntry.updated_at: KbEntry.updated_at})
+                )
+
+    async def count_hits(self, batch: int = HIT_BATCH) -> int:
+        """Design §6 step 9, off the request path (a worker tick): the hits of up to `batch`
+        uncounted retrievals, added to the counters in one update per object (sorted, so two
+        workers never wait on each other in opposite orders), and the logs marked counted, in one
+        transaction. Returns how many retrievals were counted.
+
+        The counters are statistics, not governed state: written here directly, with no
+        change_log and without touching `updated_at` (being read is not being edited)."""
+        async with self._sessions() as s, s.begin():
+            logs = list(
+                await s.scalars(
+                    select(RetrievalLog)
+                    .where(RetrievalLog.counted.is_(False))
+                    .order_by(RetrievalLog.id)
+                    .limit(batch)
+                    .with_for_update(skip_locked=True)
+                )
+            )
+            hits: dict[str, Counter[tuple[uuid.UUID, uuid.UUID]]] = {
+                "memory": Counter(),
+                "entry": Counter(),
+            }
+            for log_row in logs:
+                for r in log_row.results:
+                    if r["kind"] in hits:
+                        hits[r["kind"]][(log_row.namespace_id, uuid.UUID(r["id"]))] += 1
+                log_row.counted = True
+            now = utcnow()
+            for (ns, memory_id), n in sorted(hits["memory"].items()):
+                await s.execute(
+                    update(Memory)
+                    .where(Memory.namespace_id == ns, Memory.id == memory_id)
+                    .values(
+                        access_count=Memory.access_count + n,
+                        last_accessed_at=now,
+                        updated_at=Memory.updated_at,
+                    )
+                )
+            for (ns, entry_id), n in sorted(hits["entry"].items()):
+                await s.execute(
+                    update(KbEntry)
+                    .where(KbEntry.namespace_id == ns, KbEntry.id == entry_id)
+                    .values(hit_count=KbEntry.hit_count + n, updated_at=KbEntry.updated_at)
+                )
+        return len(logs)
 
     async def _rerank(
         self,
@@ -480,9 +575,15 @@ class RetrievalService:
         namespace_id: uuid.UUID,
         req: RetrieveRequest,
         items: list[RetrievedItem],
+        left_out: list[tuple[RetrievedItem, str]],
+        ranks: dict[uuid.UUID, int],
         latency_ms: dict[str, int],
         reranked_by: str | None,
     ) -> uuid.UUID:
+        """What was asked and how each candidate fared (design §6 step 9): the returned items in
+        `results`, the candidates left out (and why) in `left_out`, each with its rank in its
+        source, its fused relevance and its final score, so a ranking can be explained later."""
+
         entry = RetrievalLog(
             id=uuid7(),  # set now: the id is returned before the transaction flushes
             namespace_id=namespace_id,
@@ -501,7 +602,8 @@ class RetrievalService:
                 "rerank": req.rerank,
                 "reranked_by": reranked_by,  # None when asked but it failed or timed out
             },
-            results=[{"source": i.source, "id": str(i.id), "score": i.score} for i in items],
+            results=[_log_row(i, ranks) for i in items],
+            left_out=[{**_log_row(i, ranks), "why": why} for i, why in left_out],
             latency_ms=latency_ms,
         )
         s.add(entry)
@@ -514,7 +616,8 @@ def _fuse(rankings: list[list[RetrievedItem]]) -> list[RetrievedItem]:
     scores = rrf_scores([[item.id for item in ranking] for ranking in rankings])
     items = {item.id: item for ranking in rankings for item in ranking}
     weighted = [
-        dataclasses.replace(items[i], score=rel * items[i].weight) for i, rel in scores.items()
+        dataclasses.replace(items[i], score=rel * items[i].weight, rel=rel)
+        for i, rel in scores.items()
     ]
     return sorted(weighted, key=lambda item: (-item.score, item.id))
 
@@ -525,12 +628,14 @@ def _select(
     top_k: int,
     budget: int,
     cost: Callable[[RetrievedItem], int],
-) -> list[RetrievedItem]:
+) -> tuple[list[RetrievedItem], list[tuple[RetrievedItem, str]]]:
     """Pinned first (they count against the budget, not against `top_k`), then up to `top_k`
     of the best fused items in MMR order. An item too long for what is left of the budget is
     cut to its best passages if that fits, else passed over (not counting for diversity): the
-    next one that fits takes its place."""
+    next one that fits takes its place. Also returns what was left out of the candidates
+    considered, and why: "budget" (did not fit) or "rank" (others came first)."""
     kept = fit_budget(pinned, cost, budget)
+    refused: set[uuid.UUID] = {p.id for p in pinned} - {p.id for p in kept}
     left = budget - sum(cost(i) for i in kept)
     pool = {i.id: i for i in ranked[: top_k * MMR_POOL]}
     fitted: dict[uuid.UUID, RetrievedItem] = {}
@@ -543,10 +648,29 @@ def _select(
             if (c := cost(variant)) <= left:
                 fitted[item_id], left = variant, left - c
                 return True
+        refused.add(item_id)
         return False
 
     terms = [(i.id, i.score, similarity_terms(_text(i))) for i in pool.values()]
-    return kept + [fitted[i] for i in mmr(terms, top_k, accept=fits)]
+    picked = [fitted[i] for i in mmr(terms, top_k, accept=fits)]
+    left_out = [
+        (i, "budget" if i.id in refused else "rank")
+        for i in [*pinned, *pool.values()]
+        if i.id in refused or (i.id in pool and i.id not in fitted)
+    ]
+    return kept + picked, left_out
+
+
+def _log_row(item: RetrievedItem, ranks: dict[uuid.UUID, int]) -> dict[str, Any]:
+    return {
+        "source": item.source,
+        "kind": item.kind,
+        "id": str(item.id),
+        "score": item.score,
+        "rel": item.rel,
+        "rank": ranks.get(item.id),  # None for a pinned memory: not a search hit
+        "pinned": item.pinned,
+    }
 
 
 def _with_passages(item: RetrievedItem, passages: tuple[str, ...]) -> RetrievedItem:

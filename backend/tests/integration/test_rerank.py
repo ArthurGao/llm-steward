@@ -31,18 +31,10 @@ def client(migrated_url: str, reranker: FakeReranker) -> Iterator[AppClient]:
 
 def _logged(c: AppClient, retrieval_id: str) -> tuple[dict[str, Any], dict[str, Any]]:
     """The retrieval log's filters and latencies."""
-    import uuid
-
     from llm_steward.models import RetrievalLog
-    from llm_steward.storage.db import session_factory
 
-    async def read() -> tuple[dict[str, Any], dict[str, Any]]:
-        async with session_factory(c.services.engine)() as s:
-            log = await s.get(RetrievalLog, uuid.UUID(retrieval_id))
-            assert log is not None
-            return dict(log.filters), dict(log.latency_ms)
-
-    return c.call(read)
+    log = c.get(RetrievalLog, retrieval_id)
+    return dict(log.filters), dict(log.latency_ms)
 
 
 def _retrieve(c: AppClient, h: dict[str, str], **body: Any) -> Any:

@@ -300,6 +300,7 @@ CREATE TABLE external_refs (
 - **Memory**：provider 是内容的生产者。每次 `add` 后把 provider 返回的变更（新增、更新、删除）写回镜像和 `change_log`。每天运行一次对账任务，对比 provider 与镜像，修复漂移。
 - **检索安全网**：provider 返回的结果如果在自有库中找不到，或已经失效，一律丢弃并记录告警。这保证了即使同步延迟，已废弃的知识也不会被使用。
 - **文档**：整篇文档由 KB provider 解析和切块。llm-steward 只记录文档级的状态和风险，文档的生效与下线也经过治理层。
+- **统计不走治理写入路径**（P4e）：`memories.access_count` / `last_accessed_at`、`kb_entries.hit_count` / `helpful_count` / `unhelpful_count` 是统计数据，不是受治理的状态。它们由检索服务直接更新：不写 `change_log`，也不改 `updated_at`（被读到不等于被编辑）。和 Syncer 记录同步状态一样，这是规则 1"所有写入经过 `GovernanceService.apply()`"仅有的例外，不能拿来给受治理的字段开口子。
 
 ## 5. 写入流水线与治理
 
@@ -877,6 +878,10 @@ llm-steward/
      - 超时单独设置：`STEWARD_RERANK_TIMEOUT_MS`，默认 3000。依据是 KB 里 lite-rag 的实测，rerank 在笔记本上约 1 秒，用 provider 的 800 ms 会总是超时。超时或出错时保留融合顺序，并标记 `degraded: ["rerank"]`。检索日志记录 `reranked_by`（模型名，没跑成为 null）和 `latency_ms.rerank`。
      - 本地模型（embedding 和 rerank 共用 `LazyModel`）：只在后台加载一次，作为共享任务，请求超时只取消自己的等待，不会取消加载。这是 /simplify 发现的：原来冷启动加载超过预算时，每个请求都会重新开始加载，永远加载不完。加载失败时由下一次调用重试；交叉编码器同一时刻只跑一个，因为它一次就会占满所有核。启动时和 embedding 一样在后台预热。
      - 后台安全审查（a88631f 之后）：并发上限原来用 `asyncio.Semaphore`，调用方超时就会释放名额，而模型线程还在跑，一连串超时的请求就能让多个 ONNX 推理同时运行。现在有上限的模型用自己的线程池（线程数即上限），推理占着线程直到结束；调用方放弃时，还在排队的推理会被一起取消，不会堆积。有先红后绿的测试：修复前同时运行的推理峰值为 5。
+   - P4e 日志、反馈、命中统计（2026-11-09）：
+     - `retrieval_logs.results` 只放返回的条目。每条记录来源、种类、在来源里的名次、融合分（RRF，加权前）、最终分、是否常驻。被淘汰的候选放进单独的 `left_out` 列，原因 `budget`（放不下）或 `rank`（排在别人后面）。迁移 0007 加了 `left_out` 和 `counted` 两列；0007 之前的日志标为已计数，不回头补算。
+     - `POST /v1/retrieve/{id}/feedback`（write scope，`{item_id, helpful, note?}`，返回 204）。日志不在调用方的命名空间里返回 404，`item_id` 不是那次检索返回过的（包括被淘汰的候选）返回 422。每次反馈写一行 `retrieval_feedback`（备注先脱敏，按 `(namespace_id, created_at)` 建索引），条目的有用/无用计数在同一个事务里加一。反馈不多，所以不走队列。`retrieval_logs.feedback` 列自此不再使用。
+     - 命中统计由 worker 定时汇总，每 30 秒一次：取最多 500 条还没计数的日志（PG 上用 `SKIP LOCKED`），按对象合并后，每个对象一条 UPDATE，按 id 排序避免两个 worker 互相等锁，然后把这些日志标为已计数，全在一个事务里完成。/simplify 时否掉了最初"每次检索排一个任务"的做法：任务表里完成的任务从不删除，每次读都会加一行；并发更新热门条目还会排队等锁，甚至死锁。
    - 验收：用 Fake provider 注入 2 秒延迟，响应仍在超时预算内返回并标记 degraded；在小型标注集（20–30 条 query）上 recall@8 达标（阈值在建立基线后确定）
 6. **P5 接入与安全**
    - [ ] API key、user token、Admin JWT、限流、幂等、Problem Details、webhooks

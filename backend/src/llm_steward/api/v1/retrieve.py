@@ -1,11 +1,12 @@
 import asyncio
+import uuid
 
 from fastapi import APIRouter
 
-from llm_steward.api.deps import Reader, ServicesDep
+from llm_steward.api.deps import Reader, ServicesDep, Writer
 from llm_steward.providers.base import Scope
 from llm_steward.schemas.kb import CandidateOut
-from llm_steward.schemas.retrieve import RetrievedItemOut, RetrieveIn, RetrieveOut
+from llm_steward.schemas.retrieve import FeedbackIn, RetrievedItemOut, RetrieveIn, RetrieveOut
 from llm_steward.services.retrieval_service import RetrieveRequest
 
 router = APIRouter(tags=["retrieval"])
@@ -42,4 +43,19 @@ async def retrieve(body: RetrieveIn, principal: Reader, services: ServicesDep) -
         items=[RetrievedItemOut.model_validate(i) for i in result.items],
         degraded=result.degraded,
         context=result.context,
+    )
+
+
+@router.post("/retrieve/{retrieval_id}/feedback", status_code=204)
+async def feedback(
+    retrieval_id: uuid.UUID, body: FeedbackIn, principal: Writer, services: ServicesDep
+) -> None:
+    """Was a returned item helpful? Recorded per answer; KB entries count it."""
+    await services.retrieval.feedback(
+        principal.namespace_id,
+        retrieval_id,
+        body.item_id,
+        helpful=body.helpful,
+        note=body.note,
+        by=principal.actor.id,
     )
