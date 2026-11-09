@@ -96,7 +96,8 @@ class SyncService:
             case JobType.MEMORY_UPSERT:
                 await self._memory_upsert(uuid.UUID(job.payload["memory_id"]))
             case JobType.MEMORY_REMOVE:
-                await self._memory_remove(uuid.UUID(job.payload["memory_id"]))
+                memory_id = uuid.UUID(job.payload["memory_id"])
+                await self._memory_remove(memory_id, job.payload.get("external_id"))
             case JobType.KB_UPSERT:
                 await self._kb_upsert(uuid.UUID(job.payload["entry_id"]))
             case JobType.KB_REMOVE:
@@ -132,15 +133,30 @@ class SyncService:
                     metadata={"steward_id": str(memory_id)},
                 )
                 external_id = event.external_id
-        outcome = await self._confirm(
-            Memory, memory_id, provider.name, external_id, version=None, job=JobType.MEMORY_UPSERT
+        await self._confirm(
+            Memory,
+            memory_id,
+            provider.name,
+            external_id,
+            version=None,
+            job=JobType.MEMORY_UPSERT,
+            namespace_id=memory.namespace_id,
         )
-        if outcome == "gone":  # erased (per-user hard delete) while we pushed it: undo now
-            await provider.delete(external_id)
 
-    async def _memory_remove(self, memory_id: uuid.UUID) -> None:
+    async def _memory_remove(self, memory_id: uuid.UUID, external_id: str | None = None) -> None:
+        """`external_id`: the copy of a memory whose row is gone (erased while it was pushed),
+        which nothing else knows; deleting it twice is harmless. Otherwise the ref names it."""
         provider = self._providers.memory
-        await self._take_out(ObjectType.MEMORY, memory_id, provider.name, provider.delete)
+        if external_id is None:
+            await self._take_out(ObjectType.MEMORY, memory_id, provider.name, provider.delete)
+            return
+        await provider.delete(external_id)  # a failure fails the job: it retries with backoff
+        async with self._sessions() as s, s.begin():  # the ref may have gone with the row
+            await s.execute(
+                update(ExternalRef)
+                .where(*_ref_key(ObjectType.MEMORY, memory_id, provider.name))
+                .values(sync_status=SyncStatus.DELETED, last_error=None)
+            )
 
     async def _take_out(
         self,
@@ -177,16 +193,15 @@ class SyncService:
         async with self._recording(ObjectType.KB_ENTRY, entry_id, provider.name):
             collection_ext = await self._ensure_collection(collection, collection_ext)
             external_id = await provider.upsert_entry(doc, collection_ext, existing)
-        outcome = await self._confirm(
+        await self._confirm(
             KbEntry,
             entry_id,
             provider.name,
             external_id,
             version=doc.version,
             job=JobType.KB_UPSERT,
+            namespace_id=entry.namespace_id,
         )
-        if outcome == "gone":  # never happens to governed knowledge (invalidated, not deleted)
-            await provider.remove(external_id)
 
     async def _kb_remove(self, entry_id: uuid.UUID) -> None:
         provider = self._providers.kb
@@ -323,24 +338,28 @@ class SyncService:
         *,
         version: int | None,
         job: JobType,
+        namespace_id: uuid.UUID,
     ) -> Outcome:
-        """Record a finished push only if it still describes the object (see module docstring)."""
+        """Record a finished push only if it still describes the object (see module docstring).
+        Every outcome but `synced` queues the follow-up (a removal or another push) right here."""
         object_type = ObjectType.MEMORY if model is Memory else ObjectType.KB_ENTRY
         columns: Any = model
         async with self._sessions() as s, s.begin():
             obj: Any = await s.scalar(
                 select(model).where(columns.id == object_id).with_for_update()
             )
-            if obj is None:
-                return "gone"
             key = "memory_id" if model is Memory else "entry_id"
+            remove = JobType.MEMORY_REMOVE if model is Memory else JobType.KB_REMOVE
+            if obj is None:  # the row itself was erased: the job carries the copy to remove
+                payload = {key: str(object_id), "external_id": external_id}
+                enqueue(s, namespace_id, remove, payload)
+                return "gone"
             if not _effective(obj):  # record the copy and queue its removal, atomically
                 await s.execute(
                     update(ExternalRef)
                     .where(*_ref_key(object_type, object_id, provider))
                     .values(external_id=external_id, sync_status=SyncStatus.DELETING)
                 )
-                remove = JobType.MEMORY_REMOVE if model is Memory else JobType.KB_REMOVE
                 enqueue(s, obj.namespace_id, remove, {key: str(object_id)})
                 return "retired"
             if version is not None and obj.version != version:

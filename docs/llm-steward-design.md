@@ -849,6 +849,9 @@ llm-steward/
 5. **P4 联合检索**
    - [ ] 并行分发、超时与 `degraded`、反查过滤、RRF、可信度加权、时间衰减、MMR、pinned、上下文模板、token 预算、可选 rerank
    - [ ] `retrieval_logs`、feedback、命中统计
+   - P4.0（2026-11-09，P3 收尾提交后的后台安全审查，两条都成立，都先写了失败的测试）：
+     - 手机号检测回退：新正则的开头排除了 `+`，`+13812345678` 不再匹配。现在开头只排除数字，前缀允许 `+86` 或单个 `+`。
+     - 记忆在推送途中被整行删除（按用户硬删除，规则 6 的例外）时，原来在当前任务里直接撤回，撤回失败就留下副本。现在 `_confirm` 在同一个事务里排 `sync.memory_remove`，payload 带上引擎 id；删除任务直接删这个 id，失败按退避重试。按用户硬删除的接口本身在 P5。
    - 验收：用 Fake provider 注入 2 秒延迟，响应仍在超时预算内返回并标记 degraded；在小型标注集（20–30 条 query）上 recall@8 达标（阈值在建立基线后确定）
 6. **P5 接入与安全**
    - [ ] API key、user token、Admin JWT、限流、幂等、Problem Details、webhooks

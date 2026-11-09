@@ -16,6 +16,7 @@ POLICY = RiskPolicy(high_risk_keywords=("退款政策", "price"), pii_action="re
         ("call +86 138 0013 8000 tomorrow", "phone"),  # grouped, with the country code
         ("call 138-0013-8000", "phone"),
         ("call 8613800138000", "phone"),
+        ("call +13812345678", "phone"),  # a bare '+' before the number (matched before 23797aa)
         ("ID 11010519491231002X please", "cn_id"),
         ("card 4111 1111 1111 1111", "bank_card"),
         ("card 5555-5555-5555-4444", "bank_card"),  # digits above 4: Luhn doubling

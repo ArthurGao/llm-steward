@@ -31,7 +31,7 @@ _EMAIL = re.compile(
 _CN_ID = re.compile(r"(?<![0-9A-Za-z])\d{17}[\dXx](?![0-9A-Za-z])")
 _CARD = re.compile(r"(?<!\d)(?:\d[ -]?){12,18}\d(?!\d)")
 # A mainland mobile number, also as written by people: "+86 138 0013 8000", "138-0013-8000".
-_PHONE = re.compile(r"(?<![\d+])(?:\+?86[ -]?)?1[3-9]\d(?:[ -]?\d{4}){2}(?!\d)")
+_PHONE = re.compile(r"(?<!\d)(?:\+?86[ -]?|\+)?1[3-9]\d(?:[ -]?\d{4}){2}(?!\d)")
 _ID_WEIGHTS = (7, 9, 10, 5, 8, 4, 2, 1, 6, 3, 7, 9, 10, 5, 8, 4, 2)
 
 

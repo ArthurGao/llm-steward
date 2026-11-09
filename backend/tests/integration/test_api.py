@@ -448,3 +448,42 @@ def test_a_push_undone_after_a_deprecation_is_retried_until_it_is_gone(
     ext = app_client.call(kb.ensure_collection, KbCollectionRef(entry.collection_id, ns_id, ""))
     hits = app_client.call(kb.search, "refunds", [ext], top_k=5)
     assert failures == [] and hits == []
+
+
+def test_a_memory_erased_mid_push_is_removed_even_if_the_first_removal_fails(
+    app_client: AppClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The row itself is gone (per-user erasure, design rule 6's exception) while its push is in
+    flight: the copy the push just made is removed by a job that carries its engine id, and that
+    job retries — the push job finding no row cannot drop the removal."""
+    from sqlalchemy import delete
+
+    from llm_steward.errors import ProviderUnavailable
+    from llm_steward.models import Memory
+    from llm_steward.storage.db import session_factory
+
+    h, _ = app_client.new_tenant("acme")
+    memory = _post_memory(app_client, h, content="soon erased")
+    provider = app_client.services.providers.memory
+    add, remove = provider.add, provider.delete
+    failures: list[Exception] = []
+
+    async def add_while_erased(*args: Any, **kwargs: Any) -> Any:
+        async with session_factory(app_client.services.engine)() as s, s.begin():
+            await s.execute(delete(Memory).where(Memory.id == uuid.UUID(memory["id"])))
+        events = await add(*args, **kwargs)
+        failures.append(ProviderUnavailable("engine down"))  # the first removal fails
+        return events
+
+    async def flaky_remove(external_id: str) -> None:
+        if failures:
+            raise failures.pop()
+        await remove(external_id)
+
+    monkeypatch.setattr(provider, "add", add_while_erased)
+    monkeypatch.setattr(provider, "delete", flaky_remove)
+    app_client.drain()
+    app_client.make_jobs_due()
+    app_client.drain()
+    assert failures == []  # the failing removal did happen
+    assert not _provider_has(app_client, "memory", memory["id"])
