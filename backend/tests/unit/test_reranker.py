@@ -1,6 +1,7 @@
 """The local cross-encoder adapter: an unknown model fails at startup, without a download."""
 
 import asyncio
+import contextlib
 import threading
 import time
 
@@ -91,3 +92,38 @@ async def test_one_cross_encoder_pass_runs_at_a_time() -> None:
     reranker._load = Busy  # type: ignore[method-assign]
     await asyncio.gather(*(reranker.score("q", ["a"]) for _ in range(4)))
     assert peak == 1
+
+
+async def test_callers_that_time_out_do_not_let_more_passes_run_at_once() -> None:
+    """A caller's timeout ends its wait, not a pass already running: the next pass still waits
+    for it (else timed-out requests stack up ONNX threads), and a pass that was only queued when
+    its caller gave up never runs."""
+    reranker = FastEmbedReranker("BAAI/bge-reranker-v2-m3-int8")
+    running = peak = runs = 0
+    lock = threading.Lock()
+
+    class Busy:
+        def rerank(self, query: str, texts: list[str]) -> list[float]:
+            nonlocal running, peak, runs
+            with lock:
+                running += 1
+                runs += 1
+                peak = max(peak, running)
+            time.sleep(0.1)
+            with lock:
+                running -= 1
+            return [0.0 for _ in texts]
+
+    reranker._load = Busy  # type: ignore[method-assign]
+    await reranker.score("q", ["warm"])  # loaded (one run)
+
+    async def impatient(start: float) -> None:
+        await asyncio.sleep(start)  # requests arrive one after another
+        with contextlib.suppress(TimeoutError):
+            async with asyncio.timeout(0.01):
+                await reranker.score("q", ["a"])
+
+    await asyncio.gather(*(impatient(i * 0.02) for i in range(6)))
+    await asyncio.sleep(0.3)  # what did start finishes
+    assert peak == 1
+    assert runs <= 3  # warm-up, the first, at most one more: the queued ones were dropped

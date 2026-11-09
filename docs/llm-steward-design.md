@@ -876,6 +876,7 @@ llm-steward/
      - `Reranker` 接口约定返回 [0,1] 的相关度。本地模型给的是原始 logit，在适配器里过 sigmoid；以后接本来就输出概率的托管服务也不用改调用方。相关度替换 RRF 分，再乘可信度等权重；排到 30 名以外的保持融合顺序，接在后面。
      - 超时单独设置：`STEWARD_RERANK_TIMEOUT_MS`，默认 3000。依据是 KB 里 lite-rag 的实测，rerank 在笔记本上约 1 秒，用 provider 的 800 ms 会总是超时。超时或出错时保留融合顺序，并标记 `degraded: ["rerank"]`。检索日志记录 `reranked_by`（模型名，没跑成为 null）和 `latency_ms.rerank`。
      - 本地模型（embedding 和 rerank 共用 `LazyModel`）：只在后台加载一次，作为共享任务，请求超时只取消自己的等待，不会取消加载。这是 /simplify 发现的：原来冷启动加载超过预算时，每个请求都会重新开始加载，永远加载不完。加载失败时由下一次调用重试；交叉编码器同一时刻只跑一个，因为它一次就会占满所有核。启动时和 embedding 一样在后台预热。
+     - 后台安全审查（a88631f 之后）：并发上限原来用 `asyncio.Semaphore`，调用方超时就会释放名额，而模型线程还在跑，一连串超时的请求就能让多个 ONNX 推理同时运行。现在有上限的模型用自己的线程池（线程数即上限），推理占着线程直到结束；调用方放弃时，还在排队的推理会被一起取消，不会堆积。有先红后绿的测试：修复前同时运行的推理峰值为 5。
    - 验收：用 Fake provider 注入 2 秒延迟，响应仍在超时预算内返回并标记 degraded；在小型标注集（20–30 条 query）上 recall@8 达标（阈值在建立基线后确定）
 6. **P5 接入与安全**
    - [ ] API key、user token、Admin JWT、限流、幂等、Problem Details、webhooks
