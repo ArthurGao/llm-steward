@@ -58,7 +58,11 @@ class RetrievedItemOut(BaseModel):
     score: float
     pinned: bool
     kind: Literal["memory", "entry", "document"] = Field(
-        description="A KB hit is an entry, or a chunk of a document (`content` is that chunk)."
+        description="A KB hit is an entry, or a document (its matching chunks, not the file)."
+    )
+    passages: list[str] = Field(
+        default_factory=list,
+        description="A document's matching chunks, best first; `content` is them joined.",
     )
 
 

@@ -76,16 +76,29 @@ class ProviderHit:
 
     external_id: str
     score: float
-    text: str
+    text: str  # the best chunk
+    # a KB hit's best chunks, best first (`text` among them): a long document answers with
+    # several passages; empty when the engine returned one
+    passages: tuple[str, ...] = ()
 
 
-def best_hit_per_id(hits: Iterable[ProviderHit], top_k: int) -> list[ProviderHit]:
-    """One hit per external id (its best: engines return chunks), best first, ties by id."""
-    best: dict[str, ProviderHit] = {}
+CHUNKS_PER_ID = 3  # a KB hit carries up to this many chunks of its entry or document
+
+
+def group_hits(
+    hits: Iterable[ProviderHit], top_k: int, per_id: int = CHUNKS_PER_ID
+) -> list[ProviderHit]:
+    """Engines return chunks: one hit per external id (the best `top_k` ids, by their best
+    chunk, ties by id), carrying its best `per_id` chunks as `passages`."""
+    by_id: dict[str, list[ProviderHit]] = {}
     for hit in hits:
-        if hit.external_id not in best or hit.score > best[hit.external_id].score:
-            best[hit.external_id] = hit
-    return sorted(best.values(), key=lambda h: (-h.score, h.external_id))[:top_k]
+        by_id.setdefault(hit.external_id, []).append(hit)
+    groups = [sorted(g, key=lambda h: -h.score)[:per_id] for g in by_id.values()]
+    groups.sort(key=lambda g: (-g[0].score, g[0].external_id))
+    return [
+        ProviderHit(g[0].external_id, g[0].score, g[0].text, tuple(h.text for h in g))
+        for g in groups[:top_k]
+    ]
 
 
 @dataclass(frozen=True)
@@ -174,7 +187,12 @@ class KnowledgeProvider(HealthProbe, Protocol):
         *,
         top_k: int,
         filters: dict[str, Any] | None = None,
-    ) -> list[ProviderHit]: ...
+    ) -> list[ProviderHit]:
+        """One hit per external id, at most `top_k`, from the engine's best `top_k` chunks; each
+        carries up to `CHUNKS_PER_ID` of its chunks as `passages` (`group_hits`). An entry's
+        extra passages go unused (governance serves its stored text): the engine cannot tell
+        entries from documents, and over-fetching is the caller's (retrieval asks for more)."""
+        ...
 
 
 class DocumentParser(Protocol):

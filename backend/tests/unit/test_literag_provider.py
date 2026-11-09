@@ -94,7 +94,7 @@ async def test_an_external_id_finds_its_way_back_to_the_document(
     await provider.remove(external_id)  # idempotent
 
 
-async def test_one_search_covers_every_collection_and_keeps_each_entrys_best_hit(
+async def test_one_search_covers_every_collection_and_keeps_each_entrys_best_chunks(
     provider: LiteRagProvider, transport: FakeTransport
 ) -> None:
     refunds = await provider.ensure_collection(KbCollectionRef(REFUNDS, NS, "refunds"))
@@ -109,12 +109,13 @@ async def test_one_search_covers_every_collection_and_keeps_each_entrys_best_hit
 
     hits = await provider.search("q", [refunds, shipping], top_k=2, filters={"version": 1})
 
-    assert [(h.external_id, h.score, h.text) for h in hits] == [
-        (f"{refunds}#e1", 0.9, "refund chunk 1"),
-        (f"{shipping}#e3", 0.5, "shipping"),
-    ]
+    assert [(h.external_id, h.score, h.passages) for h in hits] == [
+        (f"{refunds}#e1", 0.9, ("refund chunk 1", "refund chunk 2")),  # its chunks come along
+        (f"{shipping}#e3", 0.5, ("shipping",)),
+    ]  # top_k counts entries: e2 is the third
     # one lite-rag search over both kbs (one query embedding, one fusion), not one per kb
-    assert transport.searched == [(ns, [f"c-{REFUNDS}", f"c-{SHIPPING}"], "q", 2, {"version": 1})]
+    searched = (ns, [f"c-{REFUNDS}", f"c-{SHIPPING}"], "q", 2, {"version": 1})
+    assert transport.searched == [searched]
     assert await provider.search("q", [], top_k=5) == []
 
 

@@ -27,7 +27,7 @@ from llm_steward.providers.base import (
     Message,
     ProviderHit,
     Scope,
-    best_hit_per_id,
+    group_hits,
 )
 from llm_steward.providers.native.embedding import Embedder
 from llm_steward.providers.native.store import NativeItem, NativeStore, StoredItem
@@ -312,8 +312,8 @@ class NativeKnowledgeProvider(_NativeBase):
     ) -> list[ProviderHit]:
         if not collection_ext_ids:
             return []
-        hits = await self._hybrid([_kb_part(c) for c in collection_ext_ids], query, top_k, {})
-        # a document chunk answers for its document (its best chunk)
-        return best_hit_per_id(
-            (ProviderHit(_answering_id(h.external_id), h.score, h.text) for h in hits), top_k
-        )
+        parts = [_kb_part(c) for c in collection_ext_ids]
+        hits = await self._hybrid(parts, query, top_k, {})
+        # a document's chunks answer for the document
+        answering = (ProviderHit(_answering_id(h.external_id), h.score, h.text) for h in hits)
+        return group_hits(answering, top_k)

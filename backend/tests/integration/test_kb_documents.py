@@ -13,6 +13,7 @@ from llm_steward.errors import Forbidden
 from llm_steward.models import Job, KbDocumentFile
 from llm_steward.models.enums import DocStatus, JobStatus, JobType
 from llm_steward.providers.base import ENTRY_UPSERT
+from llm_steward.services.retrieval_service import CHUNK_SEPARATOR
 from llm_steward.storage.db import session_factory
 from tests.conftest import REVIEWER, Tenant
 
@@ -102,8 +103,54 @@ def test_a_document_goes_live_and_retrieval_serves_its_matching_chunk(t: Tenant)
     assert stored_files(t) == 0  # the engine has it: the bytes are gone
     [hit] = items(t)
     assert (hit["id"], hit["kind"], hit["title"]) == (doc["id"], "document", "Customer policy")
-    assert hit["content"] == "Refunds take 3 to 5 business days."  # the chunk, not the file
-    assert [i["content"] for i in items(t, "shipping")] == ["Shipping is free above 50 euros."]
+    # its chunks, best first (P4c: up to three per document), never the raw file
+    assert hit["passages"][0] == "Refunds take 3 to 5 business days."
+    assert hit["content"] == CHUNK_SEPARATOR.join(hit["passages"])
+    [shipping] = items(t, "shipping")
+    assert shipping["passages"][0] == "Shipping is free above 50 euros."
+
+
+def test_a_document_hit_carries_its_best_chunks_together(t: Tenant) -> None:
+    collection = t.collection(default_risk="low")
+    data = (
+        b"Refunds take 3 to 5 business days.\n\n"
+        b"Shipping is free above 50 euros.\n\n"
+        b"Refunds for shipping costs are not possible.\n"
+    )
+    doc = upload(t, collection, data).json()["document"]
+    t.c.drain()
+    [hit] = items(t, "refunds shipping")
+    assert (hit["id"], hit["kind"]) == (doc["id"], "document")
+    chunks = hit["passages"]
+    assert len(chunks) == 3 and set(chunks) == {
+        "Refunds take 3 to 5 business days.",
+        "Shipping is free above 50 euros.",
+        "Refunds for shipping costs are not possible.",
+    }  # one item, every matching chunk (best first)
+
+
+def test_a_document_too_long_for_the_budget_keeps_its_best_passages(t: Tenant) -> None:
+    collection = t.collection(default_risk="low")
+    long = b"Shipping is free above 50 euros " + b"and more words " * 60
+    data = b"Refunds take 3 to 5 business days.\n\n" + long + b"\n"
+    doc = upload(t, collection, data).json()["document"]
+    t.c.drain()
+    body = {"query": "refunds shipping", "sources": ["kb"], "token_budget": 40}
+    [hit] = t.c.http.post("/v1/retrieve", json=body, headers=t.host).json()["items"]
+    assert hit["id"] == doc["id"]
+    assert hit["passages"] == ["Refunds take 3 to 5 business days."]  # cut, not dropped
+    assert hit["content"] == hit["passages"][0]
+
+
+def test_several_chunks_of_one_document_are_not_reported_as_dropped(
+    t: Tenant, caplog: pytest.LogCaptureFixture
+) -> None:
+    collection = t.collection(default_risk="low")
+    upload(t, collection)  # two paragraphs: both chunks come back for the document
+    t.c.drain()
+    with caplog.at_level("WARNING", logger="llm_steward.services.retrieval_service"):
+        assert len(items(t, "refunds shipping")) == 1
+    assert not [r for r in caplog.records if "safety net" in r.getMessage()]
 
 
 def test_the_title_defaults_to_the_file_name_and_is_screened(t: Tenant) -> None:

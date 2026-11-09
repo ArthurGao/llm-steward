@@ -231,7 +231,7 @@ async def test_a_remove_that_does_not_finish_in_time_is_retried_not_trusted() ->
         await provider(api, budget_s=0).remove("k-1")
 
 
-async def test_search_returns_each_entrys_best_chunk_across_knowledge_bases() -> None:
+async def test_search_returns_each_items_best_chunks_across_knowledge_bases() -> None:
     hits = [
         {"id": "c2", "knowledge_id": "k-1", "score": 0.9, "content": "best chunk"},
         {"id": "c1", "knowledge_id": "k-1", "score": 0.4, "content": "weak chunk"},  # later, worse
@@ -240,13 +240,14 @@ async def test_search_returns_each_entrys_best_chunk_across_knowledge_bases() ->
     ]
     api = Api({("POST", "/api/v1/knowledge-search"): lambda r: ok(hits)})
     found = await provider(api).search("refunds", ["kb-1", "kb-2"], top_k=2)
-    assert [(h.external_id, h.score, h.text) for h in found] == [
-        ("k-1", 0.9, "best chunk"),
-        ("k-2", 0.7, "other"),
+    assert [(h.external_id, h.score, h.text, h.passages) for h in found] == [
+        ("k-1", 0.9, "best chunk", ("best chunk", "weak chunk")),  # its chunks come along
+        ("k-2", 0.7, "other", ("other",)),
     ]
     body = api.body("POST", "/api/v1/knowledge-search")
     assert (body["query"], body["knowledge_base_ids"]) == ("refunds", ["kb-1", "kb-2"])
-    assert body["match_count"] >= 2 * 3  # chunks, not entries: over-fetch before grouping
+    # chunks; over-fetching is retrieval's (it asks for top_k x 3 already): not multiplied here
+    assert body["match_count"] == 2
     assert await provider(api).search("x", [], top_k=5) == []
 
 

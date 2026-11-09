@@ -25,3 +25,22 @@ def test_sections_citations_and_verification_marks() -> None:
 def test_only_present_sections_and_nothing_for_no_results() -> None:
     assert _render([MEM]) == f"## 关于用户\n- [mem:{M1}] Drinks black coffee"
     assert _render([]) == ""
+
+
+def test_a_documents_further_passages_are_indented_under_its_cited_line() -> None:
+    doc = RetrievedItem(
+        "kb",
+        uuid.UUID(int=4),
+        "Refunds take 3-5 days\n…\nShipping is free",
+        "Policy",
+        "active",
+        False,
+        0.1,
+        kind="document",
+        passages=("Refunds take 3-5 days", "Shipping is free"),
+    )
+    assert _render([doc]) == (
+        "## 知识库\n"
+        f"- [kb:{uuid.UUID(int=4)}] Policy：Refunds take 3-5 days（未验证）\n"
+        "  - Shipping is free"
+    )

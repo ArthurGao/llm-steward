@@ -1,5 +1,6 @@
-{# Prompt context for format=context (design §6). Every line carries a citation id so the model can
-   cite it and feedback can find it; unverified knowledge is marked as such. #}
+{# Prompt context for format=context (design §6). Every item carries a citation id so the model can
+   cite it and feedback can find it; unverified knowledge is marked as such. A document's further
+   passages are indented under its line. #}
 {% if memories %}
 ## 关于用户
 {% for m in memories %}
@@ -12,6 +13,9 @@
 {% if kb %}
 ## 知识库
 {% for k in kb %}
-- [kb:{{ k.id }}] {{ k.title }}：{{ k.content }}（{{ "已验证" if k.verified else "未验证" }}）
+- [kb:{{ k.id }}] {{ k.title }}：{{ k.passages[0] if k.passages else k.content }}（{{ "已验证" if k.verified else "未验证" }}）
+{% for p in k.passages[1:] %}
+  - {{ p }}
+{% endfor %}
 {% endfor %}
 {% endif %}

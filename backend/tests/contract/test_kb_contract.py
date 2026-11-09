@@ -101,8 +101,14 @@ async def check_documents(kb: KnowledgeProvider, *, settle_s: float = 0) -> str:
     assert status == DocStatus.READY
 
     [hit] = await kb.search("how long do refunds take", [docs], top_k=5)
-    assert hit.external_id == did  # a chunk answers for its document
-    assert "Refunds take 3 to 5 business days" in hit.text  # its chunk (the engine sizes chunks)
+    assert hit.external_id == did  # its chunks answer for the document: one hit
+    assert "Refunds take 3 to 5 business days" in hit.text  # the best chunk
+    assert hit.passages[0] == hit.text
+    # a query touching both sections finds both, as that hit's passages (the engine sizes
+    # chunks: one chunk may hold both)
+    [both] = await kb.search("refunds business days and free shipping euros", [docs], top_k=5)
+    found = " ".join(both.passages)
+    assert "Refunds take" in found and "Shipping is free" in found
     assert await parser.ingest_document(upload, docs) == did  # a retried upload: no second copy
 
     await kb.remove(did)

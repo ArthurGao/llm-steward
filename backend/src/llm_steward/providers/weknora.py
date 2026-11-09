@@ -44,14 +44,13 @@ from llm_steward.providers.base import (
     KbDocumentUpload,
     KbEntryDoc,
     ProviderHit,
-    best_hit_per_id,
+    group_hits,
 )
 
 log = logging.getLogger(__name__)
 
 API = "/api/v1"
 SEARCHABLE = frozenset({"finalizing", "completed"})  # finalizing: vectors are in, extras run on
-CHUNKS_PER_ENTRY = 3  # search returns chunks; ask for enough to fill top_k entries
 # A file item's parse_status (v0.9.0 internal/types/knowledge.go) as a document status; anything
 # else is still in progress (and the Syncer gives up after its deadline).
 DOC_STATUSES = {
@@ -287,14 +286,14 @@ class WeKnoraProvider:
         body = {
             "query": query,
             "knowledge_base_ids": collection_ext_ids,
-            "match_count": min(top_k * CHUNKS_PER_ENTRY, 200),
+            "match_count": min(top_k, 200),  # chunks: grouped per item below
         }
         chunks = await self._call("POST", "/knowledge-search", body, timeout_s=self._timeout_s)
         hits = (
             ProviderHit(str(c["knowledge_id"]), float(c["score"]), c.get("content", ""))
             for c in chunks or []
         )
-        return best_hit_per_id(hits, top_k)  # chunks → each entry's best
+        return group_hits(hits, top_k)
 
 
 def _left(deadline: float) -> float:

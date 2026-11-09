@@ -823,7 +823,7 @@ llm-steward/
      - 上传前检查：provider 要有 `doc_parsing`（否则 422）；扩展名在 WeKnora 的文本文档清单里（去掉图片、音频、视频，它们要额外的模型；WeKnora 对不支持的类型回 500，所以我们先挡）；非空；不超过 `STEWARD_KB_MAX_UPLOAD_MB`（默认 20，WeKnora 上限 50，超出 413）。sha256 在线程里算，不占事件循环。
      - Syncer：`kb.doc_ingest` 交出字节后立刻记下引擎 id（仍 pending，避免重试再传一份），若上传途中文档已被删掉就把刚传的撤回；`kb.doc_status` 第一次立即轮询，之后 2 秒起翻倍到 1 分钟，30 分钟还没解析完记为失败；ready 后 ref 记 SYNCED、删掉暂存字节；failed 记 `error`（固定文字，不抄引擎的 error_message，它可能回显原文）、删字节、并把引擎里的副本删掉，要重试就重新上传。解析状态和 `error` 是 Syncer 记录的同步状态，`state` 只由 GovernanceService 改。
      - Provider：`DocumentParser` Protocol（`ingest_document`、`document_status`），只有带 `doc_parsing` 的 provider 实现。WeKnora：`POST /knowledge-bases/{kb}/knowledge/file`（multipart，后台解析，没有 publish 这一步），再 PUT `custom_metadata`；同一知识库同一文件再传是 409 `duplicate_file`，响应里带已有条目，直接用它的 id（只在上传这个调用上接受 409）；`finalizing` / `completed` 为 ready，`failed` / `cancelled` / `deleting` / 404 为 failed。native（参照实现）只解析 txt / md，按段落切块（每块最多 1000 字），块 id `doc:<id>#<n>`，另有一行清单记块数；检索把块映射回文档。lite-rag 暂不支持文档。
-     - 检索安全网：KB 命中先按条目反查，没对上的再按文档反查，只返回 active / verified、在有效期内、且解析状态为 ready 的文档；条目返回 `kind: "document"`，`content` 是命中的那一块。每篇文档只取最高分的一块，多块留到 P4。
+     - 检索安全网：KB 命中先按条目反查，没对上的再按文档反查，只返回 active / verified、在有效期内、且解析状态为 ready 的文档；条目返回 `kind: "document"`，`content` 是命中的那一块。每篇文档只取最高分的一块，多块留到 P4（已在 P4c 完成）。
      - 测试：集成测试两种数据库各 14 条，覆盖：生效与检索、审核、驳回、删除（含安全网与 `as_of` 历史查询）、重复、上传检查、轮询、失败、超时、上传途中被删；26 个变异全部被测试杀死。合约测试新增文档生命周期，native 在默认测试里跑，真实 WeKnora 在 `-m contract` 下跑，另有一条经整个应用的验收：高风险文档批准前 WeKnora 里没有知识库，批准后解析完可检索，删除后先从检索消失、worker 运行后从 WeKnora 删除。
      - 留到以后：URL 导入（`POST /kb/documents` 带 URL，有 SSRF 风险）推到 P5，和限流、鉴权一起做（域名白名单、拒绝内网地址）；lite-rag 的文档导入；重新处理（reprocess）；同一文件的并发上传在 409 检查上有竞态（没有唯一索引，因为状态会变），后果是多一份副本，不影响治理。
    - 阶段收尾（2026-11-09，P3 全部改动 `git diff b84576c`）：
@@ -867,6 +867,10 @@ llm-steward/
      - 留到以后：
        - 声明了 `metadata_filter` 的 provider（native、mem0）实际忽略 `filters` 参数，所以过滤条件还没有下推，放在 P4 收尾处理。
        - 命名空间配置改成一个 Pydantic 模型、写入时校验，和 P5 的 `steward ns apply` 一起做；现在配置写错会让检索报 500。
+   - P4c 文档多块（2026-11-09）：
+     - KB provider 的 `search` 约定改为每个外部 id 一条命中，最多带 3 块（`CHUNKS_PER_ID`）放在 `ProviderHit.passages`，最好的在前（`group_hits`）。provider 只搜 `top_k` 块；多取只在检索层做一次（`CANDIDATES_PER_RESULT`，带过滤时再乘 3）。/simplify 时发现三层倍数叠加过：native 一次要取 216 到 648 块，九成被丢掉，已改掉。
+     - 文档结果带 `passages`（API 新字段），`content` 是它们用 `\n…\n` 拼起来的文本。上下文里第一段跟引用 id 和"已验证/未验证"标注在同一行，后面几段缩进在下面。token 预算放不下整篇时先减到前几段，仍放不下再跳过。条目照旧用库里的完整内容，多出的块不用。
+     - /simplify 发现安全网的"丢弃了 N 条"告警按原始块数计算，多块文档每次都会误报。改成每个 id 一条命中后已修好，有先红后绿的测试。
    - 验收：用 Fake provider 注入 2 秒延迟，响应仍在超时预算内返回并标记 degraded；在小型标注集（20–30 条 query）上 recall@8 达标（阈值在建立基线后确定）
 6. **P5 接入与安全**
    - [ ] API key、user token、Admin JWT、限流、幂等、Problem Details、webhooks

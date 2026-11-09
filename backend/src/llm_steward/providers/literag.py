@@ -31,7 +31,7 @@ from llm_steward.providers.base import (
     KbCollectionRef,
     KbEntryDoc,
     ProviderHit,
-    best_hit_per_id,
+    group_hits,
 )
 
 if TYPE_CHECKING:
@@ -130,7 +130,7 @@ class LiteRagProvider:
             for ns, found in zip(by_namespace, results, strict=True)
             for h in found
         )
-        return best_hit_per_id(hits, top_k)
+        return group_hits(hits, top_k)
 
     async def health(self) -> ComponentHealth:
         try:

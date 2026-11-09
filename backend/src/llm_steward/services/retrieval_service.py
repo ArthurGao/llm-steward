@@ -74,6 +74,7 @@ TOP_K = 8
 TOKEN_BUDGET = 2000
 FILTER_WIDENING = 3  # filters run on what the providers return: ask them for more
 MMR_POOL = 3  # MMR picks from the best top_k * MMR_POOL fused items
+CHUNK_SEPARATOR = "\n…\n"  # between a document's chunks in one item
 TRUST = {"verified": 1.0, "active": 0.9}
 LOW_CONFIDENCE, LOW_CONFIDENCE_FACTOR = 0.5, 0.8  # an unsure memory counts less
 KB_IMPORTANCE = 0.5  # KB items have no importance of their own: neutral
@@ -172,6 +173,8 @@ class RetrievedItem:
     pinned: bool = False  # always-present core memory (design §6 step 8), not a search hit
     kind: ItemKind = field(kw_only=True)  # a KB hit is an entry or a chunk of a document
     weight: float = field(default=1.0, kw_only=True)  # trust x importance x decay (step 6)
+    # a document's matching chunks, best first; `content` is them joined (CHUNK_SEPARATOR)
+    passages: tuple[str, ...] = field(default=(), kw_only=True)
 
 
 @dataclass(frozen=True)
@@ -393,8 +396,9 @@ class RetrievalService:
         now: datetime,
     ) -> dict[str, RetrievedItem]:
         """Hits on document chunks: served only for a live (or, at `as_of`, then live) document
-        the engine has finished parsing. The content is the matching chunk, not the file. A
-        document has no tags or metadata: a request that filters on them gets none."""
+        the engine has finished parsing. Its `passages` are its matching chunks (best first) and
+        its content is them joined, never the file. A document has no tags or metadata: a
+        request that filters on them gets none."""
         if req.tags or req.metadata:
             return {}
         query = (
@@ -414,15 +418,18 @@ class RetrievalService:
         )
         documents = {eid: d for eid, d in await s.execute(query) if eid}
         return {
-            h.external_id: RetrievedItem(
-                "kb",
-                d.id,
-                h.text,
-                d.title,
-                d.state.value,
-                d.state == KbStatus.VERIFIED,
-                kind="document",
-                weight=scoring.kb_weight(d.state == KbStatus.VERIFIED),
+            h.external_id: _with_passages(
+                RetrievedItem(
+                    "kb",
+                    d.id,
+                    h.text,
+                    d.title,
+                    d.state.value,
+                    d.state == KbStatus.VERIFIED,
+                    kind="document",
+                    weight=scoring.kb_weight(d.state == KbStatus.VERIFIED),
+                ),
+                h.passages or (h.text,),
             )
             for h in hits
             if (d := documents.get(h.external_id)) is not None
@@ -479,21 +486,29 @@ def _select(
 ) -> list[RetrievedItem]:
     """Pinned first (they count against the budget, not against `top_k`), then up to `top_k`
     of the best fused items in MMR order. An item too long for what is left of the budget is
-    passed over (and does not count for diversity): the next one that fits takes its place."""
+    cut to its best passages if that fits, else passed over (not counting for diversity): the
+    next one that fits takes its place."""
     kept = fit_budget(pinned, cost, budget)
     left = budget - sum(cost(i) for i in kept)
     pool = {i.id: i for i in ranked[: top_k * MMR_POOL]}
+    fitted: dict[uuid.UUID, RetrievedItem] = {}
 
     def fits(item_id: uuid.UUID) -> bool:
         nonlocal left
-        c = cost(pool[item_id])
-        if c > left:
-            return False
-        left -= c
-        return True
+        item = pool[item_id]
+        for n in range(len(item.passages), 0, -1) if item.passages else (None,):
+            variant = item if n is None else _with_passages(item, item.passages[:n])
+            if (c := cost(variant)) <= left:
+                fitted[item_id], left = variant, left - c
+                return True
+        return False
 
     terms = [(i.id, i.score, similarity_terms(_text(i))) for i in pool.values()]
-    return kept + [pool[i] for i in mmr(terms, top_k, accept=fits)]
+    return kept + [fitted[i] for i in mmr(terms, top_k, accept=fits)]
+
+
+def _with_passages(item: RetrievedItem, passages: tuple[str, ...]) -> RetrievedItem:
+    return dataclasses.replace(item, passages=passages, content=CHUNK_SEPARATOR.join(passages))
 
 
 def _text(item: RetrievedItem) -> str:
