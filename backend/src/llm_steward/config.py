@@ -62,6 +62,11 @@ class Settings(BaseSettings):
     # Native provider only: local fastembed model (downloaded once, then offline) and its cache.
     embedding_model: str = "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2"
     model_cache_dir: str | None = None
+    # Optional rerank (design §6 step 5; extra `rerank`): a local fastembed cross-encoder, e.g.
+    # BAAI/bge-reranker-v2-m3-int8 (Apache-2.0, multilingual, 0.57 GB). Unset: `rerank: true` is
+    # refused. Its own budget: a cross-encoder over 30 items takes about a second on a laptop.
+    rerank_model: str | None = None
+    rerank_timeout_ms: int = Field(default=3000, gt=0)
     # Run the outbox worker inside the API process (single-process deployments); otherwise run
     # `steward worker` separately.
     run_worker: bool = True

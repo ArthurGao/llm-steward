@@ -1,8 +1,9 @@
 import asyncio
 import contextlib
 import logging
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Coroutine
 from contextlib import asynccontextmanager
+from typing import Any
 
 import httpx2
 from fastapi import FastAPI
@@ -11,7 +12,7 @@ from llm_steward.api import errors, system
 from llm_steward.api import v1 as api_v1
 from llm_steward.config import Settings
 from llm_steward.llm.client import LLM
-from llm_steward.providers.base import MemoryProvider
+from llm_steward.providers.base import MemoryProvider, Reranker
 from llm_steward.providers.native.embedding import Embedder
 from llm_steward.services.container import runtime
 
@@ -25,20 +26,31 @@ def create_app(
     embedder: Embedder | None = None,
     memory_provider: MemoryProvider | None = None,
     llm: LLM | None = None,
+    reranker: Reranker | None = None,
 ) -> FastAPI:
-    """Build the app. `http`, `embedder`, `memory_provider` and `llm` are injectable for tests."""
+    """Build the app. `http`, `embedder`, `memory_provider`, `llm` and `reranker` are injectable
+    for tests."""
     settings = settings or Settings()
 
     @asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         async with runtime(
-            settings, http=http, embedder=embedder, memory_provider=memory_provider, llm=llm
+            settings,
+            http=http,
+            embedder=embedder,
+            memory_provider=memory_provider,
+            llm=llm,
+            reranker=reranker,
         ) as services:
             app.state.services = services
             stop = asyncio.Event()
             background: list[asyncio.Task[None]] = []
             if services.embedder is not None and embedder is None:
-                background.append(asyncio.create_task(_warm_up(services.embedder)))
+                embed = services.embedder.embed(["warm-up"])
+                background.append(asyncio.create_task(_warm_up("embedding", embed)))
+            if services.reranker is not None and reranker is None:
+                score = services.reranker.score("warm-up", ["warm-up"])
+                background.append(asyncio.create_task(_warm_up("rerank", score)))
             if settings.run_worker:
                 background.append(asyncio.create_task(services.worker.run_forever(stop)))
             try:
@@ -57,10 +69,10 @@ def create_app(
     return app
 
 
-async def _warm_up(embedder: Embedder) -> None:
-    """Load (and on first run download) the local model in the background, so the first retrieve
+async def _warm_up(name: str, call: Coroutine[Any, Any, Any]) -> None:
+    """Load (and on first run download) a local model in the background, so the first retrieve
     is not the one that pays for it."""
     try:
-        await embedder.embed(["warm-up"])
+        await call
     except Exception:
-        log.exception("embedding model warm-up failed; the first request will retry it")
+        log.exception("%s model warm-up failed; the first request will retry it", name)

@@ -32,6 +32,10 @@ mem0 = [
     "psycopg[binary,pool]>=3.2",
     "fastembed>=0.9.1",
 ]
+# Optional rerank (design §6 step 5): a local fastembed cross-encoder (STEWARD_RERANK_MODEL).
+rerank = [
+    "fastembed>=0.9.1",
+]
 # The owner's own RAG engine in-process (`STEWARD_LITERAG_MODE=inprocess`); the default HTTP mode needs
 # nothing. Pinned to a commit: upgrading requires the contract tests (`pytest -m contract`) to pass first.
 literag = [

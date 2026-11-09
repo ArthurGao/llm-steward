@@ -42,3 +42,16 @@ async def test_cross_language_paraphrase_ranks_first(
             )
         hits = await provider.search(query, Scope(NS), top_k=3)
     assert hits[0].external_id == expected
+
+
+RERANKER = "BAAI/bge-reranker-v2-m3-int8"
+
+
+async def test_the_real_cross_encoder_scores_the_answer_above_the_rest() -> None:
+    """The multilingual cross-encoder (design §6 step 5; 0.57 GB, downloaded once)."""
+    from llm_steward.providers.rerank import FastEmbedReranker
+
+    reranker = FastEmbedReranker(RERANKER)
+    texts = ["The user drinks black coffee", "退款审核需要三到五个工作日", "用户住在上海"]
+    scores = await reranker.score("How long does a refund review take?", texts)
+    assert len(scores) == 3 and scores.index(max(scores)) == 1

@@ -5,6 +5,7 @@ from typing import Literal
 from pydantic import BaseModel, ConfigDict, Field
 
 from llm_steward.schemas.kb import CandidateOut
+from llm_steward.services.retrieval_service import Degraded
 
 
 class RetrieveScope(BaseModel):
@@ -37,7 +38,10 @@ class RetrieveIn(BaseModel):
     include_pinned: bool = Field(
         default=True, description="Put the user's pinned memories and profile values first."
     )
-    rerank: bool = Field(default=False, description="Re-score the fused candidates (P4d).")
+    rerank: bool = Field(
+        default=False,
+        description="Re-score the best fused candidates with a cross-encoder (if configured).",
+    )
     token_budget: int | None = Field(
         default=None,
         ge=1,
@@ -72,5 +76,7 @@ class RetrieveOut(BaseModel):
     )
     retrieval_id: uuid.UUID
     items: list[RetrievedItemOut]
-    degraded: list[Literal["memory", "kb"]]
+    degraded: list[Degraded] = Field(
+        description="What failed or ran out of time; the rest of the response stands."
+    )
     context: str | None = None

@@ -15,6 +15,7 @@ from llm_steward.providers.base import (
     MemoryProvider,
     PendingKnowledgeProvider,
     Providers,
+    Reranker,
 )
 from llm_steward.providers.native.embedding import Embedder, FastEmbedEmbedder
 from llm_steward.providers.weknora import WeKnoraProvider
@@ -26,6 +27,14 @@ def uses_native(settings: Settings) -> bool:
 
 def build_embedder(settings: Settings) -> Embedder:
     return FastEmbedEmbedder(settings.embedding_model, settings.model_cache_dir)
+
+
+def build_reranker(settings: Settings) -> Reranker | None:
+    if settings.rerank_model is None:
+        return None
+    from llm_steward.providers.rerank import FastEmbedReranker
+
+    return FastEmbedReranker(settings.rerank_model, settings.model_cache_dir)
 
 
 def build_providers(

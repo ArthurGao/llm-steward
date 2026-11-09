@@ -195,6 +195,17 @@ class KnowledgeProvider(HealthProbe, Protocol):
         ...
 
 
+class Reranker(Protocol):
+    """A cross-encoder (design §6 step 5): one relevance in [0, 1] per (query, text), same order,
+    higher is better (a local model's logits go through a sigmoid in its adapter; a hosted API
+    that already returns probabilities passes them on)."""
+
+    @property
+    def model(self) -> str: ...
+
+    async def score(self, query: str, texts: list[str]) -> list[float]: ...
+
+
 class DocumentParser(Protocol):
     """What a KnowledgeProvider with `DOC_PARSING` adds (design §8): documents are parsed in the
     engine's own time, so an upload returns at once and the Syncer polls the status."""

@@ -1,7 +1,8 @@
 """Embedders for the native provider. Real runs use fastembed (local ONNX); tests use a fake."""
 
-import asyncio
 from typing import Any, Protocol
+
+from llm_steward.providers.lazy_model import LazyModel
 
 
 class Embedder(Protocol):
@@ -24,18 +25,17 @@ def model_dim(model: str) -> int:
     return int(known[model]["dim"])
 
 
-class FastEmbedEmbedder:
+class FastEmbedEmbedder(LazyModel):
     """Local multilingual embeddings. The model downloads once on first use, then runs offline.
 
     Loading is deferred to the first `embed` call so startup and /health never block on it.
     """
 
     def __init__(self, model: str, cache_dir: str | None = None) -> None:
+        super().__init__()
         self._model_name = model
         self._dim = model_dim(model)
         self._cache_dir = cache_dir
-        self._impl: Any = None
-        self._lock = asyncio.Lock()
 
     @property
     def model(self) -> str:
@@ -46,16 +46,13 @@ class FastEmbedEmbedder:
         return self._dim
 
     async def embed(self, texts: list[str]) -> list[list[float]]:
-        if self._impl is None:
-            async with self._lock:
-                if self._impl is None:
-                    self._impl = await asyncio.to_thread(self._load)
-        return await asyncio.to_thread(self._embed_sync, texts)
+        return await self._run(_embed, texts)
 
     def _load(self) -> Any:
         from fastembed import TextEmbedding
 
         return TextEmbedding(model_name=self._model_name, cache_dir=self._cache_dir)
 
-    def _embed_sync(self, texts: list[str]) -> list[list[float]]:
-        return [vector.tolist() for vector in self._impl.embed(texts)]
+
+def _embed(model: Any, texts: list[str]) -> list[list[float]]:
+    return [vector.tolist() for vector in model.embed(texts)]

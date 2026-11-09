@@ -13,17 +13,10 @@ from sqlalchemy import update
 from llm_steward.models import Memory
 from llm_steward.models.base import utcnow
 from llm_steward.models.enums import KbStatus, RiskLevel
-from llm_steward.providers.base import ProviderHit
 from llm_steward.ranking import estimate_tokens
 from llm_steward.services.governance_service import CreateCollection
 from llm_steward.storage.db import session_factory
-from tests.conftest import AppClient, kb_entry_op
-
-
-def _memory(c: AppClient, h: dict[str, str], content: str, **body: Any) -> str:
-    r = c.http.post("/v1/memories", json={"content": content, **body}, headers=h)
-    assert r.status_code == 201, r.text
-    return str(r.json()["id"])
+from tests.conftest import AppClient, fix_order, kb_entry_op, post_memory
 
 
 def _retrieve(c: AppClient, h: dict[str, str], query: str, **body: Any) -> Any:
@@ -49,15 +42,6 @@ def _age(c: AppClient, memory_id: str, days: int) -> None:
     c.call(write)
 
 
-def _order(monkeypatch: pytest.MonkeyPatch, provider: Any, ext_ids: list[str]) -> None:
-    """The provider returns exactly these, in this order (rank 1 first)."""
-
-    async def search(query: str, *args: Any, **kwargs: Any) -> list[ProviderHit]:
-        return [ProviderHit(e, 1.0 - i / 100, "") for i, e in enumerate(ext_ids)]
-
-    monkeypatch.setattr(provider, "search", search)
-
-
 def test_verified_knowledge_outranks_active_at_the_next_rank(
     app_client: AppClient, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -67,7 +51,7 @@ def test_verified_knowledge_outranks_active_at_the_next_rank(
     verified = app_client.apply(kb_entry_op(ns, collection.id, KbStatus.VERIFIED, title="V"))
     app_client.drain()
     # active at rank 1, verified at rank 2: 1/61 * 0.9 < 1/62 * 1.0
-    _order(monkeypatch, app_client.services.providers.kb, [str(active.id), str(verified.id)])
+    fix_order(monkeypatch, app_client.services.providers.kb, [str(active.id), str(verified.id)])
     r = _retrieve(app_client, h, "refunds", sources=["kb"])
     assert _ids(r) == [str(verified.id), str(active.id)]
     scores = [i["score"] for i in r.json()["items"]]
@@ -78,14 +62,14 @@ def test_an_old_episodic_memory_sinks_and_semantic_ones_do_not_decay(
     app_client: AppClient, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     h, _ = app_client.new_tenant("acme")
-    old_episode = _memory(app_client, h, "asked about a refund", memory_type="episodic")
-    old_fact = _memory(app_client, h, "prefers email", memory_type="semantic")
-    fresh = _memory(app_client, h, "asked about shipping", memory_type="episodic")
+    old_episode = post_memory(app_client, h, "asked about a refund", memory_type="episodic")
+    old_fact = post_memory(app_client, h, "prefers email", memory_type="semantic")
+    fresh = post_memory(app_client, h, "asked about shipping", memory_type="episodic")
     app_client.drain()
     _age(app_client, old_episode, 60)  # two half-lives: a quarter of its weight
     _age(app_client, old_fact, 365)
     provider = app_client.services.providers.memory
-    _order(monkeypatch, provider, [old_episode, old_fact, fresh])
+    fix_order(monkeypatch, provider, [old_episode, old_fact, fresh])
     r = _retrieve(app_client, h, "refund", sources=["memory"])
     assert _ids(r) == [old_fact, fresh, old_episode]
     by_id = {i["id"]: i["score"] for i in r.json()["items"]}
@@ -97,10 +81,10 @@ def test_low_confidence_and_importance_change_the_weight(
     app_client: AppClient, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     h, _ = app_client.new_tenant("acme")
-    unsure = _memory(app_client, h, "maybe lives in Berlin", confidence=0.3, importance=0.5)
-    key = _memory(app_client, h, "allergic to nuts", importance=1.0)
+    unsure = post_memory(app_client, h, "maybe lives in Berlin", confidence=0.3, importance=0.5)
+    key = post_memory(app_client, h, "allergic to nuts", importance=1.0)
     app_client.drain()
-    _order(monkeypatch, app_client.services.providers.memory, [unsure, key])
+    fix_order(monkeypatch, app_client.services.providers.memory, [unsure, key])
     by_id = {
         i["id"]: i["score"]
         for i in _retrieve(app_client, h, "x", sources=["memory"]).json()["items"]
@@ -113,7 +97,7 @@ def test_namespace_config_overrides_weights_half_lives_and_top_k(
     app_client: AppClient, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     h, ns = app_client.new_tenant("acme")
-    ids = [_memory(app_client, h, f"note {i}", memory_type="order_event") for i in range(4)]
+    ids = [post_memory(app_client, h, f"note {i}", memory_type="order_event") for i in range(4)]
     app_client.drain()
     _age(app_client, ids[0], 10)
     app_client.set_config(
@@ -123,7 +107,7 @@ def test_namespace_config_overrides_weights_half_lives_and_top_k(
             "memory": {"types": [{"name": "order_event", "half_life_days": 10}]},
         },
     )
-    _order(monkeypatch, app_client.services.providers.memory, ids)
+    fix_order(monkeypatch, app_client.services.providers.memory, ids)
     items = _retrieve(app_client, h, "note", sources=["memory"]).json()["items"]
     assert [i["id"] for i in items] == [ids[1], ids[2]]  # top_k 2; ids[0] halved by decay
     assert items[0]["score"] == pytest.approx(1 / 62 * 0.5)
@@ -131,11 +115,11 @@ def test_namespace_config_overrides_weights_half_lives_and_top_k(
 
 def test_filters_narrow_after_the_safety_net(app_client: AppClient) -> None:
     h, ns = app_client.new_tenant("acme")
-    refund = _memory(
+    refund = post_memory(
         app_client, h, "refund for order 1", tags=["refund", "vip"], metadata={"region": "cn"}
     )
-    _memory(app_client, h, "refund for order 2", tags=["refund"], metadata={"region": "eu"})
-    episode = _memory(app_client, h, "refund call yesterday", memory_type="episodic")
+    post_memory(app_client, h, "refund for order 2", tags=["refund"], metadata={"region": "eu"})
+    episode = post_memory(app_client, h, "refund call yesterday", memory_type="episodic")
     collection = app_client.apply(CreateCollection(ns, "faq", default_risk=RiskLevel.LOW))
     app_client.apply(kb_entry_op(ns, collection.id, KbStatus.ACTIVE))
     r = app_client.http.post(
@@ -161,10 +145,10 @@ def test_pinned_memories_come_first_unless_left_out(
     app_client: AppClient, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     h, _ = app_client.new_tenant("acme")
-    pinned = _memory(app_client, h, "speaks German", pinned=True, user_id="u1")
-    hit = _memory(app_client, h, "refund pending", user_id="u1")
+    pinned = post_memory(app_client, h, "speaks German", pinned=True, user_id="u1")
+    hit = post_memory(app_client, h, "refund pending", user_id="u1")
     app_client.drain()
-    _order(monkeypatch, app_client.services.providers.memory, [hit])  # only `hit` matches
+    fix_order(monkeypatch, app_client.services.providers.memory, [hit])  # only `hit` matches
     scope = {"user_id": "u1"}
     items = _retrieve(app_client, h, "refund", scope=scope, sources=["memory"]).json()["items"]
     assert [(i["id"], i["pinned"]) for i in items] == [(pinned, True), (hit, False)]
@@ -178,18 +162,18 @@ def test_near_duplicates_are_dropped_for_something_new(
     app_client: AppClient, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     h, _ = app_client.new_tenant("acme")
-    a = _memory(app_client, h, "refunds take seven days after the return")
-    copy = _memory(app_client, h, "refunds take seven days after the return arrives")
-    other = _memory(app_client, h, "shipping is free above fifty euros")
+    a = post_memory(app_client, h, "refunds take seven days after the return")
+    copy = post_memory(app_client, h, "refunds take seven days after the return arrives")
+    other = post_memory(app_client, h, "shipping is free above fifty euros")
     app_client.drain()
-    _order(monkeypatch, app_client.services.providers.memory, [a, copy, other])
+    fix_order(monkeypatch, app_client.services.providers.memory, [a, copy, other])
     assert _ids(_retrieve(app_client, h, "refunds", sources=["memory"], top_k=2)) == [a, other]
 
 
 def test_the_token_budget_bounds_items_and_context(app_client: AppClient) -> None:
     h, _ = app_client.new_tenant("acme")
-    long = _memory(app_client, h, "refund " + "detail " * 200)  # ~470 tokens
-    short = _memory(app_client, h, "refund approved")
+    long = post_memory(app_client, h, "refund " + "detail " * 200)  # ~470 tokens
+    short = post_memory(app_client, h, "refund approved")
     app_client.drain()
     r = _retrieve(app_client, h, "refund", sources=["memory"], token_budget=50, format="context")
     assert _ids(r) == [short]  # the long one does not fit; the next that does is kept
@@ -203,12 +187,12 @@ def test_an_item_too_long_for_the_budget_gives_way_to_the_next_that_fits(
     app_client: AppClient, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     h, _ = app_client.new_tenant("acme")
-    long = _memory(app_client, h, "refund " + "detail " * 200)
-    first = _memory(app_client, h, "refund approved")
-    second = _memory(app_client, h, "card refunded in full")
-    third = _memory(app_client, h, "store credit issued instead")
+    long = post_memory(app_client, h, "refund " + "detail " * 200)
+    first = post_memory(app_client, h, "refund approved")
+    second = post_memory(app_client, h, "card refunded in full")
+    third = post_memory(app_client, h, "store credit issued instead")
     app_client.drain()
-    _order(monkeypatch, app_client.services.providers.memory, [long, first, second, third])
+    fix_order(monkeypatch, app_client.services.providers.memory, [long, first, second, third])
     r = _retrieve(app_client, h, "refund", sources=["memory"], top_k=2, token_budget=40)
     assert _ids(r) == [first, second]  # top_k is still reached from further down
 
@@ -217,7 +201,7 @@ def test_the_budget_counts_what_is_sent(app_client: AppClient) -> None:
     """format=context counts each rendered line (its citation id is ~12 tokens); items count
     their text. Pinned memories are within the budget too."""
     h, _ = app_client.new_tenant("acme")
-    short = _memory(app_client, h, "refund approved")  # 4 tokens of text, ~25 as a line
+    short = post_memory(app_client, h, "refund approved")  # 4 tokens of text, ~25 as a line
     app_client.drain()
     as_items = _retrieve(app_client, h, "refund", sources=["memory"], token_budget=10)
     assert _ids(as_items) == [short]
@@ -226,7 +210,7 @@ def test_the_budget_counts_what_is_sent(app_client: AppClient) -> None:
     )
     assert _ids(as_context) == [] and as_context.json()["context"] == ""
 
-    pinned = _memory(app_client, h, "profile " + "note " * 200, pinned=True, user_id="u1")
+    pinned = post_memory(app_client, h, "profile " + "note " * 200, pinned=True, user_id="u1")
     app_client.drain()
     r = _retrieve(
         app_client, h, "refund", scope={"user_id": "u1"}, sources=["memory"], token_budget=60

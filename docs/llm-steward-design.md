@@ -871,6 +871,11 @@ llm-steward/
      - KB provider 的 `search` 约定改为每个外部 id 一条命中，最多带 3 块（`CHUNKS_PER_ID`）放在 `ProviderHit.passages`，最好的在前（`group_hits`）。provider 只搜 `top_k` 块；多取只在检索层做一次（`CANDIDATES_PER_RESULT`，带过滤时再乘 3）。/simplify 时发现三层倍数叠加过：native 一次要取 216 到 648 块，九成被丢掉，已改掉。
      - 文档结果带 `passages`（API 新字段），`content` 是它们用 `\n…\n` 拼起来的文本。上下文里第一段跟引用 id 和"已验证/未验证"标注在同一行，后面几段缩进在下面。token 预算放不下整篇时先减到前几段，仍放不下再跳过。条目照旧用库里的完整内容，多出的块不用。
      - /simplify 发现安全网的"丢弃了 N 条"告警按原始块数计算，多块文档每次都会误报。改成每个 id 一条命中后已修好，有先红后绿的测试。
+   - P4d 可选 rerank（2026-11-09）：
+     - 配置 `STEWARD_RERANK_MODEL`（可选依赖组 `rerank`）后，`rerank: true` 用本地 fastembed 交叉编码器给融合后的前 30 条重新打分。推荐模型 `BAAI/bge-reranker-v2-m3-int8`：Apache-2.0、多语言、0.57 GB，lite-rag 也在用。没配置时返回 422；配置了 fastembed 不认识的模型名，启动时就失败，不会下载。
+     - `Reranker` 接口约定返回 [0,1] 的相关度。本地模型给的是原始 logit，在适配器里过 sigmoid；以后接本来就输出概率的托管服务也不用改调用方。相关度替换 RRF 分，再乘可信度等权重；排到 30 名以外的保持融合顺序，接在后面。
+     - 超时单独设置：`STEWARD_RERANK_TIMEOUT_MS`，默认 3000。依据是 KB 里 lite-rag 的实测，rerank 在笔记本上约 1 秒，用 provider 的 800 ms 会总是超时。超时或出错时保留融合顺序，并标记 `degraded: ["rerank"]`。检索日志记录 `reranked_by`（模型名，没跑成为 null）和 `latency_ms.rerank`。
+     - 本地模型（embedding 和 rerank 共用 `LazyModel`）：只在后台加载一次，作为共享任务，请求超时只取消自己的等待，不会取消加载。这是 /simplify 发现的：原来冷启动加载超过预算时，每个请求都会重新开始加载，永远加载不完。加载失败时由下一次调用重试；交叉编码器同一时刻只跑一个，因为它一次就会占满所有核。启动时和 embedding 一样在后台预热。
    - 验收：用 Fake provider 注入 2 秒延迟，响应仍在超时预算内返回并标记 degraded；在小型标注集（20–30 条 query）上 recall@8 达标（阈值在建立基线后确定）
 6. **P5 接入与安全**
    - [ ] API key、user token、Admin JWT、限流、幂等、Problem Details、webhooks

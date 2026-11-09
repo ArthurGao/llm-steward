@@ -275,6 +275,24 @@ def app_client(migrated_url: str) -> Iterator[AppClient]:
         yield client
 
 
+def post_memory(c: AppClient, headers: dict[str, str], content: str, **body: Any) -> str:
+    """POST /v1/memories; the new memory's id."""
+    r = c.http.post("/v1/memories", json={"content": content, **body}, headers=headers)
+    assert r.status_code == 201, r.text
+    return str(r.json()["id"])
+
+
+def fix_order(monkeypatch: pytest.MonkeyPatch, provider: Any, external_ids: list[str]) -> None:
+    """The provider's search returns exactly these, in this order (rank 1 first): tests of what
+    governance does with ranks, not of the engines' ranking."""
+    from llm_steward.providers.base import ProviderHit
+
+    async def search(query: str, *args: Any, **kwargs: Any) -> list[ProviderHit]:
+        return [ProviderHit(e, 1.0 - i / 100, "") for i, e in enumerate(external_ids)]
+
+    monkeypatch.setattr(provider, "search", search)
+
+
 class Tenant:
     """One namespace in a running app, with a host-app key (read/write) and a reviewer key
     (review scope)."""

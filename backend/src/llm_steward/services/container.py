@@ -19,9 +19,14 @@ from llm_steward.config import Settings
 from llm_steward.llm.client import LLM, OpenAICompatibleLLM
 from llm_steward.llm.roles import Role
 from llm_steward.models.enums import JobType
-from llm_steward.providers.base import MemoryProvider, Providers
+from llm_steward.providers.base import MemoryProvider, Providers, Reranker
 from llm_steward.providers.native.embedding import Embedder
-from llm_steward.providers.registry import build_embedder, build_providers, uses_native
+from llm_steward.providers.registry import (
+    build_embedder,
+    build_providers,
+    build_reranker,
+    uses_native,
+)
 from llm_steward.services.document_service import DocumentService
 from llm_steward.services.episode_service import EpisodeService
 from llm_steward.services.extraction_service import ExtractionService, compensates
@@ -48,6 +53,7 @@ class Services:
     engine: AsyncEngine
     providers: Providers
     embedder: Embedder | None
+    reranker: Reranker | None
     governance: GovernanceService
     namespaces: NamespaceService
     memories: MemoryService
@@ -76,6 +82,8 @@ def build_services(
     providers: Providers,
     embedder: Embedder | None,
     llm: LLM | None,
+    *,
+    reranker: Reranker | None,
 ) -> Services:
     sessions = session_factory(engine)
     governance = GovernanceService(
@@ -126,6 +134,7 @@ def build_services(
         engine=engine,
         providers=providers,
         embedder=embedder,
+        reranker=reranker,
         governance=governance,
         namespaces=NamespaceService(sessions),
         memories=MemoryService(sessions, governance, providers.memory),
@@ -139,7 +148,11 @@ def build_services(
         episodes=episodes,
         reconcile=reconcile,
         retrieval=RetrievalService(
-            sessions, providers, timeout_s=settings.retrieve_timeout_ms / 1000
+            sessions,
+            providers,
+            timeout_s=settings.retrieve_timeout_ms / 1000,
+            reranker=reranker,
+            rerank_timeout_s=settings.rerank_timeout_ms / 1000,
         ),
         worker=worker,
     )
@@ -153,9 +166,10 @@ async def runtime(
     embedder: Embedder | None = None,
     memory_provider: MemoryProvider | None = None,
     llm: LLM | None = None,
+    reranker: Reranker | None = None,
 ) -> AsyncIterator[Services]:
-    """`http`, `embedder`, `memory_provider` and `llm` are injectable (tests stub the network, the
-    model and the engine); whatever is created here is also closed here."""
+    """`http`, `embedder`, `memory_provider`, `llm` and `reranker` are injectable (tests stub the
+    network, the models and the engine); whatever is created here is also closed here."""
     async with engine_scope(settings.database_url, schema=settings.db_schema) as engine:
         client = http or httpx2.AsyncClient()
         try:
@@ -163,7 +177,8 @@ async def runtime(
             providers = build_providers(settings, client, engine, embed, memory=memory_provider)
             try:
                 roles = llm or build_llm(settings, providers)
-                yield build_services(settings, engine, providers, embed, roles)
+                rerank = reranker or build_reranker(settings)
+                yield build_services(settings, engine, providers, embed, roles, reranker=rerank)
             finally:
                 await providers.aclose()
         finally:

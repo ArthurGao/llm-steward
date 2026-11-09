@@ -44,7 +44,7 @@ from llm_steward.models.enums import (
     ObjectType,
     SyncStatus,
 )
-from llm_steward.providers.base import ProviderHit, Providers, Scope
+from llm_steward.providers.base import ProviderHit, Providers, Reranker, Scope
 from llm_steward.ranking import (
     IMPORTANCE_BOOST,
     estimate_tokens,
@@ -64,6 +64,7 @@ log = logging.getLogger(__name__)
 CANDIDATES_PER_RESULT = 3
 MIN_CANDIDATES = 10
 Source = Literal["memory", "kb"]
+Degraded = Literal["memory", "kb", "rerank"]  # what failed or ran out of time
 ItemKind = Literal["memory", "entry", "document"]
 _MEMORY_CURRENT = (MemoryStatus.ACTIVE,)
 _MEMORY_HISTORY = (MemoryStatus.ACTIVE, MemoryStatus.SUPERSEDED)  # deleted stays out
@@ -75,6 +76,7 @@ TOKEN_BUDGET = 2000
 FILTER_WIDENING = 3  # filters run on what the providers return: ask them for more
 MMR_POOL = 3  # MMR picks from the best top_k * MMR_POOL fused items
 CHUNK_SEPARATOR = "\n…\n"  # between a document's chunks in one item
+RERANK_TOP_N = 30  # design §6 step 5
 TRUST = {"verified": 1.0, "active": 0.9}
 LOW_CONFIDENCE, LOW_CONFIDENCE_FACTOR = 0.5, 0.8  # an unsure memory counts less
 KB_IMPORTANCE = 0.5  # KB items have no importance of their own: neutral
@@ -181,7 +183,7 @@ class RetrievedItem:
 class RetrieveResult:
     retrieval_id: uuid.UUID
     items: list[RetrievedItem]
-    degraded: list[Source] = field(default_factory=list)
+    degraded: list[Degraded] = field(default_factory=list)
     context: str | None = None
 
 
@@ -192,13 +194,17 @@ class RetrievalService:
         providers: Providers,
         *,
         timeout_s: float,
+        reranker: Reranker | None,
+        rerank_timeout_s: float,
     ) -> None:
         self._sessions = sessions
         self._providers = providers
         self._timeout_s = timeout_s
+        self._reranker = reranker
+        self._rerank_timeout_s = rerank_timeout_s
 
     async def retrieve(self, namespace_id: uuid.UUID, req: RetrieveRequest) -> RetrieveResult:
-        if req.rerank:
+        if req.rerank and self._reranker is None:
             raise Unprocessable("rerank is not available: no reranker is configured")
         scope = Scope(namespace_id, req.user_id, req.agent_id, req.session_id)
         async with self._sessions() as s:  # one session for both reads before the search
@@ -223,7 +229,7 @@ class RetrievalService:
         outcomes = await asyncio.gather(*(self._timed(c) for c in searches.values()))
         hits: dict[Source, list[ProviderHit]] = {}
         latency_ms: dict[str, int] = {}
-        degraded: list[Source] = []
+        degraded: list[Degraded] = []
         for source, (result, elapsed_ms) in zip(searches, outcomes, strict=True):
             latency_ms[source] = elapsed_ms
             if isinstance(result, BaseException):
@@ -242,12 +248,45 @@ class RetrievalService:
         # Ranking is CPU work: no connection is held while it runs.
         seen = {p.id for p in pinned}
         ranked = [i for i in _fuse(rankings) if i.id not in seen]
+        reranked_by = None
+        if req.rerank and self._reranker is not None and ranked:
+            ranked, reranked_by = await self._rerank(req.query, ranked, degraded, latency_ms)
         cost = _line_cost if req.with_context else _text_cost
         items = _select(pinned, ranked, top_k, req.token_budget or scoring.token_budget, cost)
         async with self._sessions() as s, s.begin():
-            retrieval_id = self._log(s, namespace_id, req, items, latency_ms)
+            retrieval_id = self._log(s, namespace_id, req, items, latency_ms, reranked_by)
         context = _render(items) if req.with_context else None
         return RetrieveResult(retrieval_id, items, degraded, context)
+
+    async def _rerank(
+        self,
+        query: str,
+        ranked: list[RetrievedItem],
+        degraded: list[Degraded],
+        latency_ms: dict[str, int],
+    ) -> tuple[list[RetrievedItem], str | None]:
+        """Design §6 step 5: the cross-encoder re-scores the best RERANK_TOP_N fused items; its
+        relevance (in [0, 1]) replaces their fused one, still times their weight; the rest
+        follow in fused order. Failing or out of time: the fused order stands, `degraded` says
+        so. Returns the order and the model that set it (None: it did not)."""
+        reranker = self._reranker
+        assert reranker is not None  # checked by the caller
+        head, tail = ranked[:RERANK_TOP_N], ranked[RERANK_TOP_N:]
+        started = time.perf_counter()
+        try:
+            async with asyncio.timeout(self._rerank_timeout_s):
+                relevance = await reranker.score(query, [_text(i) for i in head])
+        except Exception as exc:
+            log.warning("retrieve: rerank failed: %s", type(exc).__name__)
+            degraded.append("rerank")
+            return ranked, None
+        finally:
+            latency_ms["rerank"] = int((time.perf_counter() - started) * 1000)
+        rescored = [
+            dataclasses.replace(item, score=r * item.weight)
+            for item, r in zip(head, relevance, strict=True)
+        ]
+        return sorted(rescored, key=lambda i: (-i.score, i.id)) + tail, reranker.model
 
     async def _timed(self, search: Any) -> tuple[Any, int]:
         started = time.perf_counter()
@@ -442,6 +481,7 @@ class RetrievalService:
         req: RetrieveRequest,
         items: list[RetrievedItem],
         latency_ms: dict[str, int],
+        reranked_by: str | None,
     ) -> uuid.UUID:
         entry = RetrievalLog(
             id=uuid7(),  # set now: the id is returned before the transaction flushes
@@ -458,6 +498,8 @@ class RetrievalService:
                 "tags": list(req.tags),
                 "metadata": req.metadata,
                 "token_budget": req.token_budget,
+                "rerank": req.rerank,
+                "reranked_by": reranked_by,  # None when asked but it failed or timed out
             },
             results=[{"source": i.source, "id": str(i.id), "score": i.score} for i in items],
             latency_ms=latency_ms,
