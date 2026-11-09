@@ -38,9 +38,7 @@ def _logged(c: AppClient, retrieval_id: str) -> tuple[dict[str, Any], dict[str, 
 
 
 def _retrieve(c: AppClient, h: dict[str, str], **body: Any) -> Any:
-    r = c.http.post("/v1/retrieve", json={"query": "refund delay", **body}, headers=h)
-    assert r.status_code == 200, r.text
-    return r.json()
+    return c.retrieve(h, **{"query": "refund delay", **body})
 
 
 def test_the_reranker_reorders_and_its_score_replaces_rrf(
@@ -124,3 +122,46 @@ def test_a_late_fused_item_the_reranker_favours_reaches_the_top(
     reranker.scores = {f" note number {i}": (5.0 if i == 27 else -5.0) for i in range(30)}
     body = _retrieve(client, h, sources=["memory"], rerank=True, top_k=2)
     assert body["items"][0]["id"] == ids[27]
+
+
+def test_a_namespace_can_rerank_by_default_and_a_request_can_say_otherwise(
+    client: AppClient, reranker: FakeReranker, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    h, ns = client.new_tenant("acme")
+    weak = post_memory(client, h, "the weather is nice")
+    strong = post_memory(client, h, "refund delay explained")
+    client.drain()
+    fix_order(monkeypatch, client.services.providers.memory, [weak, strong])
+    client.set_config(ns, {"retrieval": {"rerank": True}})
+    body = _retrieve(client, h, sources=["memory"])  # no `rerank` in the request
+    assert [i["id"] for i in body["items"]] == [strong, weak] and len(reranker.calls) == 1
+    body = _retrieve(client, h, sources=["memory"], rerank=False)
+    assert [i["id"] for i in body["items"]] == [weak, strong] and len(reranker.calls) == 1
+
+
+def test_a_namespace_default_without_a_reranker_degrades_instead_of_failing(
+    migrated_url: str,
+) -> None:
+    with running_app(migrated_url) as c:  # no reranker configured
+        h, ns = c.new_tenant("acme")
+        post_memory(c, h, "refund delay explained")
+        c.drain()
+        c.set_config(ns, {"retrieval": {"rerank": True}})
+        r = c.http.post("/v1/retrieve", json={"query": "refund"}, headers=h)
+        assert r.status_code == 200 and r.json()["degraded"] == ["rerank"]
+        explicit = c.http.post("/v1/retrieve", json={"query": "refund", "rerank": True}, headers=h)
+        assert explicit.status_code == 422  # asked for by the caller: refused
+
+
+def test_the_cross_encoder_reads_a_bounded_text_per_item(
+    client: AppClient, reranker: FakeReranker, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A cross-encoder reads ~512 tokens anyway; tokenising a 20 000-character memory for it
+    only costs time."""
+    h, _ = client.new_tenant("acme")
+    huge = post_memory(client, h, "refund " + "x" * 19_990)
+    client.drain()
+    fix_order(monkeypatch, client.services.providers.memory, [huge])
+    _retrieve(client, h, sources=["memory"], rerank=True, token_budget=100_000)
+    [(_, texts)] = reranker.calls
+    assert texts[0].startswith(" refund") and len(texts[0]) <= 2000

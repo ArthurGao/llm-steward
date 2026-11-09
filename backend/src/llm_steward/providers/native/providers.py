@@ -16,7 +16,6 @@ from llm_steward.providers.base import (
     DELETE,
     DOC_PARSING,
     ENTRY_UPSERT,
-    METADATA_FILTER,
     UPDATE,
     ComponentHealth,
     KbCollectionRef,
@@ -140,7 +139,8 @@ class _NativeBase:
 
 
 class NativeMemoryProvider(_NativeBase):
-    capabilities = frozenset({UPDATE, DELETE, METADATA_FILTER})
+    # no METADATA_FILTER: search ignores `filters` (governance post-filters, design rule 4)
+    capabilities = frozenset({UPDATE, DELETE})
 
     async def add(
         self,
@@ -241,7 +241,7 @@ def chunk_text(text: str) -> list[str]:
 
 
 class NativeKnowledgeProvider(_NativeBase):
-    capabilities = frozenset({ENTRY_UPSERT, METADATA_FILTER, DOC_PARSING})
+    capabilities = frozenset({ENTRY_UPSERT, DOC_PARSING})
 
     async def ensure_collection(self, collection: KbCollectionRef) -> str:
         # Collections need no storage of their own: the id is the partition key.

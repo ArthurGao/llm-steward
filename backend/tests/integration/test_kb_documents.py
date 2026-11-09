@@ -29,13 +29,7 @@ def upload(
     as_reviewer: bool = False,
     **form: str,
 ) -> Any:
-    headers = t.reviewer if as_reviewer else t.host
-    return t.c.http.post(
-        "/v1/kb/documents",
-        data={"collection_id": collection, **form},
-        files={"file": (filename, data, "text/markdown")},
-        headers=headers,
-    )
+    return t.upload(collection, data, filename=filename, as_reviewer=as_reviewer, **form)
 
 
 def get(t: Tenant, document_id: str) -> dict[str, Any]:

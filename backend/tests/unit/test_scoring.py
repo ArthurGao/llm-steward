@@ -8,28 +8,26 @@ from llm_steward.ranking import estimate_tokens, fit_budget, mmr, similarity_ter
 
 
 def test_weigh_multiplies_trust_importance_and_decay() -> None:
-    # rel * w_trust * (1 + 0.3 · importance) * 0.5^(age / h)
-    assert weigh(0.02, trust=0.9, importance=0.5, age_days=0, half_life_days=None) == (
-        pytest.approx(0.02 * 0.9 * 1.15)
+    # w_trust * (1 + 0.3 * importance) * 0.5^(age / h): the factor a fused relevance gets
+    assert weigh(trust=0.9, importance=0.5, age_days=0, half_life_days=None) == (
+        pytest.approx(0.9 * 1.15)
     )
-    assert weigh(0.02, trust=1.0, importance=1.0, age_days=0, half_life_days=None) == (
-        pytest.approx(0.02 * 1.3)
-    )
+    assert weigh(trust=1.0, importance=1.0, age_days=0, half_life_days=None) == (pytest.approx(1.3))
 
 
 def test_decay_halves_the_score_every_half_life() -> None:
-    fresh = weigh(1.0, trust=1.0, importance=0.0, age_days=0, half_life_days=30)
-    one = weigh(1.0, trust=1.0, importance=0.0, age_days=30, half_life_days=30)
-    two = weigh(1.0, trust=1.0, importance=0.0, age_days=60, half_life_days=30)
+    fresh = weigh(trust=1.0, importance=0.0, age_days=0, half_life_days=30)
+    one = weigh(trust=1.0, importance=0.0, age_days=30, half_life_days=30)
+    two = weigh(trust=1.0, importance=0.0, age_days=60, half_life_days=30)
     assert (fresh, one, two) == pytest.approx((1.0, 0.5, 0.25))
     # no half-life: never decays, however old
-    assert weigh(1.0, trust=1.0, importance=0.0, age_days=3650, half_life_days=None) == 1.0
+    assert weigh(trust=1.0, importance=0.0, age_days=3650, half_life_days=None) == 1.0
     # the boost is configurable (namespace config)
-    assert weigh(1.0, trust=1.0, importance=1.0, age_days=0, half_life_days=None, boost=0.0) == 1.0
+    assert weigh(trust=1.0, importance=1.0, age_days=0, half_life_days=None, boost=0.0) == 1.0
 
 
 def test_a_future_timestamp_never_boosts() -> None:
-    assert weigh(1.0, trust=1.0, importance=0.0, age_days=-5, half_life_days=30) == 1.0
+    assert weigh(trust=1.0, importance=0.0, age_days=-5, half_life_days=30) == 1.0
 
 
 def test_similarity_terms_split_words_and_chinese_bigrams() -> None:

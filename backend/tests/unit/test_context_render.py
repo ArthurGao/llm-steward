@@ -2,15 +2,22 @@ import uuid
 
 from llm_steward.services.retrieval_service import RetrievedItem, _render
 
-MEM = RetrievedItem(
-    "memory", uuid.UUID(int=1), "Drinks black coffee", None, "active", False, 0.1, kind="memory"
-)
-KB = RetrievedItem(
-    "kb", uuid.UUID(int=2), "3-5 business days", "Refunds", "verified", True, 0.1, kind="entry"
-)
-DRAFTY = RetrievedItem(
-    "kb", uuid.UUID(int=3), "Plus a fee abroad", "Cross-border", "active", False, 0.1, kind="entry"
-)
+
+def _item(kind: str, n: int, content: str, title: str | None, verified: bool) -> RetrievedItem:
+    return RetrievedItem(
+        kind=kind,  # type: ignore[arg-type]
+        id=uuid.UUID(int=n),
+        content=content,
+        title=title,
+        status="verified" if verified else "active",
+        verified=verified,
+        score=0.1,
+    )
+
+
+MEM = _item("memory", 1, "Drinks black coffee", None, False)
+KB = _item("entry", 2, "3-5 business days", "Refunds", True)
+DRAFTY = _item("entry", 3, "Plus a fee abroad", "Cross-border", False)
 M1, K2, K3 = (str(uuid.UUID(int=i)) for i in (1, 2, 3))
 
 
@@ -29,14 +36,13 @@ def test_only_present_sections_and_nothing_for_no_results() -> None:
 
 def test_a_documents_further_passages_are_indented_under_its_cited_line() -> None:
     doc = RetrievedItem(
-        "kb",
-        uuid.UUID(int=4),
-        "Refunds take 3-5 days\n…\nShipping is free",
-        "Policy",
-        "active",
-        False,
-        0.1,
         kind="document",
+        id=uuid.UUID(int=4),
+        content="Refunds take 3-5 days\n…\nShipping is free",
+        title="Policy",
+        status="active",
+        verified=False,
+        score=0.1,
         passages=("Refunds take 3-5 days", "Shipping is free"),
     )
     assert _render([doc]) == (

@@ -38,9 +38,10 @@ class RetrieveIn(BaseModel):
     include_pinned: bool = Field(
         default=True, description="Put the user's pinned memories and profile values first."
     )
-    rerank: bool = Field(
-        default=False,
-        description="Re-score the best fused candidates with a cross-encoder (if configured).",
+    rerank: bool | None = Field(
+        default=None,
+        description="Re-score the best fused candidates with a cross-encoder. Default: the "
+        "namespace's `retrieval.rerank` (off).",
     )
     token_budget: int | None = Field(
         default=None,

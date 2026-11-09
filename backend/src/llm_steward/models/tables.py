@@ -292,7 +292,6 @@ class RetrievalLog(IdMixin, CreatedMixin, Base):
     filters: Mapped[dict[str, Any]] = mapped_column(default=dict)
     results: Mapped[list[dict[str, Any]]] = mapped_column(default=list)  # what was returned
     latency_ms: Mapped[dict[str, Any]] = mapped_column(default=dict)
-    feedback: Mapped[dict[str, Any] | None]  # unused since P4e: see RetrievalFeedback
     left_out: Mapped[list[dict[str, Any]]] = mapped_column(default=list)  # candidates, and why
     counted: Mapped[bool] = mapped_column(default=False)  # its hits are in the counters
 

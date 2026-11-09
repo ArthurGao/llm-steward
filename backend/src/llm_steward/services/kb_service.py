@@ -71,7 +71,7 @@ class SuggestConfig:
 
     @classmethod
     def of(cls, config: dict[str, Any]) -> "SuggestConfig":
-        kb = config.get("kb", {})
+        kb = config.get("kb") or {}  # a section written as `kb:` with nothing under it is null
         return cls(
             float(kb.get("suggest_threshold", cls.threshold)),
             int(kb.get("max_suggestions_per_session", cls.max_per_session)),

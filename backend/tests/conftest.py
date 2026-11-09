@@ -197,6 +197,12 @@ class AppClient:
 
         return self.call(read)
 
+    def retrieve(self, headers: dict[str, str], **body: Any) -> dict[str, Any]:
+        """POST /v1/retrieve, asserting 200; the response body."""
+        r = self.http.post("/v1/retrieve", json=body, headers=headers)
+        assert r.status_code == 200, r.text
+        return dict(r.json())
+
     def set_config(self, namespace_id: uuid.UUID, config: dict[str, Any]) -> None:
         """A namespace's config (design §8); no route sets it yet (`steward ns apply` later)."""
         from llm_steward.models import Namespace
@@ -329,6 +335,23 @@ class Tenant:
         r = self.post("/v1/kb/collections", body, as_reviewer=True)
         assert r.status_code == 201, r.text
         return str(r.json()["id"])
+
+    def upload(
+        self,
+        collection: str,
+        data: bytes,
+        *,
+        filename: str = "policy.md",
+        as_reviewer: bool = False,
+        **form: str,
+    ) -> Any:
+        """POST /v1/kb/documents (multipart); the response."""
+        return self.c.http.post(
+            "/v1/kb/documents",
+            data={"collection_id": collection, **form},
+            files={"file": (filename, data, "text/markdown")},
+            headers=self.reviewer if as_reviewer else self.host,
+        )
 
     def submit(self, collection: str, content: str, **body: Any) -> Any:
         payload = {"collection_id": collection, "title": "Refund time", "content": content, **body}

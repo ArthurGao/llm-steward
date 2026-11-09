@@ -99,7 +99,7 @@ class RiskPolicy:
     @classmethod
     def from_config(cls, config: dict[str, Any]) -> "RiskPolicy":
         """From a namespace's config (design §8): `kb.high_risk_keywords`, `memory.pii.action`."""
-        keywords = tuple(config.get("kb", {}).get("high_risk_keywords", ()))
+        keywords = tuple((config.get("kb") or {}).get("high_risk_keywords", ()))
         action = config.get("memory", {}).get("pii", {}).get("action", "redact")
         return cls(keywords, action)
 

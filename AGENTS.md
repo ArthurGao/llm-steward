@@ -41,11 +41,12 @@ If a change must contradict the design, update the design in the same change and
 
 ## Current stage
 
-**P4 — joint retrieval — next** (P0–P3 closed out; P3 closed out 2026-11-09). The owner's own RAG engine **lite-rag**
+**P5 — access & security — next** (P0–P4 closed out; P4 closed out 2026-11-09). The owner's own RAG engine **lite-rag**
 (`~/Code/AI/lite-rag`) was built first and plugged in as `LiteRagProvider` (S9, 2026-11-09). P3 slices: P3a
-governance core, P3b LLM steps, P3c `WeKnoraProvider` and P3d documents are done, with the stage close-out
-recorded in design §11 (including the follow-ups it deferred). Track the checklist in design §11 (ticked items
-are done and verified). P4 starts with plan mode. `docparse` (RAGFlow) is P7, the frontend workspace P6.
+governance core, P3b LLM steps, P3c `WeKnoraProvider` and P3d documents are done; P4 (joint retrieval: scoring,
+MMR, budget, rerank, documents' passages, retrieval log, feedback, hit counts; recall@8 baseline 0.960 on the
+synthetic eval, `uv run pytest -m eval`) is done. Each stage's close-out and deferred follow-ups are recorded in
+design §11. Track the checklist in design §11 (ticked items are done and verified). P5 starts with plan mode. `docparse` (RAGFlow) is P7, the frontend workspace P6.
 
 Decided (2026-11-08): default backends mem0 (in-process Python library) + WeKnora v0.9.0; native and mem0
 embeddings are local fastembed MiniLM (multilingual, 384-d); API keys arrive in P1 (user tokens / admin JWT
@@ -111,6 +112,7 @@ uv run pytest                      # every DB test on SQLite and PostgreSQL
 uv run ruff check && uv run ruff format --check && uv run mypy && uv run lint-imports
 uv run pytest -m model             # opt-in: the real local embedding model (downloads ~220 MB once)
 uv run pytest -m contract          # opt-in: adapters against real engines (mem0 on the local PG)
+uv run pytest -m eval              # opt-in: recall@8 on the synthetic labelled set (real local model)
 uv run steward migrate             # alembic upgrade head on STEWARD_DATABASE_URL
 uv run steward ns create <slug>    # a namespace (no HTTP route creates one)
 uv run steward key create <slug>   # prints an API key once: Authorization: Bearer stw_<prefix>_<secret>

@@ -1,5 +1,6 @@
 """The retrieval record, feedback and hit statistics (design §6 step 9, §7; P4e), both dialects."""
 
+import asyncio
 import uuid
 from typing import Any
 
@@ -14,9 +15,7 @@ from tests.conftest import AppClient, fix_order, kb_entry_op, post_memory
 
 
 def _retrieve(c: AppClient, h: dict[str, str], **body: Any) -> dict[str, Any]:
-    r = c.http.post("/v1/retrieve", json={"query": "refund", **body}, headers=h)
-    assert r.status_code == 200, r.text
-    return dict(r.json())
+    return c.retrieve(h, **{"query": "refund", **body})
 
 
 def _setup(c: AppClient) -> tuple[dict[str, str], uuid.UUID, str, str]:
@@ -78,6 +77,7 @@ def test_candidates_left_out_are_logged_apart_with_why(
 def test_hits_are_counted_in_batches_off_the_request_path(app_client: AppClient) -> None:
     h, _, memory, entry = _setup(app_client)
     before = app_client.get(KbEntry, entry).updated_at
+    memory_before = app_client.get(Memory, memory).updated_at
     returned = {i["id"] for i in _retrieve(app_client, h)["items"]}
     _retrieve(app_client, h)
     assert returned == {memory, entry}
@@ -85,6 +85,7 @@ def test_hits_are_counted_in_batches_off_the_request_path(app_client: AppClient)
     assert _count_hits(app_client) == 2  # two retrievals counted in one pass
     seen = app_client.get(Memory, memory)
     assert seen.access_count == 2 and seen.last_accessed_at is not None
+    assert seen.updated_at == memory_before
     counted = app_client.get(KbEntry, entry)
     assert counted.hit_count == 2
     assert counted.updated_at == before  # being read is not being edited
@@ -134,3 +135,33 @@ def test_feedback_is_checked_against_the_retrieval(app_client: AppClient) -> Non
     missing = f"/v1/retrieve/{uuid.uuid4()}/feedback"
     r = app_client.http.post(missing, json={"item_id": memory, "helpful": True}, headers=h)
     assert r.status_code == 404
+
+
+def test_the_log_keeps_no_personal_data_from_the_request(app_client: AppClient) -> None:
+    h, _ = app_client.new_tenant("acme")
+    body = app_client.retrieve(
+        h,
+        query="refund for bob@example.com, call 13800138000",
+        filters={"metadata": {"contact": "alice@example.com", "region": "cn"}},
+    )
+    log = app_client.get(RetrievalLog, body["retrieval_id"])
+    assert "bob@example.com" not in log.query and "13800138000" not in log.query
+    assert log.query.startswith("refund for ")
+    assert log.filters["metadata"] == {"contact": "[REDACTED:email]", "region": "cn"}
+
+
+def test_two_counting_passes_at_once_count_each_retrieval_once(app_client: AppClient) -> None:
+    """Two workers (e.g. `steward serve` and `steward worker` on one SQLite file) claim logs
+    atomically: no retrieval is counted twice."""
+    h, _, memory, entry = _setup(app_client)
+    for _ in range(3):
+        _retrieve(app_client, h)
+
+    async def both() -> list[int]:
+        retrieval = app_client.services.retrieval
+        return list(await asyncio.gather(retrieval.count_hits(), retrieval.count_hits()))
+
+    counted = app_client.call(both)
+    assert sum(counted) == 3
+    assert app_client.get(KbEntry, entry).hit_count == 3
+    assert app_client.get(Memory, memory).access_count == 3

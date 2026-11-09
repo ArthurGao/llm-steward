@@ -848,8 +848,8 @@ llm-steward/
      - 最终检查：`uv run pytest` 410 passed（SQLite + PG）；ruff、format、mypy、lint-imports 通过；`-m contract` 12 passed（真实 WeKnora、mem0、lite-rag）。
    - 验收：high 风险条目在批准前**永远不会**出现在 WeKnora 中；终端用户确认**永远不会**产生 verified；条目废弃后即使停掉 worker、不让它从 WeKnora 删除，检索也不会再返回它（安全网测试）
 5. **P4 联合检索**
-   - [ ] 并行分发、超时与 `degraded`、反查过滤、RRF、可信度加权、时间衰减、MMR、pinned、上下文模板、token 预算、可选 rerank
-   - [ ] `retrieval_logs`、feedback、命中统计
+   - [x] 并行分发、超时与 `degraded`、反查过滤、RRF、可信度加权、时间衰减、MMR、pinned、上下文模板、token 预算、可选 rerank
+   - [x] `retrieval_logs`、feedback、命中统计
    - P4.0（2026-11-09，P3 收尾提交后的后台安全审查，两条都成立，都先写了失败的测试）：
      - 手机号检测回退：新正则的开头排除了 `+`，`+13812345678` 不再匹配。现在开头只排除数字，前缀允许 `+86` 或单个 `+`。
      - 记忆在推送途中被整行删除（按用户硬删除，规则 6 的例外）时，原来在当前任务里直接撤回，撤回失败就留下副本。现在 `_confirm` 在同一个事务里排 `sync.memory_remove`，payload 带上引擎 id；删除任务直接删这个 id，失败按退避重试。按用户硬删除的接口本身在 P5。
@@ -887,7 +887,25 @@ llm-steward/
      - recall@8（`tests/eval/`，`-m eval`，需要手动开启）。语料是**合成的**：一家虚构户外用品店的客服，中英混合，28 条知识、2 篇文档、8 条记忆、25 个带标注的查询。查询有改写、有跨语言，也有需要同时召回知识和记忆的。通过 API 加载，provider 用 native，embedding 用真实的本地 MiniLM（多语言）。
        - **基线：0.960**，开 rerank（`BAAI/bge-reranker-v2-m3-int8`）为 **0.980**。SQLite 和 PG 的结果一致。没完全命中的是两条需要知识加记忆的查询，各漏了一项。
        - 门槛 **0.92**（比基线低一个"整条查询都没命中"的量），断言写在评测里，打分改动导致召回下降时就会失败。去掉 KB 那一路做变异检查，评测失败。
-   - 验收：用 Fake provider 注入 2 秒延迟，响应仍在超时预算内返回并标记 degraded；在小型标注集（20–30 条 query）上 recall@8 达标（阈值在建立基线后确定）
+   - 阶段收尾（2026-11-09，P4 全部改动 `git diff 23797aa`）：
+     - /simplify（四个角度）改了：
+       - 检索结果全部用关键字构造，`source` 由 `kind` 推出；三个反查函数共用 `external_refs` 的关联查询；KB 权重改用共享的 `weigh`（去掉了永远是 1.0 的 `rel` 参数）。
+       - native 和 mem0 去掉 `METADATA_FILTER`：它们其实忽略 `filters`，这条 P4b 记下的待办就此关闭；能力声明恢复真实，治理层照常做后过滤。过滤条件只让它作用的那一路多取候选。
+       - 命名空间可以用 `retrieval.rerank` 默认开启 rerank（§8 的配置项），请求可以覆盖；命名空间要求但没配置 reranker 时标 `degraded: ["rerank"]`，请求里明确要求时仍返回 422。
+       - 配置段写成 null 时，风险规则和 KB 建议不再崩。上下文模板只编译一次；MMR 候选池最多 60 条。命中统计只读需要的列，每张表一条批量语句。
+       - 迁移 0008 删掉不再使用的 `retrieval_logs.feedback`（0007 已提交，不改）。测试辅助函数 `Tenant.upload`、`AppClient.retrieve` / `get` 统一放进 conftest，评测也复用它们。
+       - 每项都有测试，7 个变异全部被抓住。
+     - Codex review（只读，整个 P4）：没有 high，3 条 medium、2 条 low。
+       - 成立并已修复（都先写了失败的测试）：
+         - （medium）检索日志原样保存查询和元数据过滤值，可能带个人信息。现在写入前脱敏。
+         - （medium）SQLite 没有行锁，两个 worker 同时汇总时会重复计数：测试里 3 次检索被算成了 6 次，PG 上不会。现在用一条 `UPDATE … RETURNING` 原子地认领日志并标为已计数，两种数据库都成立。
+         - （medium，前半成立）每条送进交叉编码器的文本截到 2000 字符，模型本来也只读约 512 个 token。
+         - （low）带过滤条件的检索原来会附上不符合条件的常驻记忆，现在常驻记忆也按记忆类型、标签和元数据过滤。
+       - 不成立：
+         - medium 的后半，"rerank 的排队没有上限"：调用方一超时，还在排队的推理就随之取消，积压不会超过正在进行的请求数。见 1286b23。
+         - low，"对已经废弃的条目仍计入反馈"：反馈评价的是当时那次检索展示的内容，计数只是统计，不影响检索，也不泄露数据。条目废弃以后再去改当时的反馈反而不对。
+     - 最终检查：`uv run pytest` 504 passed（SQLite + PG）；ruff、format、mypy、lint-imports 通过；`-m contract` 12 passed（真实 WeKnora、mem0、lite-rag）；`-m model` 4 passed；`-m eval` 两种数据库都过门槛（recall@8 0.960，开 rerank 0.980）。
+   - 验收：用 Fake provider 注入 2 秒延迟，响应仍在超时预算内返回并标记 degraded；在小型标注集（20–30 条 query）上 recall@8 达标（阈值在建立基线后确定）。**已自动化**：见上面 P4f。
 6. **P5 接入与安全**
    - [ ] API key、user token、Admin JWT、限流、幂等、Problem Details、webhooks
    - [ ] MCP server（HTTP 和 stdio）、Python SDK（含嵌入模式）

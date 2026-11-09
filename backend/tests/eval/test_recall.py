@@ -10,7 +10,7 @@ from typing import Any
 import pytest
 
 from llm_steward.providers.native.embedding import FastEmbedEmbedder
-from tests.conftest import Tenant, running_app
+from tests.conftest import Tenant, post_memory, running_app
 from tests.eval.corpus import DOCUMENTS, ENTRIES, MEMORIES, QUERIES
 
 pytestmark = pytest.mark.eval
@@ -27,26 +27,15 @@ def _load(t: Tenant) -> dict[str, str]:
     keys: dict[str, str] = {}
     collection = t.collection(default_risk="low")
     for key, title, content in ENTRIES:
-        r = t.post(
-            "/v1/kb/entries", {"collection_id": collection, "title": title, "content": content}
-        )
+        r = t.submit(collection, content, title=title)
         assert r.status_code == 201, r.text
         keys[r.json()["entry"]["id"]] = key
     for key, name, text in DOCUMENTS:
-        r = t.c.http.post(
-            "/v1/kb/documents",
-            data={"collection_id": collection},
-            files={"file": (name, text.encode(), "text/markdown")},
-            headers=t.host,
-        )
+        r = t.upload(collection, text.encode(), filename=name)
         assert r.status_code == 202, r.text
         keys[r.json()["document"]["id"]] = key
     for key, content in MEMORIES:
-        r = t.c.http.post(
-            "/v1/memories", json={"content": content, "user_id": USER}, headers=t.host
-        )
-        assert r.status_code == 201, r.text
-        keys[r.json()["id"]] = key
+        keys[post_memory(t.c, t.host, content, user_id=USER)] = key
     t.c.drain()
     return keys
 

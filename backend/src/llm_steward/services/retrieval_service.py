@@ -20,10 +20,10 @@ from collections import Counter
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import datetime
-from typing import Any, Literal
+from typing import Any, Literal, cast
 
 from jinja2 import Environment, PackageLoader
-from sqlalchemy import or_, select, update
+from sqlalchemy import Table, bindparam, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from llm_steward.errors import ProviderUnavailable, Unprocessable
@@ -77,9 +77,10 @@ _KB_HISTORY = (*EFFECTIVE_KB_STATUSES, KbStatus.DEPRECATED)
 TOP_K = 8
 TOKEN_BUDGET = 2000
 FILTER_WIDENING = 3  # filters run on what the providers return: ask them for more
-MMR_POOL = 3  # MMR picks from the best top_k * MMR_POOL fused items
+MMR_POOL, MMR_POOL_MAX = 3, 60  # MMR picks from the best min(top_k * 3, 60) fused items
 CHUNK_SEPARATOR = "\n…\n"  # between a document's chunks in one item
 RERANK_TOP_N = 30  # design §6 step 5
+RERANK_TEXT_MAX = 2000  # characters per item: a cross-encoder reads ~512 tokens anyway
 HIT_BATCH = 500  # retrievals counted per pass of the hit-count tick
 TRUST = {"verified": 1.0, "active": 0.9}
 LOW_CONFIDENCE, LOW_CONFIDENCE_FACTOR = 0.5, 0.8  # an unsure memory counts less
@@ -89,34 +90,39 @@ HALF_LIVES = {"episodic": 30.0}  # days; other memory types and KB never decay
 
 @dataclass(frozen=True)
 class Scoring:
+    """The namespace's retrieval settings (design §8 `retrieval.*`, `memory.types`): each one
+    falls back to its default here when the config leaves it out."""
+
     top_k: int = TOP_K
     token_budget: int = TOKEN_BUDGET
+    rerank: bool = False  # rerank by default (a request may still say otherwise)
     trust: dict[str, float] = field(default_factory=lambda: dict(TRUST))
     importance_boost: float = IMPORTANCE_BOOST
     half_lives: dict[str, float] = field(default_factory=lambda: dict(HALF_LIVES))
 
     @classmethod
     def from_config(cls, config: dict[str, Any]) -> "Scoring":
+        default = cls()
         retrieval = config.get("retrieval") or {}
         types = (config.get("memory") or {}).get("types") or []
-        half_lives = dict(HALF_LIVES) | {
-            t["name"]: float(t["half_life_days"])
-            for t in types
-            if isinstance(t, dict) and t.get("name") and t.get("half_life_days")
-        }
         return cls(
-            top_k=int(retrieval.get("top_k", TOP_K)),
-            token_budget=int(retrieval.get("token_budget", TOKEN_BUDGET)),
-            trust=dict(TRUST) | dict(retrieval.get("trust_weights") or {}),
-            importance_boost=float(retrieval.get("importance_boost", IMPORTANCE_BOOST)),
-            half_lives=half_lives,
+            top_k=int(retrieval.get("top_k", default.top_k)),
+            token_budget=int(retrieval.get("token_budget", default.token_budget)),
+            rerank=bool(retrieval.get("rerank", default.rerank)),
+            trust=default.trust | dict(retrieval.get("trust_weights") or {}),
+            importance_boost=float(retrieval.get("importance_boost", default.importance_boost)),
+            half_lives=default.half_lives
+            | {
+                t["name"]: float(t["half_life_days"])
+                for t in types
+                if isinstance(t, dict) and t.get("name") and t.get("half_life_days")
+            },
         )
 
     def memory_weight(self, m: Memory, now: datetime) -> float:
         """trust (an unsure memory counts less) x importance x decay by its type's half-life."""
         unsure = LOW_CONFIDENCE_FACTOR if m.confidence < LOW_CONFIDENCE else 1.0
         return weigh(
-            1.0,
             trust=self.trust["active"] * unsure,
             importance=m.importance,
             age_days=(now - m.valid_from).total_seconds() / 86400,
@@ -126,16 +132,22 @@ class Scoring:
 
     def kb_weight(self, verified: bool) -> float:
         """KB items: trust only, neutral importance, and knowledge does not decay with age."""
-        trust = self.trust["verified" if verified else "active"]
-        return trust * (1 + self.importance_boost * KB_IMPORTANCE)
+        return weigh(
+            trust=self.trust["verified" if verified else "active"],
+            importance=KB_IMPORTANCE,
+            age_days=0.0,
+            half_life_days=None,
+            boost=self.importance_boost,
+        )
 
 
-_templates = Environment(
+_CONTEXT = Environment(
     loader=PackageLoader("llm_steward", "prompts"),
     autoescape=False,  # plain-text prompt context, not HTML
     trim_blocks=True,
     lstrip_blocks=True,
-)
+    auto_reload=False,  # compiled once: rendered per candidate when budgeting a context
+).get_template("context_render.j2")
 
 
 @dataclass(frozen=True)
@@ -154,12 +166,18 @@ class RetrieveRequest:
     tags: tuple[str, ...] = ()  # every one of them (AND); KB documents have none
     metadata: dict[str, Any] = field(default_factory=dict)  # exact values; documents have none
     include_pinned: bool = True
-    rerank: bool = False
+    rerank: bool | None = None  # None: the namespace's (default off)
     token_budget: int | None = None  # None: the namespace's (default 2000)
 
-    @property
-    def filtered(self) -> bool:
-        return self.memory_types is not None or bool(self.tags) or bool(self.metadata)
+    def filters(self, source: Source) -> bool:
+        """Whether a filter applies to this source's results (memory types are memories')."""
+        on_kb = bool(self.tags) or bool(self.metadata)
+        return on_kb or (source == "memory" and self.memory_types is not None)
+
+    def admits(self, m: Memory) -> bool:
+        """A memory these filters let through (its type, tags and metadata)."""
+        typed = self.memory_types is None or m.memory_type in self.memory_types
+        return typed and self.matches(m.tags, m.meta)
 
     def matches(self, tags: list[str], meta: dict[str, Any]) -> bool:
         return set(self.tags) <= set(tags) and all(
@@ -167,9 +185,9 @@ class RetrieveRequest:
         )
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, kw_only=True)
 class RetrievedItem:
-    source: Source
+    kind: ItemKind  # a KB hit is an entry or a document
     id: uuid.UUID
     content: str
     title: str | None
@@ -177,11 +195,14 @@ class RetrievedItem:
     verified: bool
     score: float = 0.0
     pinned: bool = False  # always-present core memory (design §6 step 8), not a search hit
-    kind: ItemKind = field(kw_only=True)  # a KB hit is an entry or a chunk of a document
-    weight: float = field(default=1.0, kw_only=True)  # trust x importance x decay (step 6)
-    rel: float = field(default=0.0, kw_only=True)  # fused (RRF) relevance before the weight
+    weight: float = 1.0  # trust x importance x decay (step 6)
+    rel: float = 0.0  # fused (RRF) relevance before the weight
     # a document's matching chunks, best first; `content` is them joined (CHUNK_SEPARATOR)
-    passages: tuple[str, ...] = field(default=(), kw_only=True)
+    passages: tuple[str, ...] = ()
+
+    @property
+    def source(self) -> Source:
+        return "memory" if self.kind == "memory" else "kb"
 
 
 @dataclass(frozen=True)
@@ -212,6 +233,7 @@ class RetrievalService:
         if req.rerank and self._reranker is None:
             raise Unprocessable("rerank is not available: no reranker is configured")
         scope = Scope(namespace_id, req.user_id, req.agent_id, req.session_id)
+        degraded: list[Degraded] = []
         async with self._sessions() as s:  # one session for both reads before the search
             scoring = Scoring.from_config(await namespace_config(s, namespace_id))
             collection_ext_ids = (
@@ -220,21 +242,29 @@ class RetrievalService:
                 else []
             )
         top_k = req.top_k or scoring.top_k
-        # Filters run after the safety net, on what the providers returned: ask for more.
-        widen = FILTER_WIDENING if req.filtered else 1
-        candidates = max(top_k * CANDIDATES_PER_RESULT * widen, MIN_CANDIDATES)
+        rerank = scoring.rerank if req.rerank is None else req.rerank
+        if rerank and self._reranker is None:  # the namespace asks for it, none is configured
+            rerank = False
+            degraded.append("rerank")
+
+        def candidates(source: Source) -> int:
+            # Filters run after the safety net, on what the provider returned: ask it for more.
+            widen = FILTER_WIDENING if req.filters(source) else 1
+            return max(top_k * CANDIDATES_PER_RESULT * widen, MIN_CANDIDATES)
+
         searches: dict[Source, Any] = {}
         if "memory" in req.sources:
-            searches["memory"] = self._providers.memory.search(req.query, scope, top_k=candidates)
+            searches["memory"] = self._providers.memory.search(
+                req.query, scope, top_k=candidates("memory")
+            )
         if "kb" in req.sources and collection_ext_ids:
             searches["kb"] = self._providers.kb.search(
-                req.query, collection_ext_ids, top_k=candidates
+                req.query, collection_ext_ids, top_k=candidates("kb")
             )
 
         outcomes = await asyncio.gather(*(self._timed(c) for c in searches.values()))
         hits: dict[Source, list[ProviderHit]] = {}
         latency_ms: dict[str, int] = {}
-        degraded: list[Degraded] = []
         for source, (result, elapsed_ms) in zip(searches, outcomes, strict=True):
             latency_ms[source] = elapsed_ms
             if isinstance(result, BaseException):
@@ -249,12 +279,13 @@ class RetrievalService:
         async with self._sessions() as s:
             rankings = await self._resolve(s, namespace_id, scope, hits, req, scoring, now)
             core = req.include_pinned and req.as_of is None
-            pinned = _core_items(await core_memories(s, scope)) if core else []
+            core_rows = await core_memories(s, scope) if core else []
+            pinned = _core_items([m for m in core_rows if req.admits(m)])
         # Ranking is CPU work: no connection is held while it runs.
         seen = {p.id for p in pinned}
         ranked = [i for i in _fuse(rankings) if i.id not in seen]
         reranked_by = None
-        if req.rerank and self._reranker is not None and ranked:
+        if rerank and self._reranker is not None and ranked:
             ranked, reranked_by = await self._rerank(req.query, ranked, degraded, latency_ms)
         cost = _line_cost if req.with_context else _text_cost
         budget = req.token_budget or scoring.token_budget
@@ -309,47 +340,65 @@ class RetrievalService:
 
     async def count_hits(self, batch: int = HIT_BATCH) -> int:
         """Design §6 step 9, off the request path (a worker tick): the hits of up to `batch`
-        uncounted retrievals, added to the counters in one update per object (sorted, so two
-        workers never wait on each other in opposite orders), and the logs marked counted, in one
-        transaction. Returns how many retrievals were counted.
+        uncounted retrievals, added to the counters, and those logs marked counted, in one
+        transaction. Each counter table gets one batched statement, its rows in sorted order
+        (two workers never wait on each other in opposite orders; PG skips locked logs).
+        Returns how many retrievals were counted.
 
         The counters are statistics, not governed state: written here directly, with no
         change_log and without touching `updated_at` (being read is not being edited)."""
         async with self._sessions() as s, s.begin():
+            # Claimed by one statement that marks them counted and returns them: atomic on both
+            # dialects (SQLite has no row locks; a second pass waits for the write lock, then
+            # finds them counted). PG also skips logs another pass has locked.
+            uncounted = (
+                select(RetrievalLog.id)
+                .where(RetrievalLog.counted.is_(False))
+                .order_by(RetrievalLog.id)
+                .limit(batch)
+                .with_for_update(skip_locked=True)
+            )
             logs = list(
-                await s.scalars(
-                    select(RetrievalLog)
-                    .where(RetrievalLog.counted.is_(False))
-                    .order_by(RetrievalLog.id)
-                    .limit(batch)
-                    .with_for_update(skip_locked=True)
+                await s.execute(
+                    update(RetrievalLog)
+                    .where(RetrievalLog.id.in_(uncounted))
+                    .values(counted=True)
+                    .returning(RetrievalLog.id, RetrievalLog.namespace_id, RetrievalLog.results),
+                    execution_options={"synchronize_session": False},
                 )
             )
+            if not logs:
+                return 0
             hits: dict[str, Counter[tuple[uuid.UUID, uuid.UUID]]] = {
                 "memory": Counter(),
                 "entry": Counter(),
             }
-            for log_row in logs:
-                for r in log_row.results:
+            for _, ns, results in logs:
+                for r in results:
                     if r["kind"] in hits:
-                        hits[r["kind"]][(log_row.namespace_id, uuid.UUID(r["id"]))] += 1
-                log_row.counted = True
+                        hits[r["kind"]][(ns, uuid.UUID(r["id"]))] += 1
             now = utcnow()
-            for (ns, memory_id), n in sorted(hits["memory"].items()):
+            for kind, table, counter, extra in (
+                (
+                    "memory",
+                    cast(Table, Memory.__table__),
+                    "access_count",
+                    {"last_accessed_at": now},
+                ),
+                ("entry", cast(Table, KbEntry.__table__), "hit_count", {}),
+            ):
+                if not hits[kind]:
+                    continue
+                c = table.c
                 await s.execute(
-                    update(Memory)
-                    .where(Memory.namespace_id == ns, Memory.id == memory_id)
-                    .values(
-                        access_count=Memory.access_count + n,
-                        last_accessed_at=now,
-                        updated_at=Memory.updated_at,
-                    )
-                )
-            for (ns, entry_id), n in sorted(hits["entry"].items()):
-                await s.execute(
-                    update(KbEntry)
-                    .where(KbEntry.namespace_id == ns, KbEntry.id == entry_id)
-                    .values(hit_count=KbEntry.hit_count + n, updated_at=KbEntry.updated_at)
+                    update(table)
+                    .where(c.namespace_id == bindparam("b_ns"), c.id == bindparam("b_id"))
+                    .values({counter: c[counter] + bindparam("b_n"), "updated_at": c.updated_at})
+                    .values(extra),
+                    [
+                        {"b_ns": ns, "b_id": oid, "b_n": n}
+                        for (ns, oid), n in sorted(hits[kind].items())
+                    ],
                 )
         return len(logs)
 
@@ -370,7 +419,8 @@ class RetrievalService:
         started = time.perf_counter()
         try:
             async with asyncio.timeout(self._rerank_timeout_s):
-                relevance = await reranker.score(query, [_text(i) for i in head])
+                texts = [_text(i)[:RERANK_TEXT_MAX] for i in head]
+                relevance = await reranker.score(query, texts)
         except Exception as exc:
             log.warning("retrieve: rerank failed: %s", type(exc).__name__)
             degraded.append("rerank")
@@ -438,6 +488,29 @@ class RetrievalService:
             log.warning("retrieve: safety net dropped %d provider hit(s)", dropped)
         return rankings
 
+    def _hits_of(
+        self,
+        model: Any,
+        object_type: ObjectType,
+        provider: str,
+        ns: uuid.UUID,
+        hits: list[ProviderHit],
+    ) -> Any:
+        """The governed rows behind these provider hits, with their external ids: the safety
+        net's join, the same for every kind (each adds its own status and validity)."""
+        columns: Any = model
+        return (
+            select(ExternalRef.external_id, model)
+            .join(model, columns.id == ExternalRef.object_id)
+            .where(
+                ExternalRef.object_type == object_type,
+                ExternalRef.provider == provider,
+                ExternalRef.namespace_id == ns,
+                ExternalRef.external_id.in_([h.external_id for h in hits]),
+                columns.namespace_id == ns,
+            )
+        )
+
     async def _memories(
         self,
         s: AsyncSession,
@@ -448,33 +521,25 @@ class RetrievalService:
         scoring: Scoring,
         now: datetime,
     ) -> dict[str, RetrievedItem]:
-        query = (
-            select(ExternalRef.external_id, Memory)
-            .join(Memory, Memory.id == ExternalRef.object_id)
-            .where(
-                ExternalRef.object_type == ObjectType.MEMORY,
-                ExternalRef.provider == self._providers.memory.name,
-                ExternalRef.namespace_id == namespace_id,
-                ExternalRef.external_id.in_([h.external_id for h in hits]),
-                *visible(Memory, scope, session=True),
-                Memory.status.in_(_MEMORY_HISTORY if req.as_of else _MEMORY_CURRENT),
-                Memory.valid_from <= now,
-                or_(Memory.valid_to.is_(None), Memory.valid_to > now),
-                or_(Memory.expires_at.is_(None), Memory.expires_at > now),
-            )
+        provider = self._providers.memory.name
+        query = self._hits_of(Memory, ObjectType.MEMORY, provider, namespace_id, hits).where(
+            *visible(Memory, scope, session=True),
+            Memory.status.in_(_MEMORY_HISTORY if req.as_of else _MEMORY_CURRENT),
+            Memory.valid_from <= now,
+            or_(Memory.valid_to.is_(None), Memory.valid_to > now),
+            or_(Memory.expires_at.is_(None), Memory.expires_at > now),
         )
         if req.memory_types is not None:
             query = query.where(Memory.memory_type.in_(req.memory_types))
         rows = await s.execute(query)
         return {
             eid: RetrievedItem(
-                "memory",
-                m.id,
-                m.content,
-                None,
-                m.status.value,
-                False,
                 kind="memory",
+                id=m.id,
+                content=m.content,
+                title=None,
+                status=m.status.value,
+                verified=False,
                 weight=scoring.memory_weight(m, now),
             )
             for eid, m in rows
@@ -490,32 +555,15 @@ class RetrievalService:
         scoring: Scoring,
         now: datetime,
     ) -> dict[str, RetrievedItem]:
-        query = (
-            select(ExternalRef.external_id, KbEntry)
-            .join(KbEntry, KbEntry.id == ExternalRef.object_id)
-            .where(
-                ExternalRef.object_type == ObjectType.KB_ENTRY,
-                ExternalRef.provider == self._providers.kb.name,
-                ExternalRef.namespace_id == namespace_id,
-                ExternalRef.external_id.in_([h.external_id for h in hits]),
-                KbEntry.namespace_id == namespace_id,
-                KbEntry.status.in_(_KB_HISTORY if req.as_of else EFFECTIVE_KB_STATUSES),
-                KbEntry.valid_from <= now,
-                or_(KbEntry.valid_to.is_(None), KbEntry.valid_to > now),
-            )
+        provider = self._providers.kb.name
+        query = self._hits_of(KbEntry, ObjectType.KB_ENTRY, provider, namespace_id, hits).where(
+            KbEntry.status.in_(_KB_HISTORY if req.as_of else EFFECTIVE_KB_STATUSES),
+            KbEntry.valid_from <= now,
+            or_(KbEntry.valid_to.is_(None), KbEntry.valid_to > now),
         )
         rows = await s.execute(query)
         return {
-            eid: RetrievedItem(
-                "kb",
-                e.id,
-                e.content,
-                e.title,
-                e.status.value,
-                e.status == KbStatus.VERIFIED,
-                kind="entry",
-                weight=scoring.kb_weight(e.status == KbStatus.VERIFIED),
-            )
+            eid: _kb_item(scoring, "entry", e.id, e.content, e.title, e.status)
             for eid, e in rows
             if eid and req.matches(e.tags, e.meta)
         }
@@ -535,34 +583,18 @@ class RetrievalService:
         request that filters on them gets none."""
         if req.tags or req.metadata:
             return {}
-        query = (
-            select(ExternalRef.external_id, KbDocument)
-            .join(KbDocument, KbDocument.id == ExternalRef.object_id)
-            .where(
-                ExternalRef.object_type == ObjectType.KB_DOCUMENT,
-                ExternalRef.provider == self._providers.kb.name,
-                ExternalRef.namespace_id == namespace_id,
-                ExternalRef.external_id.in_([h.external_id for h in hits]),
-                KbDocument.namespace_id == namespace_id,
-                KbDocument.state.in_(_KB_HISTORY if req.as_of else EFFECTIVE_KB_STATUSES),
-                KbDocument.status == DocStatus.READY,
-                KbDocument.created_at <= now,
-                or_(KbDocument.valid_to.is_(None), KbDocument.valid_to > now),
-            )
+        provider = self._providers.kb.name
+        query = self._hits_of(KbDocument, ObjectType.KB_DOCUMENT, provider, namespace_id, hits)
+        query = query.where(
+            KbDocument.state.in_(_KB_HISTORY if req.as_of else EFFECTIVE_KB_STATUSES),
+            KbDocument.status == DocStatus.READY,
+            KbDocument.created_at <= now,
+            or_(KbDocument.valid_to.is_(None), KbDocument.valid_to > now),
         )
         documents = {eid: d for eid, d in await s.execute(query) if eid}
         return {
             h.external_id: _with_passages(
-                RetrievedItem(
-                    "kb",
-                    d.id,
-                    h.text,
-                    d.title,
-                    d.state.value,
-                    d.state == KbStatus.VERIFIED,
-                    kind="document",
-                    weight=scoring.kb_weight(d.state == KbStatus.VERIFIED),
-                ),
+                _kb_item(scoring, "document", d.id, h.text, d.title, d.state),
                 h.passages or (h.text,),
             )
             for h in hits
@@ -587,7 +619,7 @@ class RetrievalService:
         entry = RetrievalLog(
             id=uuid7(),  # set now: the id is returned before the transaction flushes
             namespace_id=namespace_id,
-            query=req.query,
+            query=redact_pii(req.query),  # a question may carry personal data: not kept
             filters={
                 "user_id": req.user_id,
                 "agent_id": req.agent_id,
@@ -597,9 +629,11 @@ class RetrievalService:
                 "top_k": req.top_k,
                 "memory_types": list(req.memory_types) if req.memory_types else None,
                 "tags": list(req.tags),
-                "metadata": req.metadata,
+                "metadata": {
+                    k: redact_pii(v) if isinstance(v, str) else v for k, v in req.metadata.items()
+                },
                 "token_budget": req.token_budget,
-                "rerank": req.rerank,
+                "rerank": req.rerank,  # as asked (None: the namespace's default)
                 "reranked_by": reranked_by,  # None when asked but it failed or timed out
             },
             results=[_log_row(i, ranks) for i in items],
@@ -637,7 +671,7 @@ def _select(
     kept = fit_budget(pinned, cost, budget)
     refused: set[uuid.UUID] = {p.id for p in pinned} - {p.id for p in kept}
     left = budget - sum(cost(i) for i in kept)
-    pool = {i.id: i for i in ranked[: top_k * MMR_POOL]}
+    pool = {i.id: i for i in ranked[: min(top_k * MMR_POOL, MMR_POOL_MAX)]}
     fitted: dict[uuid.UUID, RetrievedItem] = {}
 
     def fits(item_id: uuid.UUID) -> bool:
@@ -692,20 +726,43 @@ def _line_cost(item: RetrievedItem) -> int:
 
 
 def _render(items: list[RetrievedItem]) -> str:
-    return (
-        _templates.get_template("context_render.j2")
-        .render(
-            memories=[i for i in items if i.source == "memory"],
-            kb=[i for i in items if i.source == "kb"],
-        )
-        .strip()
+    return _CONTEXT.render(
+        memories=[i for i in items if i.source == "memory"],
+        kb=[i for i in items if i.source == "kb"],
+    ).strip()
+
+
+def _kb_item(
+    scoring: Scoring,
+    kind: ItemKind,
+    item_id: uuid.UUID,
+    content: str,
+    title: str,
+    status: KbStatus,
+) -> RetrievedItem:
+    verified = status == KbStatus.VERIFIED
+    return RetrievedItem(
+        kind=kind,
+        id=item_id,
+        content=content,
+        title=title,
+        status=status.value,
+        verified=verified,
+        weight=scoring.kb_weight(verified),
     )
 
 
 def _core_items(memories: list[Memory]) -> list[RetrievedItem]:
     return [
         RetrievedItem(
-            "memory", m.id, m.content, m.key, m.status.value, False, 1.0, True, kind="memory"
+            kind="memory",
+            id=m.id,
+            content=m.content,
+            title=m.key,
+            status=m.status.value,
+            verified=False,
+            score=1.0,
+            pinned=True,
         )
         for m in memories
     ]

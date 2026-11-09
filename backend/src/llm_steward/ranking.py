@@ -28,7 +28,6 @@ IMPORTANCE_BOOST = 0.3
 
 
 def weigh(
-    rel: float,
     *,
     trust: float,
     importance: float,
@@ -36,10 +35,10 @@ def weigh(
     half_life_days: float | None,
     boost: float = IMPORTANCE_BOOST,
 ) -> float:
-    """rel * w_trust * (1 + boost · importance) * 0.5^(age / h); no half-life: no decay. A
-    timestamp in the future counts as age 0 (never a boost)."""
+    """The weight step 6 multiplies a fused relevance by: w_trust x (1 + boost * importance) x
+    0.5^(age / h); no half-life: no decay. A timestamp in the future counts as age 0."""
     decay = 1.0 if half_life_days is None else 0.5 ** (max(age_days, 0.0) / half_life_days)
-    return rel * trust * (1 + boost * importance) * decay
+    return trust * (1 + boost * importance) * decay
 
 
 _WORDS = re.compile(r"[0-9a-z]+")

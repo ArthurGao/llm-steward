@@ -22,7 +22,6 @@ from llm_steward.llm.roles import Role
 from llm_steward.providers.base import (
     DELETE,
     EXTRACT,
-    METADATA_FILTER,
     UPDATE,
     ComponentHealth,
     MemoryEvent,
@@ -110,7 +109,8 @@ def _filters(scope: Scope, user: str | None) -> dict[str, str]:
 
 class Mem0Provider:
     name = "mem0"
-    capabilities = frozenset({EXTRACT, UPDATE, DELETE, METADATA_FILTER})
+    # no METADATA_FILTER: search scopes by user/agent/session only (governance post-filters)
+    capabilities = frozenset({EXTRACT, UPDATE, DELETE})
 
     def __init__(
         self,

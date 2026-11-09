@@ -100,3 +100,11 @@ def test_tags_are_screened_like_the_text() -> None:
     result = assess("t", "c", POLICY, tags=("billing", "alice@example.com"))
     assert result.tags == ("billing", "[REDACTED:email]")
     assert (result.level, result.reasons) == (RiskLevel.HIGH, ["pii: email"])
+
+
+def test_a_config_section_written_empty_is_no_section() -> None:
+    """`kb:` with nothing under it is null in YAML/JSON: the defaults apply, nothing breaks."""
+    assert RiskPolicy.from_config({"kb": None}).high_risk_keywords == ()
+    from llm_steward.services.kb_service import SuggestConfig
+
+    assert SuggestConfig.of({"kb": None}) == SuggestConfig.of({})

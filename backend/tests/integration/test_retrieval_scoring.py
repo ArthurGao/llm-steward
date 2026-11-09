@@ -222,3 +222,56 @@ def test_rerank_is_refused_until_a_reranker_is_configured(app_client: AppClient)
     h, _ = app_client.new_tenant("acme")
     r = _retrieve(app_client, h, "refund", rerank=True)
     assert r.status_code == 422 and "rerank" in r.json()["detail"]
+
+
+def test_only_the_source_a_filter_applies_to_is_asked_for_more(
+    app_client: AppClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    h, ns = app_client.new_tenant("acme")
+    app_client.apply(CreateCollection(ns, "faq"))
+    collection = app_client.apply(CreateCollection(ns, "faq2"))
+    app_client.apply(kb_entry_op(ns, collection.id, KbStatus.ACTIVE))
+    app_client.drain()
+    asked: dict[str, int] = {}
+    providers = app_client.services.providers
+    for name in ("memory", "kb"):
+        provider = getattr(providers, name)
+        original = provider.search
+
+        async def spy(*args: Any, _name: str = name, _search: Any = original, **kw: Any) -> Any:
+            asked[_name] = kw["top_k"]
+            return await _search(*args, **kw)
+
+        monkeypatch.setattr(provider, "search", spy)
+    _ids(_retrieve(app_client, h, "refund", top_k=4, memory_types=["episodic"]))
+    assert asked == {"memory": 4 * 3 * 3, "kb": 12}  # memory types filter memories only
+    _ids(_retrieve(app_client, h, "refund", top_k=4, filters={"tags": ["x"]}))
+    assert asked == {"memory": 36, "kb": 36}  # tags filter both
+
+
+def test_mmr_considers_at_most_60_candidates(
+    app_client: AppClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from llm_steward.models import RetrievalLog
+
+    h, _ = app_client.new_tenant("acme")
+    ids = [post_memory(app_client, h, f"refund note number {i}") for i in range(70)]
+    app_client.drain()
+    fix_order(monkeypatch, app_client.services.providers.memory, ids)
+    body = _retrieve(app_client, h, "refund", sources=["memory"], top_k=50).json()
+    log = app_client.get(RetrievalLog, body["retrieval_id"])
+    assert len(log.results) + len(log.left_out) == 60  # min(50 * 3, 60) considered
+
+
+def test_filters_apply_to_pinned_memories_too(app_client: AppClient) -> None:
+    h, _ = app_client.new_tenant("acme")
+    profile = post_memory(app_client, h, "speaks German", pinned=True, user_id="u1")
+    episode = post_memory(
+        app_client, h, "refund call", memory_type="episodic", tags=["refund"], user_id="u1"
+    )
+    app_client.drain()
+    scope = {"user_id": "u1"}
+    typed = _ids(_retrieve(app_client, h, "refund", scope=scope, memory_types=["episodic"]))
+    assert typed == [episode]  # the pinned semantic memory is not of the asked type
+    tagged = _ids(_retrieve(app_client, h, "refund", scope=scope, filters={"tags": ["refund"]}))
+    assert profile not in tagged and episode in tagged
