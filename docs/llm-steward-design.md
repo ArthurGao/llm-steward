@@ -618,7 +618,7 @@ class KnowledgeProvider(Protocol):
 | --- | --- |
 | `Mem0Provider` | 进程内使用 `mem0.AsyncMemory`；scope 映射为 `user_id`/`agent_id`/`run_id`；把 llm-steward 的 memory id 写进 mem0 metadata，便于反查；按 mem0 返回的事件确定 capabilities |
 | `WeKnoraProvider` | REST（httpx2）：collection ↔ 知识库；一条 KB entry 写成一篇文本知识（标题 + 正文 + `steward_id` 元数据）；上传文档走其文档接口；定时轮询解析状态 |
-| `LiteRagProvider` | 默认走 lite-rag 的 HTTP API（`literag serve` 或其 Docker 镜像，API key 的 namespaces 覆盖 `steward/*`），也可进程内（extra `literag`，锁定 git commit）。namespace ↔ `steward/<namespace_id>`，collection ↔ kb `c-<collection_id>`，entry ↔ 文档 `doc_id = entry_id`（metadata 带 `steward_id`、`version`、`tags`）；entry 的 external id 为 `<namespace_id>/<collection_id>#<entry_id>`（`remove` 不带 collection）。检索逐个 collection 并发查询，每个 entry 取最高分的 chunk，再按分数合并；还没同步过的 collection 返回空 |
+| `LiteRagProvider` | 默认走 lite-rag 的 HTTP API（`literag serve` 或其 Docker 镜像，API key 的 namespaces 覆盖 `steward/*`），也可进程内（extra `literag`，锁定 git commit）。namespace ↔ `steward/<namespace_id>`，collection ↔ kb `c-<collection_id>`，entry ↔ 文档 `doc_id = entry_id`（metadata 带 `steward_id`、`version`、`tags`）；entry 的 external id 为 `<namespace_id>/<collection_id>#<entry_id>`（`remove` 不带 collection）。检索对每个 lite-rag namespace 调一次多 kb 检索（lite-rag S10 的 `search_kbs` / `POST /v1/search`：只嵌入一次、只融合一次、只 rerank 一次），每个 entry 取最高分的 chunk；还没同步过的 collection 由 lite-rag 跳过 |
 | `RAGFlowProvider` | REST + Python SDK：collection ↔ dataset；entry ↔ 一篇文档；检索用其 retrieval 接口 |
 | `NativeMemoryProvider` / `NativeKnowledgeProvider` | SQLite（或 PG）+ sqlite-vec / pgvector + FTS5 / tsvector + jieba；实现全部 capabilities，作为合约测试的参照 |
 
@@ -786,7 +786,7 @@ llm-steward/
      - Codex review（2026-11-09）：
        - 一条成立并已修复：进程内模式把 lite-rag 的原始异常写进日志，而存储错误可能带数据库 URL 和密码。现在写日志前用 `lite_rag.errors.redact` 去掉凭据（lite-rag 把 `redact` 从服务端模块移到了 `errors`），有先红后绿的测试。
        - 不成立的一条：Codex 认为"按 namespace 缓存引擎"是先查后建、没加锁，会有竞态。实际上 `_engine` 在事件循环线程里同步执行，查和建之间没有 `await`，不会被别的协程打断；而且引擎本身不持锁，写入由 store 串行化。
-     - 留到 P4（联合检索）：lite-rag 一次只查一个 kb，多个 collection 会各自嵌入一次查询、各自 rerank，按分数合并实际上是按名次交错（hybrid 的分数是 RRF）。正确的做法是 lite-rag 提供多 kb 检索（只嵌入一次、只融合一次）。
+     - ~~留到 P4：lite-rag 一次只查一个 kb~~ 已在 P4a 完成（2026-11-09）：lite-rag S10 加了多 kb 检索，pin 升到 6d52f90。
    - [x] collections、entries、candidates、风险分级（含 PII）、KB 价值评分、promote、suggestions、accept / reject
    - P3a 治理核心（2026-11-09，不含 LLM）：
      - 只有 reviewer 能产生 `verified`（新建或流转）：`admin`，或带 `review` scope 的 API key（用户 2026-11-09 选定，P5 有 Admin 登录前的做法）。review 是 `Actor` 的能力（`can_review`），不是身份：这种 key 在 change_log 里仍记为 `host_app`，审计能分清是人还是 key；终端用户、AI、system 都不能 verify。
@@ -852,6 +852,7 @@ llm-steward/
    - P4.0（2026-11-09，P3 收尾提交后的后台安全审查，两条都成立，都先写了失败的测试）：
      - 手机号检测回退：新正则的开头排除了 `+`，`+13812345678` 不再匹配。现在开头只排除数字，前缀允许 `+86` 或单个 `+`。
      - 记忆在推送途中被整行删除（按用户硬删除，规则 6 的例外）时，原来在当前任务里直接撤回，撤回失败就留下副本。现在 `_confirm` 在同一个事务里排 `sync.memory_remove`，payload 带上引擎 id；删除任务直接删这个 id，失败按退避重试。按用户硬删除的接口本身在 P5。
+   - P4a（2026-11-09）：lite-rag S10 加了多 kb 检索（`search_kbs`、`POST /v1/search`，每个 kb 都要被 key 覆盖；lite-rag 自己的收尾 /simplify + Codex 无发现，提交 6d52f90）。`LiteRagProvider` 每个 lite-rag namespace 只调一次，查询只嵌入一次，多个 collection 只融合一次、只 rerank 一次；pin 从 df84939 升到 6d52f90，`-m contract` 通过（进程内与 HTTP）。lite-rag 的 BM25 是按 kb 各自统计 IDF 的，跨 kb 合并是近似值（见 lite-rag 设计 §5）。
    - 验收：用 Fake provider 注入 2 秒延迟，响应仍在超时预算内返回并标记 degraded；在小型标注集（20–30 条 query）上 recall@8 达标（阈值在建立基线后确定）
 6. **P5 接入与安全**
    - [ ] API key、user token、Admin JWT、限流、幂等、Problem Details、webhooks

@@ -25,7 +25,7 @@ class FakeTransport:
     def __init__(self) -> None:
         self.docs: dict[tuple[str, str], dict[str, tuple[str, str, dict[str, Any]]]] = {}
         self.hits: dict[tuple[str, str], list[LiteHit]] = {}
-        self.searched: list[tuple[str, str, str, int, dict[str, Any] | None]] = []
+        self.searched: list[tuple[str, list[str], str, int, dict[str, Any] | None]] = []
         self.down = False
         self.closed = False
 
@@ -38,10 +38,10 @@ class FakeTransport:
         self.docs.get((namespace, kb), {}).pop(doc_id, None)
 
     async def search(
-        self, namespace: str, kb: str, query: str, top_k: int, where: dict[str, Any] | None
+        self, namespace: str, kbs: list[str], query: str, top_k: int, where: dict[str, Any] | None
     ) -> list[LiteHit]:
-        self.searched.append((namespace, kb, query, top_k, where))
-        return self.hits.get((namespace, kb), [])
+        self.searched.append((namespace, list(kbs), query, top_k, where))
+        return [h for kb in kbs for h in self.hits.get((namespace, kb), [])]
 
     async def health(self) -> None:
         if self.down:
@@ -94,18 +94,18 @@ async def test_an_external_id_finds_its_way_back_to_the_document(
     await provider.remove(external_id)  # idempotent
 
 
-async def test_search_keeps_each_entrys_best_hit_and_merges_collections_by_score(
+async def test_one_search_covers_every_collection_and_keeps_each_entrys_best_hit(
     provider: LiteRagProvider, transport: FakeTransport
 ) -> None:
     refunds = await provider.ensure_collection(KbCollectionRef(REFUNDS, NS, "refunds"))
     shipping = await provider.ensure_collection(KbCollectionRef(SHIPPING, NS, "shipping"))
     ns = f"steward/{NS}"
     transport.hits[(ns, f"c-{REFUNDS}")] = [
-        LiteHit("e1", 0.9, "refund chunk 1"),
-        LiteHit("e1", 0.4, "refund chunk 2"),  # same entry, a weaker chunk
-        LiteHit("e2", 0.2, "other refund"),
+        LiteHit(f"c-{REFUNDS}", "e1", 0.9, "refund chunk 1"),
+        LiteHit(f"c-{REFUNDS}", "e1", 0.4, "refund chunk 2"),  # same entry, a weaker chunk
+        LiteHit(f"c-{REFUNDS}", "e2", 0.2, "other refund"),
     ]
-    transport.hits[(ns, f"c-{SHIPPING}")] = [LiteHit("e3", 0.5, "shipping")]
+    transport.hits[(ns, f"c-{SHIPPING}")] = [LiteHit(f"c-{SHIPPING}", "e3", 0.5, "shipping")]
 
     hits = await provider.search("q", [refunds, shipping], top_k=2, filters={"version": 1})
 
@@ -113,10 +113,8 @@ async def test_search_keeps_each_entrys_best_hit_and_merges_collections_by_score
         (f"{refunds}#e1", 0.9, "refund chunk 1"),
         (f"{shipping}#e3", 0.5, "shipping"),
     ]
-    assert sorted((kb, k, w["version"]) for _, kb, _, k, w in transport.searched) == [
-        (f"c-{REFUNDS}", 2, 1),
-        (f"c-{SHIPPING}", 2, 1),
-    ]  # every collection asked, with the same top_k and filter
+    # one lite-rag search over both kbs (one query embedding, one fusion), not one per kb
+    assert transport.searched == [(ns, [f"c-{REFUNDS}", f"c-{SHIPPING}"], "q", 2, {"version": 1})]
     assert await provider.search("q", [], top_k=5) == []
 
 
@@ -144,9 +142,10 @@ class _FakeEngine:
     def __init__(self, runtime: "_FakeRuntime") -> None:
         self._runtime = runtime
 
-    def search(self, kb: str, query: str, **kwargs: Any) -> list[Any]:
+    def search_kbs(self, kbs: list[str], query: str, **kwargs: Any) -> list[Any]:
         from lite_rag.errors import InvalidRequest, KbNotFound, StoreError
 
+        [kb] = kbs
         rt = self._runtime
         with rt.lock:
             rt.running += 1
@@ -177,19 +176,19 @@ class _FakeRuntime:
 async def test_in_process_calls_are_bounded_and_reuse_one_engine_per_namespace() -> None:
     runtime = _FakeRuntime()
     transport = InProcessTransport(runtime, concurrency=2)  # type: ignore[arg-type]
-    await asyncio.gather(*(transport.search("steward/a", "kb", "q", 5, None) for _ in range(6)))
-    await transport.search("steward/b", "kb", "q", 5, None)
+    await asyncio.gather(*(transport.search("steward/a", ["kb"], "q", 5, None) for _ in range(6)))
+    await transport.search("steward/b", ["kb"], "q", 5, None)
     assert runtime.peak == 2
     assert runtime.engines == ["steward/a", "steward/b"]  # kept: it remembers checked kbs
 
 
 async def test_in_process_errors_become_ours(caplog: pytest.LogCaptureFixture) -> None:
     transport = InProcessTransport(_FakeRuntime(), concurrency=1)  # type: ignore[arg-type]
-    assert await transport.search("ns", "missing", "q", 5, None) == []  # nothing synced yet
+    assert await transport.search("ns", ["missing"], "q", 5, None) == []  # nothing synced yet
     with pytest.raises(Unprocessable, match="scalars"):
-        await transport.search("ns", "bad", "q", 5, None)
+        await transport.search("ns", ["bad"], "q", 5, None)
     with pytest.raises(ProviderUnavailable) as caught:
-        await transport.search("ns", "down", "q", 5, None)
+        await transport.search("ns", ["down"], "q", 5, None)
     assert "secret" not in str(caught.value)  # lite-rag's message goes to the log only
     logged = " ".join(r.getMessage() for r in caplog.records)
     assert "cannot connect" in logged and "secret" not in logged  # and without credentials

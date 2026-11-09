@@ -8,12 +8,10 @@ Mapping, defined only here:
 - an entry is the document `doc_id = entry_id`; its external id is `{collection_ext_id}#{entry_id}`,
   because `remove` is given no collection.
 
-lite-rag searches one kb at a time: a search asks every collection (concurrently), keeps each
-entry's best chunk, and merges by score. With hybrid retrieval that score is RRF, built from ranks
-inside each kb, so merging interleaves collections by rank; each collection also embeds the query
-again. A multi-kb search in lite-rag (embed once, fuse once) is the follow-up (P4, joint
-retrieval). A collection with nothing synced yet (no kb) has no hits. Filters go through as
-lite-rag `where` (scalar values only)."""
+A search is one lite-rag multi-kb search per lite-rag namespace (`search_kbs` / `POST /v1/search`,
+lite-rag S10): the query is embedded once and the collections are fused and reranked as one, then
+each entry keeps its best chunk. A collection with nothing synced yet (no kb) is skipped by
+lite-rag. Filters go through as lite-rag `where` (scalar values only)."""
 
 import asyncio
 import logging
@@ -44,6 +42,7 @@ log = logging.getLogger(__name__)
 
 @dataclass(frozen=True)
 class LiteHit:
+    kb: str
     doc_id: str
     score: float
     text: str
@@ -61,9 +60,9 @@ class Transport(Protocol):
         ...
 
     async def search(
-        self, namespace: str, kb: str, query: str, top_k: int, where: dict[str, Any] | None
+        self, namespace: str, kbs: list[str], query: str, top_k: int, where: dict[str, Any] | None
     ) -> list[LiteHit]:
-        """[] when the kb does not exist."""
+        """The kbs searched as one; a kb that does not exist (nothing synced yet) is skipped."""
         ...
 
     async def health(self) -> None:
@@ -115,13 +114,20 @@ class LiteRagProvider:
         top_k: int,
         filters: dict[str, Any] | None = None,
     ) -> list[ProviderHit]:
-        located = [(c, *self._locate(c)) for c in collection_ext_ids]
+        # one search per lite-rag namespace (a llm-steward namespace: in practice exactly one)
+        by_namespace: dict[str, dict[str, str]] = {}  # namespace -> kb -> collection_ext_id
+        for collection_ext_id in collection_ext_ids:
+            namespace, kb = self._locate(collection_ext_id)
+            by_namespace.setdefault(namespace, {})[kb] = collection_ext_id
         results = await asyncio.gather(
-            *(self._transport.search(ns, kb, query, top_k, filters) for _, ns, kb in located)
+            *(
+                self._transport.search(ns, list(kbs), query, top_k, filters)
+                for ns, kbs in by_namespace.items()
+            )
         )
         hits = (
-            ProviderHit(f"{collection_ext_id}#{h.doc_id}", h.score, h.text)
-            for (collection_ext_id, _, _), found in zip(located, results, strict=True)
+            ProviderHit(f"{by_namespace[ns][h.kb]}#{h.doc_id}", h.score, h.text)
+            for ns, found in zip(by_namespace, results, strict=True)
             for h in found
         )
         return best_hit_per_id(hits, top_k)
@@ -204,13 +210,12 @@ class HttpTransport:
         await self._call("DELETE", self._doc_path(kb, doc_id), namespace, ok=(204, 404))
 
     async def search(
-        self, namespace: str, kb: str, query: str, top_k: int, where: dict[str, Any] | None
+        self, namespace: str, kbs: list[str], query: str, top_k: int, where: dict[str, Any] | None
     ) -> list[LiteHit]:
-        body = {"query": query, "top_k": top_k, "where": where}
-        response = await self._call("POST", f"/v1/kbs/{kb}/search", namespace, body, ok=(200, 404))
-        if response.status_code == 404:  # nothing synced to this collection yet
-            return []
-        return [LiteHit(h["doc_id"], h["score"], h["text"]) for h in response.json()["hits"]]
+        body = {"kbs": kbs, "query": query, "top_k": top_k, "where": where}
+        response = await self._call("POST", "/v1/search", namespace, body)
+        hits = response.json()["hits"]
+        return [LiteHit(h["kb"], h["doc_id"], h["score"], h["text"]) for h in hits]
 
     async def health(self) -> None:
         await self._call("GET", "/health", None)
@@ -265,13 +270,13 @@ class InProcessTransport:
         await self._run("delete", lambda: engine.delete(kb, doc_id))  # False when gone: fine
 
     async def search(
-        self, namespace: str, kb: str, query: str, top_k: int, where: dict[str, Any] | None
+        self, namespace: str, kbs: list[str], query: str, top_k: int, where: dict[str, Any] | None
     ) -> list[LiteHit]:
         engine = self._engine(namespace)
-        hits = await self._run(  # a missing kb: nothing synced to this collection yet
-            "search", lambda: engine.search(kb, query, top_k=top_k, where=where), missing=[]
+        hits = await self._run(  # lite-rag skips a kb with nothing synced yet
+            "search", lambda: engine.search_kbs(kbs, query, top_k=top_k, where=where), missing=[]
         )
-        return [LiteHit(h.doc_id, h.score, h.text) for h in hits]
+        return [LiteHit(h.kb, h.doc_id, h.score, h.text) for h in hits]
 
     async def health(self) -> None:
         await self._run("health", self._runtime.health)
