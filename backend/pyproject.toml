@@ -85,9 +85,10 @@ asyncio_mode = "auto"
 asyncio_default_fixture_loop_scope = "function"
 # Opt-in, deselected by default: `-m model` (real local embedding model, ~220 MB once) and
 # `-m contract` (adapters against real engines, e.g. mem0 on the local PostgreSQL).
-addopts = "-m 'not model and not contract'"
+addopts = "-m 'not model and not contract and not eval'"
 markers = [
     "model: runs the real fastembed model (opt-in: uv run pytest -m model)",
+    "eval: retrieval quality on the labelled set, real local embedding (opt-in: uv run pytest -m eval)",
     "contract: adapter contract against a real external engine (opt-in: uv run pytest -m contract)",
 ]
 

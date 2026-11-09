@@ -276,7 +276,8 @@ def running_app(
     from llm_steward.main import create_app
     from tests.fakes.embedder import FakeEmbedder
 
-    app = create_app(test_settings(url, **(settings or {})), embedder=FakeEmbedder(), **overrides)
+    overrides.setdefault("embedder", FakeEmbedder())  # a real one for the opt-in eval
+    app = create_app(test_settings(url, **(settings or {})), **overrides)
     with TestClient(app) as http:
         yield AppClient(http, app.state.services)
 

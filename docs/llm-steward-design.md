@@ -882,6 +882,11 @@ llm-steward/
      - `retrieval_logs.results` 只放返回的条目。每条记录来源、种类、在来源里的名次、融合分（RRF，加权前）、最终分、是否常驻。被淘汰的候选放进单独的 `left_out` 列，原因 `budget`（放不下）或 `rank`（排在别人后面）。迁移 0007 加了 `left_out` 和 `counted` 两列；0007 之前的日志标为已计数，不回头补算。
      - `POST /v1/retrieve/{id}/feedback`（write scope，`{item_id, helpful, note?}`，返回 204）。日志不在调用方的命名空间里返回 404，`item_id` 不是那次检索返回过的（包括被淘汰的候选）返回 422。每次反馈写一行 `retrieval_feedback`（备注先脱敏，按 `(namespace_id, created_at)` 建索引），条目的有用/无用计数在同一个事务里加一。反馈不多，所以不走队列。`retrieval_logs.feedback` 列自此不再使用。
      - 命中统计由 worker 定时汇总，每 30 秒一次：取最多 500 条还没计数的日志（PG 上用 `SKIP LOCKED`），按对象合并后，每个对象一条 UPDATE，按 id 排序避免两个 worker 互相等锁，然后把这些日志标为已计数，全在一个事务里完成。/simplify 时否掉了最初"每次检索排一个任务"的做法：任务表里完成的任务从不删除，每次读都会加一行；并发更新热门条目还会排队等锁，甚至死锁。
+   - P4f 验收（2026-11-09）：
+     - 降级（`tests/integration/test_p4_acceptance.py`，默认测试，两种数据库都跑）：KB 或记忆 provider 慢 2 秒、超时设为 800 ms 时，响应在 1.5 秒内返回，`degraded` 正好标出慢的那个来源，另一个来源的结果照常返回。去掉超时或降级标记，这条测试就会失败。
+     - recall@8（`tests/eval/`，`-m eval`，需要手动开启）。语料是**合成的**：一家虚构户外用品店的客服，中英混合，28 条知识、2 篇文档、8 条记忆、25 个带标注的查询。查询有改写、有跨语言，也有需要同时召回知识和记忆的。通过 API 加载，provider 用 native，embedding 用真实的本地 MiniLM（多语言）。
+       - **基线：0.960**，开 rerank（`BAAI/bge-reranker-v2-m3-int8`）为 **0.980**。SQLite 和 PG 的结果一致。没完全命中的是两条需要知识加记忆的查询，各漏了一项。
+       - 门槛 **0.92**（比基线低一个"整条查询都没命中"的量），断言写在评测里，打分改动导致召回下降时就会失败。去掉 KB 那一路做变异检查，评测失败。
    - 验收：用 Fake provider 注入 2 秒延迟，响应仍在超时预算内返回并标记 degraded；在小型标注集（20–30 条 query）上 recall@8 达标（阈值在建立基线后确定）
 6. **P5 接入与安全**
    - [ ] API key、user token、Admin JWT、限流、幂等、Problem Details、webhooks
