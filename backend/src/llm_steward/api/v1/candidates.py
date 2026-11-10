@@ -4,6 +4,7 @@ from typing import Annotated
 from fastapi import APIRouter, Query
 
 from llm_steward.api.deps import OwnReader, OwnWriter, ServicesDep
+from llm_steward.errors import Forbidden
 from llm_steward.models.enums import CandidateStage, CandidateStatus
 from llm_steward.schemas.kb import CandidateOut, CandidatePage, Decision, DecisionOut, EntryOut
 from llm_steward.services.kb_service import CandidateFilter
@@ -41,6 +42,10 @@ async def _decide(
     services: ServicesDep,
 ) -> DecisionOut:
     draft = body.draft.model_dump(exclude_none=True) if body.draft else None
+    if draft and principal.user_id is not None and body.scope == "team":
+        # The card's text is what the user was asked about: under their own token they may take
+        # it as is, or keep an edit to themselves, but not rewrite what the team will read.
+        raise Forbidden("a user token can keep an edited card only as a personal memory")
     candidate, entry = await services.kb.decide(
         principal.namespace_id,
         candidate_id,

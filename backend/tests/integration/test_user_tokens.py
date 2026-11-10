@@ -71,7 +71,6 @@ END_USER_ROUTES = {
     ("GET", "/v1/candidates"),
     ("POST", "/v1/candidates/{candidate_id}/accept"),
     ("POST", "/v1/candidates/{candidate_id}/reject"),
-    ("POST", "/v1/suggestions"),
 }
 
 
@@ -96,6 +95,9 @@ def test_only_the_marked_routes_accept_a_user_token(app_client: AppClient) -> No
         ("GET", "/v1/kb/collections"),
         ("POST", "/v1/tokens/user"),  # a token never mints another
         ("DELETE", "/v1/memories"),
+        # proposing knowledge: the card would ask the same user, who could then approve their
+        # own text into the shared KB (security review of 4204515)
+        ("POST", "/v1/suggestions"),
     ],
 )
 def test_a_user_token_is_refused_elsewhere(w: World, method: str, path: str) -> None:
@@ -187,6 +189,24 @@ def test_a_user_answers_only_their_own_cards_and_never_verifies(w: World) -> Non
     r = w.post(f"/v1/candidates/{mine}/accept")
     assert r.status_code == 200, r.text
     assert r.json()["entry"]["status"] == KbStatus.ACTIVE.value  # an end user never verifies
+
+
+def test_a_user_cannot_rewrite_a_card_into_shared_knowledge(w: World) -> None:
+    """Accepting as proposed, or keeping an edit to themselves, is the user's call; rewriting
+    what the team will read is not (security review of 4204515)."""
+    card = _card(w, "u1")
+    edit = {"draft": {"content": "Gift wrapping is free all year"}}
+    r = w.post(f"/v1/candidates/{card}/accept", edit)
+    assert r.status_code == 403
+    assert w.c.get(Candidate, card).status == CandidateStatus.PENDING
+    r = w.post(f"/v1/candidates/{card}/accept", {**edit, "scope": "personal"})
+    assert r.status_code == 200, r.text
+    # the host app's server may still pass the user's edit on (design §7: it is trusted)
+    other = _card(w, "u1")
+    r = w.c.http.post(
+        f"/v1/candidates/{other}/accept", json={**edit, "user_id": "u1"}, headers=w.t.host
+    )
+    assert r.status_code == 200, r.text
 
 
 # --- the token itself ------------------------------------------------------------------------
