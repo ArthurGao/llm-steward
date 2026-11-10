@@ -16,6 +16,7 @@ from llm_steward.models.enums import (
     KbStatus,
     RiskLevel,
 )
+from llm_steward.schemas.bounds import Fact, UserId
 
 POLICY_HELP = (
     'How low and medium risk are routed, e.g. {"low": "review"}: "auto" (live at once), "user" '
@@ -150,8 +151,8 @@ class PromoteIn(BaseModel):
 
 class SuggestionIn(BaseModel):
     collection_id: uuid.UUID
-    text: str = Field(min_length=1, max_length=20_000)
-    user_id: str | None = Field(default=None, max_length=200)
+    text: Fact
+    user_id: UserId | None = None
     session_id: str | None = Field(default=None, max_length=200)
 
 

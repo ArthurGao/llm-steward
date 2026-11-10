@@ -259,3 +259,24 @@ def test_the_stdio_command_refuses_to_start_without_a_valid_key(
     result = CliRunner().invoke(cli, args)
     assert result.exit_code == 1, result.output
     assert says in result.output
+
+
+@pytest.mark.parametrize(
+    ("tool", "args"),
+    [
+        ("recall", {"query": "tea", "top_k": 100_000}),
+        ("recall", {"query": ""}),
+        ("recall", {"query": "x" * 4_001}),
+        ("search_kb", {"query": "tea", "top_k": 0}),
+        ("search_kb", {"query": "tea", "collections": [f"c{i}" for i in range(51)]}),
+        ("remember", {"fact": "x" * 20_001}),
+        ("remember", {"fact": "tea", "importance": 5}),
+        ("remember", {"fact": "tea", "memory_type": "t" * 65}),
+        ("remember", {"fact": "tea", "user_id": "u" * 201}),
+    ],
+)
+def test_tools_refuse_what_rest_refuses(app: AppClient, tool: str, args: dict[str, Any]) -> None:
+    """The same input limits as REST (schemas/bounds.py; security review of 71c1cb7)."""
+    h, _ = app.new_tenant("acme")
+    [result] = _mcp(app, h, (tool, args))
+    assert result.is_error

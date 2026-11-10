@@ -5,15 +5,16 @@ from typing import Any
 from pydantic import BaseModel, ConfigDict, Field
 
 from llm_steward.models.enums import MemoryOrigin, MemoryStatus, SyncStatus
+from llm_steward.schemas.bounds import Fact, MemoryType, UserId, Weight
 from llm_steward.services.memory_service import MemoryView
 
 
 class MemoryCreate(BaseModel):
-    content: str = Field(min_length=1, max_length=20_000)
-    user_id: str | None = Field(default=None, max_length=200)
+    content: Fact
+    user_id: UserId | None = None
     agent_id: str | None = Field(default=None, max_length=200)
     session_id: str | None = Field(default=None, max_length=200)
-    memory_type: str = Field(default="semantic", max_length=64)
+    memory_type: MemoryType = "semantic"
     key: str | None = Field(
         default=None,
         max_length=200,
@@ -25,8 +26,8 @@ class MemoryCreate(BaseModel):
     tags: list[str] = Field(default_factory=list, max_length=50)
     metadata: dict[str, Any] = Field(default_factory=dict)
     pinned: bool = False
-    importance: float = Field(default=0.5, ge=0, le=1)
-    confidence: float = Field(default=0.8, ge=0, le=1)
+    importance: Weight = 0.5
+    confidence: Weight = 0.8
     infer: bool = Field(
         default=False,
         description="Let the memory provider extract facts. Needs the 'extract' capability (P2).",

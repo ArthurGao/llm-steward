@@ -4,6 +4,7 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from llm_steward.schemas.bounds import Query, TopK
 from llm_steward.schemas.kb import CandidateOut
 from llm_steward.services.retrieval_service import Degraded
 
@@ -22,13 +23,11 @@ class RetrieveFilters(BaseModel):
 
 
 class RetrieveIn(BaseModel):
-    query: str = Field(min_length=1, max_length=4_000)
+    query: Query
     scope: RetrieveScope = Field(default_factory=RetrieveScope)
     sources: list[Literal["memory", "kb"]] = Field(default=["memory", "kb"], min_length=1)
     collections: list[str] | None = None
-    top_k: int | None = Field(
-        default=None, ge=1, le=50, description="Default: the namespace's (8)."
-    )
+    top_k: TopK | None = Field(default=None, description="Default: the namespace's (8).")
     format: Literal["items", "context"] = "items"
     as_of: datetime | None = Field(
         default=None, description="What was valid at this moment (superseded memories included)."

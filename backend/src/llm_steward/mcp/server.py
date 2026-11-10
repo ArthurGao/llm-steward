@@ -14,14 +14,24 @@ decision (a test pins the names this package may use).
 import uuid
 from collections.abc import Awaitable, Callable
 from dataclasses import replace
-from typing import Any
+from typing import Annotated, Any
 
 from mcp.server.mcpserver import Context, MCPServer
 from mcp.server.mcpserver.exceptions import ToolError
+from pydantic import Field
 
 from llm_steward.errors import StewardError
 from llm_steward.models.enums import ApiScope
 from llm_steward.providers.base import Scope
+from llm_steward.schemas.bounds import (
+    CollectionName,
+    Fact,
+    MemoryType,
+    Query,
+    TopK,
+    UserId,
+    Weight,
+)
 from llm_steward.services.container import Services
 from llm_steward.services.governance_service import Actor, CreateMemory
 from llm_steward.services.namespace_service import PRINCIPAL_STATE_KEY, Principal
@@ -58,11 +68,11 @@ def build_server(
 
     @server.tool(description="Store one durable fact about the user (or a shared one).")
     async def remember(
-        fact: str,
+        fact: Fact,
         ctx: Context[Any, Any],
-        user_id: str | None = None,
-        memory_type: str = "semantic",
-        importance: float = 0.5,
+        user_id: UserId | None = None,
+        memory_type: MemoryType = "semantic",
+        importance: Weight = 0.5,
     ) -> dict[str, Any]:
         p = caller(ctx, ApiScope.WRITE)
         op = CreateMemory(
@@ -77,7 +87,7 @@ def build_server(
 
     @server.tool(description="Recall what is known that is relevant to a query, as context text.")
     async def recall(
-        query: str, ctx: Context[Any, Any], user_id: str | None = None, top_k: int = 8
+        query: Query, ctx: Context[Any, Any], user_id: UserId | None = None, top_k: TopK = 8
     ) -> str:
         p = caller(ctx, ApiScope.READ)
         req = RetrieveRequest(query, user_id=_pin(p, user_id), top_k=top_k, with_context=True)
@@ -99,7 +109,7 @@ def build_server(
         "never live at once."
     )
     async def suggest_kb(
-        text: str, collection_id: str, ctx: Context[Any, Any], user_id: str | None = None
+        text: Fact, collection_id: str, ctx: Context[Any, Any], user_id: UserId | None = None
     ) -> dict[str, Any]:
         p = caller(ctx, ApiScope.WRITE)
         submitted = await _run(
@@ -117,10 +127,10 @@ def build_server(
 
     @server.tool(description="Search the team knowledge base only, as context text.")
     async def search_kb(
-        query: str,
+        query: Query,
         ctx: Context[Any, Any],
-        collections: list[str] | None = None,
-        top_k: int = 8,
+        collections: Annotated[list[CollectionName], Field(max_length=50)] | None = None,
+        top_k: TopK = 8,
     ) -> str:
         p = caller(ctx, ApiScope.READ)
         req = RetrieveRequest(
@@ -134,7 +144,7 @@ def build_server(
         return result.context or NOTHING
 
     @server.tool(description="The user's profile: current key-value facts and pinned memories.")
-    async def get_profile(ctx: Context[Any, Any], user_id: str | None = None) -> dict[str, Any]:
+    async def get_profile(ctx: Context[Any, Any], user_id: UserId | None = None) -> dict[str, Any]:
         p = caller(ctx, ApiScope.READ)
         user = _pin(p, user_id)
         if user is None:
