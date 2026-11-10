@@ -50,6 +50,14 @@ def _check(url: str, **kw: Any) -> Any:
         "[fd00::1]",
         "[fe80::1]",
         "[::ffff:127.0.0.1]",  # IPv4 written as IPv6
+        # IPv6 forms that carry an IPv4 address a translator would reach (security review of
+        # 75ec4fa): NAT64, its local-use prefix, IPv4-compatible, 6to4, Teredo
+        "[64:ff9b::7f00:1]",
+        "[64:ff9b::a00:5]",
+        "[64:ff9b:1::a00:5]",
+        "[::127.0.0.1]",
+        "[2002:7f00:1::1]",
+        "[2001:0:4136:e378:8000:63bf:3fff:fdd2]",
     ],
 )
 def test_internal_addresses_are_refused(address: str) -> None:

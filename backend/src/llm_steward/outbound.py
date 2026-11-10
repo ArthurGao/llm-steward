@@ -2,11 +2,12 @@
 
 Only public internet addresses are reached. The host is resolved here and every address it
 resolves to must be global (no private, loopback, link-local such as cloud metadata, CGNAT,
-multicast, reserved or unspecified ranges, and any IPv4 written as IPv6). The connection then
-goes to the address that was checked, with the hostname kept for TLS (SNI) and the `Host` header,
-so DNS cannot answer differently between the check and the connection (rebinding). Every redirect
-is checked the same way; https only. `allow_private` (STEWARD_ALLOW_PRIVATE_URLS, local
-development) lifts the address and scheme rules, never the size or redirect limits.
+multicast, reserved or unspecified ranges, and no IPv6 form that embeds an IPv4 address). The
+connection then goes to the address that was checked, with the hostname kept for TLS (SNI) and
+the `Host` header, so DNS cannot answer differently between the check and the connection
+(rebinding). Every redirect is checked the same way; https only. `allow_private`
+(STEWARD_ALLOW_PRIVATE_URLS, local development) lifts the address and scheme rules, never the
+size or redirect limits.
 
 Engines llm-steward is configured with (WeKnora, lite-rag) are not user input and use their own
 client; this one is only for user-supplied URLs.
@@ -47,9 +48,25 @@ async def system_resolve(host: str, port: int) -> list[str]:
     return list(dict.fromkeys(str(info[4][0]) for info in infos))
 
 
+# IPv6 ranges that carry an IPv4 address a translator or tunnel would reach; refused outright
+# (Python counts NAT64 and IPv4-compatible addresses as global, whatever IPv4 they embed).
+_EMBEDS_IPV4 = tuple(
+    ipaddress.ip_network(n)
+    for n in (
+        "::/96",  # IPv4-compatible (deprecated)
+        "::ffff:0:0/96",  # IPv4-mapped
+        "64:ff9b::/96",  # NAT64
+        "64:ff9b:1::/48",  # NAT64, local use
+        "2002::/16",  # 6to4
+        "2001::/32",  # Teredo
+    )
+)
+
+
 def _public(address: str) -> bool:
-    # IPv4 written as IPv6 (::ffff:a.b.c.d) is never global, so it is always refused.
     ip = ipaddress.ip_address(address.split("%", 1)[0])  # drop an IPv6 zone
+    if isinstance(ip, ipaddress.IPv6Address) and any(ip in net for net in _EMBEDS_IPV4):
+        return False
     return ip.is_global and not ip.is_multicast
 
 
