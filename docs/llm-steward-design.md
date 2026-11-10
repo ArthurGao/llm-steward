@@ -483,7 +483,7 @@ flowchart TB
 | 系统 | `GET /health` · `GET /metrics` · `GET /jobs/{id}` | 健康检查、指标、异步任务状态 |
 |  | `POST /tokens/user` | 签发短期 user token |
 
-**Admin 路由（`/admin/v1`）**：namespace 与 API key 管理、配置编辑、统计汇总、审核队列、变更日志、检索日志、检索沙盒、任务重试、provider 健康检查与同步状态、全量重新同步（更换 provider 时使用）。
+**Admin 路由（`/admin/v1`）**：namespace 与 API key 管理、配置编辑、统计汇总、审核队列、变更日志、检索日志、检索沙盒、任务重试、provider 健康检查与同步状态、全量重新同步（更换 provider 时使用）。实现（P6a）：一个静态 token `STEWARD_ADMIN_TOKEN`（至少 32 字节；没设置则整个 `/admin/v1` 返回 503），路由级依赖、先于一切校验（未知 namespace 也是 401，不能借此探测），OpenAPI 里是 `AdminToken` 方案；调用方是 `admin`（审核者，change_log 里记为 `admin`）。路由按 `/admin/v1/ns/{slug}/…` 组织：stats、memories（列表、详情、改、删、历史、promote、按用户删除）、users、kb（collections 带计数、entries、版本历史、改、verify、deprecate、documents）、candidates（列表、详情、accept、reject——reject 必须写理由）、retrieve（试验台）、retrieval-logs（`gaps=true` 只看没有结果的）和 add-to-kb（以 `propose_only` 提交，进审核队列）、activity、jobs（retry、cancel）、providers、sync（失败的重排）、settings（GET；PUT 整份 YAML，先校验再写）、keys（建，只在这一次回答里给出；吊销）。写入都走和 `/v1` 相同的 service；Admin 独有的读取在 `services/admin_service.py`。没有：直接写引擎的任何操作、文档切块查看（引擎内部数据）、成员与角色（不做账号）。
 
 ### 通用约定
 
@@ -961,6 +961,7 @@ llm-steward/
    - [ ] 布局、namespace 切换器、生成的客户端（不做登录；远程访问的保护方式在 P6 计划时定）
    - [ ] 按顺序实现：Memories → Knowledge Base → Review Queue → Providers → Dashboard → Playground → Users → Activity → Jobs → Settings
    - 验收：Playwright 覆盖"审核一条 high 风险 candidate 并看到它同步到 WeKnora"和"在 Playground 发现缺口并加入 KB"两条主流程
+   - P6a 后端 `/admin/v1`（2026-11-11）：见第 7 节"Admin 路由"。测试 `test_admin_api.py`（两种数据库）。迁移 0012 给 `retrieval_logs` 加 `hit_count`（从已有的 results 回填），KB 缺口在 SQL 里筛（`hit_count = 0`），翻页不会变短。新增 `STEWARD_CORS_ORIGINS`（Admin 在本地跑、连远程后端时需要；默认不允许跨域）。`/v1/retrieve` 和试验台共用 `RetrieveIn.to_request`，`/v1` 和 Admin 的审核共用 `decide`。按天计数在 Python 里做：PostgreSQL 的 `date(timestamptz)` 按服务器时区，SQLite 不按，在 SQL 里分组得写方言相关的代码。SDK 的 `openapi.json` 和模型随之重新生成（规格漂移检查按设计报了错）。P4 的超时验收测试在整套测试并发时偶尔超时一次，单独重跑 3/3 通过：时序测试，机器负载敏感，记下以便观察。
 8. **P7 RAGFlow 与收尾**
    - [ ] `RAGFlowProvider` + 合约测试；`steward resync`（更换 provider 并全量重新同步）
    - [ ] `@llm-steward/widget`、后台维护任务、LoCoMo 评测、README 与接入指南

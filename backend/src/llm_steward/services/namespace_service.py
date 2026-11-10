@@ -1,7 +1,8 @@
 """Namespaces, API keys and user tokens (design §7).
 
 Key format `stw_<prefix>_<secret>`: the prefix is stored in clear for lookup, the secret only as
-sha256. Keys and namespaces are created from the CLI, never from an HTTP route.
+sha256. Namespaces are created from the CLI (`steward ns create` / `ns apply`); keys from the CLI or
+the Admin (`/admin/v1`, behind the admin token), never from a `/v1` route.
 
 A user token (P5) is a short-lived HS256 JWT a host app's server mints with its key for one end
 user, so a browser can call llm-steward directly. It names the key that issued it (`kid`) and is
@@ -167,19 +168,26 @@ class NamespaceService:
         self, slug: str, scopes: tuple[ApiScope, ...] = DEFAULT_SCOPES, name: str = ""
     ) -> str:
         """Returns the plaintext key — the only time it exists outside the caller's hands."""
+        _, key = await self.issue_key(slug, scopes, name)
+        return key
+
+    async def issue_key(
+        self, slug: str, scopes: tuple[ApiScope, ...] = DEFAULT_SCOPES, name: str = ""
+    ) -> tuple[ApiKey, str]:
+        """The stored key (only its hash) and the plaintext key, shown to the caller once."""
         async with self._sessions() as s, s.begin():
             namespace = await _by_slug(s, slug)
             prefix, secret = secrets.token_hex(4), secrets.token_urlsafe(32)
-            s.add(
-                ApiKey(
-                    namespace_id=namespace.id,
-                    name=name,
-                    prefix=prefix,
-                    key_hash=_hash(secret),
-                    scopes=[str(sc) for sc in scopes],
-                )
+            row = ApiKey(
+                namespace_id=namespace.id,
+                name=name,
+                prefix=prefix,
+                key_hash=_hash(secret),
+                scopes=[str(sc) for sc in scopes],
             )
-        return f"{KEY_PREFIX}_{prefix}_{secret}"
+            s.add(row)
+            await s.flush()
+        return row, f"{KEY_PREFIX}_{prefix}_{secret}"
 
     async def revoke_key(self, prefix: str) -> None:
         async with self._sessions() as s, s.begin():

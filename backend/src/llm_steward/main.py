@@ -7,8 +7,10 @@ from typing import Any
 
 import httpx2
 from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
 from mcp.server.transport_security import TransportSecuritySettings
 
+from llm_steward.api import admin as api_admin
 from llm_steward.api import errors, system
 from llm_steward.api import v1 as api_v1
 from llm_steward.api.idempotency import IdempotencyMiddleware
@@ -81,8 +83,17 @@ def create_app(
     errors.install(app)
     # an upload's limit, plus room for the multipart framing
     app.add_middleware(IdempotencyMiddleware, max_body=(settings.kb_max_upload_mb + 1) * 2**20)
+    if settings.cors_origins:  # outermost: preflights are answered before auth
+        app.add_middleware(
+            CORSMiddleware,
+            allow_origins=settings.cors_origins,
+            allow_methods=["GET", "POST", "PATCH", "PUT", "DELETE"],
+            allow_headers=["Authorization", "Content-Type", "Idempotency-Key"],
+            expose_headers=["Idempotent-Replayed", "Retry-After"],
+        )
     app.include_router(system.router)
     app.include_router(api_v1.router)
+    app.include_router(api_admin.router)
     app.mount("/mcp", McpAuth(mcp_app))
     return app
 

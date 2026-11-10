@@ -640,6 +640,7 @@ class RetrievalService:
                 "reranked_by": reranked_by,  # None when asked but it failed or timed out
             },
             results=[_log_row(i, ranks) for i in items],
+            hit_count=len(items),
             left_out=[{**_log_row(i, ranks), "why": why} for i, why in left_out],
             latency_ms=latency_ms,
         )

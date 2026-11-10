@@ -7,7 +7,6 @@ from llm_steward.api.deps import OwnReader, OwnWriter, ServicesDep
 from llm_steward.providers.base import Scope
 from llm_steward.schemas.kb import CandidateOut
 from llm_steward.schemas.retrieve import FeedbackIn, RetrievedItemOut, RetrieveIn, RetrieveOut
-from llm_steward.services.retrieval_service import RetrieveRequest
 
 router = APIRouter(tags=["retrieval"])
 
@@ -19,23 +18,7 @@ async def retrieve(body: RetrieveIn, principal: OwnReader, services: ServicesDep
     scope = Scope(principal.namespace_id, user_id, None, body.scope.session_id)
     search = services.retrieval.retrieve(
         principal.namespace_id,
-        RetrieveRequest(
-            query=body.query,
-            user_id=user_id,
-            agent_id=body.scope.agent_id,
-            session_id=body.scope.session_id,
-            sources=tuple(dict.fromkeys(body.sources)),
-            collections=tuple(body.collections) if body.collections is not None else None,
-            top_k=body.top_k,
-            with_context=body.format == "context",
-            as_of=body.as_of,
-            memory_types=tuple(body.memory_types) if body.memory_types is not None else None,
-            tags=tuple(body.filters.tags),
-            metadata=dict(body.filters.metadata),
-            include_pinned=body.include_pinned,
-            rerank=body.rerank,
-            token_budget=body.token_budget,
-        ),
+        body.to_request(user_id, with_context=body.format == "context"),
     )
     result, cards = await asyncio.gather(search, services.kb.cards(scope))  # independent reads
     return RetrieveOut(

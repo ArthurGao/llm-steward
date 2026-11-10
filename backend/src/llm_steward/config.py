@@ -70,6 +70,12 @@ class Settings(BaseSettings):
     # User tokens (design §7, P5): `POST /v1/tokens/user` signs short-lived HS256 tokens with
     # this secret (at least 32 bytes, e.g. `openssl rand -hex 32`). Unset: none issued or accepted.
     token_secret: SecretStr | None = Field(default=None, min_length=32)
+    # The Admin (`/admin/v1`, design §9): no login and no accounts (decided 2026-11-10); a static
+    # bearer token, at least 32 bytes. Unset: the Admin API is off (503), never open.
+    admin_token: SecretStr | None = Field(default=None, min_length=32)
+    # Browser origins allowed to call the API cross-origin (e.g. the Admin run locally against a
+    # remote backend, or deployed on its own). JSON list in env. Empty: same origin only.
+    cors_origins: list[str] = Field(default_factory=list)
     # Requests per minute per API key (a user token spends its key's), in this process; a
     # namespace may set its own (`limits.requests_per_minute`). None: unlimited.
     rate_limit_per_minute: int | None = Field(default=600, ge=1)

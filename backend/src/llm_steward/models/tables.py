@@ -286,7 +286,10 @@ class ChangeLog(IdMixin, CreatedMixin, Base):
 class RetrievalLog(IdMixin, CreatedMixin, Base):
     __tablename__ = "retrieval_logs"
     # the hit-count pass reads the logs it has not counted yet, oldest first (P4e)
-    __table_args__ = (Index("ix_retrieval_logs_uncounted", "counted", "id"),)
+    __table_args__ = (
+        Index("ix_retrieval_logs_uncounted", "counted", "id"),
+        Index("ix_retrieval_logs_gaps", "namespace_id", "hit_count", "id"),  # the Admin's gaps
+    )
     namespace_id: Mapped[uuid.UUID] = _namespace_fk()
     query: Mapped[str] = mapped_column(Text)
     filters: Mapped[dict[str, Any]] = mapped_column(default=dict)
@@ -294,6 +297,7 @@ class RetrievalLog(IdMixin, CreatedMixin, Base):
     latency_ms: Mapped[dict[str, Any]] = mapped_column(default=dict)
     left_out: Mapped[list[dict[str, Any]]] = mapped_column(default=list)  # candidates, and why
     counted: Mapped[bool] = mapped_column(default=False)  # its hits are in the counters
+    hit_count: Mapped[int] = mapped_column(default=0)  # len(results): 0 is a KB gap (P6a)
 
 
 class RetrievalFeedback(IdMixin, CreatedMixin, Base):

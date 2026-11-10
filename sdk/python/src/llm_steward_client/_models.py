@@ -7,6 +7,51 @@ from pydantic import AwareDatetime, BaseModel, Field, RootModel
 from uuid import UUID
 
 
+class AddToKbIn(BaseModel):
+    collection_id: Annotated[UUID, Field(title="Collection Id")]
+    content: Annotated[str, Field(max_length=50000, min_length=1, title="Content")]
+    title: Annotated[str, Field(max_length=500, min_length=1, title="Title")]
+
+
+class ApiKeyCreatedOut(BaseModel):
+    created_at: Annotated[AwareDatetime, Field(title="Created At")]
+    id: Annotated[UUID, Field(title="Id")]
+    key: Annotated[
+        str,
+        Field(
+            description="Shown once: store it now, it cannot be shown again.",
+            title="Key",
+        ),
+    ]
+    last_used_at: Annotated[AwareDatetime | None, Field(title="Last Used At")]
+    name: Annotated[str, Field(title="Name")]
+    prefix: Annotated[str, Field(title="Prefix")]
+    revoked_at: Annotated[AwareDatetime | None, Field(title="Revoked At")]
+    scopes: Annotated[list[str], Field(title="Scopes")]
+
+
+class ApiKeyIn(BaseModel):
+    name: Annotated[str | None, Field(max_length=200, title="Name")] = ""
+    scopes: Annotated[
+        list[Literal["read", "write", "review"]] | None,
+        Field(min_length=1, title="Scopes"),
+    ] = None
+
+
+class ApiKeyOut(BaseModel):
+    created_at: Annotated[AwareDatetime, Field(title="Created At")]
+    id: Annotated[UUID, Field(title="Id")]
+    last_used_at: Annotated[AwareDatetime | None, Field(title="Last Used At")]
+    name: Annotated[str, Field(title="Name")]
+    prefix: Annotated[str, Field(title="Prefix")]
+    revoked_at: Annotated[AwareDatetime | None, Field(title="Revoked At")]
+    scopes: Annotated[list[str], Field(title="Scopes")]
+
+
+class ApiKeyPage(BaseModel):
+    items: Annotated[list[ApiKeyOut], Field(title="Items")]
+
+
 class Title(RootModel[str]):
     root: Annotated[str, Field(max_length=500, title="Title")]
 
@@ -49,6 +94,11 @@ class ChatMessage(BaseModel):
     role: Annotated[Literal["user", "assistant", "system"], Field(title="Role")]
 
 
+class DayCountOut(BaseModel):
+    count: Annotated[int, Field(title="Count")]
+    day: Annotated[str, Field(title="Day")]
+
+
 class Note(RootModel[str]):
     root: Annotated[str, Field(max_length=2000, title="Note")]
 
@@ -79,6 +129,13 @@ class UserId2(RootModel[str]):
     ]
 
 
+class EntryLink(BaseModel):
+    id: Annotated[UUID, Field(title="Id")]
+    status: Annotated[str, Field(title="Status")]
+    title: Annotated[str, Field(title="Title")]
+    version: Annotated[int, Field(title="Version")]
+
+
 class Content(RootModel[str]):
     root: Annotated[str, Field(max_length=50000, min_length=1, title="Content")]
 
@@ -90,6 +147,24 @@ class Title1(RootModel[str]):
 class EntryPatch(BaseModel):
     content: Annotated[Content | None, Field(title="Content")] = None
     title: Annotated[Title1 | None, Field(title="Title")] = None
+
+
+class EntryVersionOut(BaseModel):
+    """
+    One version of an entry: what its text was from `changed_at` on.
+    """
+
+    actor_id: Annotated[str | None, Field(title="Actor Id")]
+    actor_type: Annotated[
+        Literal["ai", "end_user", "admin", "system", "provider", "host_app"],
+        Field(title="ActorType"),
+    ]
+    changed_at: Annotated[AwareDatetime, Field(title="Changed At")]
+    content: Annotated[str, Field(title="Content")]
+    reason: Annotated[str | None, Field(title="Reason")]
+    status: Annotated[str, Field(title="Status")]
+    title: Annotated[str, Field(title="Title")]
+    version: Annotated[int, Field(title="Version")]
 
 
 class UserId3(RootModel[str]):
@@ -143,6 +218,11 @@ class FeedbackIn(BaseModel):
 
 class FlushResult(BaseModel):
     job_id: Annotated[UUID | None, Field(title="Job Id")]
+
+
+class GapOut(BaseModel):
+    count: Annotated[int, Field(title="Count")]
+    query: Annotated[str, Field(title="Query")]
 
 
 class Key(RootModel[str]):
@@ -205,6 +285,18 @@ class MemoryPatch(BaseModel):
     tags: Annotated[Tags | None, Field(title="Tags")] = None
 
 
+class NamespaceOut(BaseModel):
+    id: Annotated[UUID, Field(title="Id")]
+    kb_provider: Annotated[str, Field(title="Kb Provider")]
+    memory_provider: Annotated[str, Field(title="Memory Provider")]
+    name: Annotated[str, Field(title="Name")]
+    slug: Annotated[str, Field(title="Slug")]
+
+
+class NamespacePage(BaseModel):
+    items: Annotated[list[NamespaceOut], Field(title="Items")]
+
+
 class UserId5(RootModel[str]):
     root: Annotated[
         str,
@@ -222,6 +314,40 @@ class PromoteIn(BaseModel):
         UserId5 | None,
         Field(description="Who to ask (default: the memory's owner).", title="User Id"),
     ] = None
+
+
+class ProviderOut(BaseModel):
+    capabilities: Annotated[list[str], Field(title="Capabilities")]
+    detail: Annotated[str | None, Field(title="Detail")]
+    failed: Annotated[int, Field(title="Failed")]
+    healthy: Annotated[bool, Field(title="Healthy")]
+    last_reconciled_at: Annotated[
+        AwareDatetime | None, Field(title="Last Reconciled At")
+    ]
+    name: Annotated[str, Field(title="Name")]
+    pending: Annotated[int, Field(title="Pending")]
+    role: Annotated[Literal["memory", "kb"], Field(title="Role")]
+
+
+class ProviderPage(BaseModel):
+    items: Annotated[list[ProviderOut], Field(title="Items")]
+
+
+class RetrievalLogOut(BaseModel):
+    created_at: Annotated[AwareDatetime, Field(title="Created At")]
+    degraded: Annotated[list[str], Field(title="Degraded")]
+    gap: Annotated[bool, Field(title="Gap")]
+    hit_count: Annotated[int, Field(title="Hit Count")]
+    id: Annotated[UUID, Field(title="Id")]
+    latency_ms: Annotated[int | None, Field(title="Latency Ms")]
+    query: Annotated[str, Field(title="Query")]
+    top_score: Annotated[float | None, Field(title="Top Score")]
+    user_id: Annotated[str | None, Field(title="User Id")]
+
+
+class RetrievalLogPage(BaseModel):
+    items: Annotated[list[RetrievalLogOut], Field(title="Items")]
+    next_cursor: Annotated[UUID | None, Field(title="Next Cursor")]
 
 
 class RetrieveFilters(BaseModel):
@@ -285,9 +411,26 @@ class RetrievedItemOut(BaseModel):
     verified: Annotated[bool, Field(title="Verified")]
 
 
+class SettingsIn(BaseModel):
+    yaml: Annotated[str, Field(max_length=200000, title="Yaml")]
+
+
 class SourceRef(BaseModel):
     id: Annotated[str, Field(title="Id")]
     type: Annotated[str, Field(title="Type")]
+
+
+class StatsOut(BaseModel):
+    awaiting_user: Annotated[int, Field(title="Awaiting User")]
+    documents: Annotated[int, Field(title="Documents")]
+    failed_jobs: Annotated[int, Field(title="Failed Jobs")]
+    gaps: Annotated[list[GapOut], Field(title="Gaps")]
+    kb_entries: Annotated[dict[str, int], Field(title="Kb Entries")]
+    memories: Annotated[dict[str, int], Field(title="Memories")]
+    pending_reviews: Annotated[int, Field(title="Pending Reviews")]
+    retrieval_p95_ms: Annotated[int | None, Field(title="Retrieval P95 Ms")]
+    retrievals_7d: Annotated[list[DayCountOut], Field(title="Retrievals 7D")]
+    writes_7d: Annotated[list[DayCountOut], Field(title="Writes 7D")]
 
 
 class UserId6(RootModel[str]):
@@ -299,6 +442,18 @@ class SuggestionIn(BaseModel):
     session_id: Annotated[SessionId | None, Field(title="Session Id")] = None
     text: Annotated[str, Field(max_length=20000, min_length=1, title="Text")]
     user_id: Annotated[UserId6 | None, Field(title="User Id")] = None
+
+
+class TemplateOut(BaseModel):
+    body: Annotated[str, Field(title="Body")]
+    name: Annotated[str, Field(title="Name")]
+
+
+class UserSummaryOut(BaseModel):
+    last_active_at: Annotated[AwareDatetime, Field(title="Last Active At")]
+    memory_count: Annotated[int, Field(title="Memory Count")]
+    pinned_count: Annotated[int, Field(title="Pinned Count")]
+    user_id: Annotated[str, Field(title="User Id")]
 
 
 class UserTokenIn(BaseModel):
@@ -327,6 +482,67 @@ class ValidationError(BaseModel):
     loc: Annotated[list[str | int], Field(title="Location")]
     msg: Annotated[str, Field(title="Message")]
     type: Annotated[str, Field(title="Error Type")]
+
+
+class ActivityOut(BaseModel):
+    actor_id: Annotated[str | None, Field(title="Actor Id")]
+    actor_type: Annotated[
+        Literal["ai", "end_user", "admin", "system", "provider", "host_app"],
+        Field(title="ActorType"),
+    ]
+    after: Annotated[dict[str, Any] | None, Field(title="After")]
+    before: Annotated[dict[str, Any] | None, Field(title="Before")]
+    created_at: Annotated[AwareDatetime, Field(title="Created At")]
+    id: Annotated[UUID, Field(title="Id")]
+    object_id: Annotated[UUID, Field(title="Object Id")]
+    object_type: Annotated[
+        Literal[
+            "memory", "kb_entry", "kb_document", "kb_collection", "candidate", "episode"
+        ],
+        Field(title="ObjectType"),
+    ]
+    op: Annotated[Literal["create", "update", "transition"], Field(title="ChangeOp")]
+    reason: Annotated[str | None, Field(title="Reason")]
+
+
+class ActivityPage(BaseModel):
+    items: Annotated[list[ActivityOut], Field(title="Items")]
+    next_cursor: Annotated[UUID | None, Field(title="Next Cursor")]
+
+
+class AdminJobOut(BaseModel):
+    attempts: Annotated[int, Field(title="Attempts")]
+    created_at: Annotated[AwareDatetime, Field(title="Created At")]
+    error: Annotated[str | None, Field(title="Error")]
+    id: Annotated[UUID, Field(title="Id")]
+    max_attempts: Annotated[int, Field(title="Max Attempts")]
+    run_after: Annotated[AwareDatetime, Field(title="Run After")]
+    status: Annotated[
+        Literal["pending", "running", "done", "failed"], Field(title="JobStatus")
+    ]
+    type: Annotated[
+        Literal[
+            "sync.memory_upsert",
+            "sync.memory_remove",
+            "sync.kb_upsert",
+            "sync.kb_remove",
+            "memory.extract",
+            "memory.reconcile",
+            "kb.suggest",
+            "kb.doc_ingest",
+            "kb.doc_status",
+            "kb.doc_remove",
+            "kb.doc_fetch",
+            "webhook.deliver",
+        ],
+        Field(title="JobType"),
+    ]
+    updated_at: Annotated[AwareDatetime, Field(title="Updated At")]
+
+
+class AdminJobPage(BaseModel):
+    items: Annotated[list[AdminJobOut], Field(title="Items")]
+    next_cursor: Annotated[UUID | None, Field(title="Next Cursor")]
 
 
 class BodyUploadDocumentV1KbDocumentsPost(BaseModel):
@@ -371,6 +587,20 @@ class CandidateOut(BaseModel):
 class CandidatePage(BaseModel):
     items: Annotated[list[CandidateOut], Field(title="Items")]
     next_cursor: Annotated[UUID | None, Field(title="Next Cursor")]
+
+
+class CollectionCountsOut(BaseModel):
+    created_at: Annotated[AwareDatetime, Field(title="Created At")]
+    default_risk: Annotated[Literal["low", "medium", "high"], Field(title="RiskLevel")]
+    document_count: Annotated[int, Field(title="Document Count")]
+    entry_count: Annotated[int, Field(title="Entry Count")]
+    id: Annotated[UUID, Field(title="Id")]
+    name: Annotated[str, Field(title="Name")]
+    review_policy: Annotated[dict[str, str], Field(title="Review Policy")]
+
+
+class CollectionCountsPage(BaseModel):
+    items: Annotated[list[CollectionCountsOut], Field(title="Items")]
 
 
 class CollectionCreate(BaseModel):
@@ -484,6 +714,13 @@ class EntryCreate(BaseModel):
             title="User Id",
         ),
     ] = None
+
+
+class EntryHistoryOut(BaseModel):
+    entry_id: Annotated[UUID, Field(title="Entry Id")]
+    obsoleted_by: EntryLink | None
+    obsoletes: Annotated[list[EntryLink], Field(title="Obsoletes")]
+    versions: Annotated[list[EntryVersionOut], Field(title="Versions")]
 
 
 class EntryOut(BaseModel):
@@ -679,6 +916,51 @@ class RetrieveOut(BaseModel):
             title="Suggestions",
         ),
     ] = None
+
+
+class SettingsOut(BaseModel):
+    embedding_model: Annotated[str | None, Field(title="Embedding Model")]
+    templates: Annotated[list[TemplateOut], Field(title="Templates")]
+    yaml: Annotated[str, Field(title="Yaml")]
+
+
+class SyncRefOut(BaseModel):
+    attempts: Annotated[int, Field(title="Attempts")]
+    external_id: Annotated[str | None, Field(title="External Id")]
+    id: Annotated[UUID, Field(title="Id")]
+    last_error: Annotated[str | None, Field(title="Last Error")]
+    last_synced_at: Annotated[AwareDatetime | None, Field(title="Last Synced At")]
+    object_id: Annotated[UUID, Field(title="Object Id")]
+    object_type: Annotated[
+        Literal[
+            "memory", "kb_entry", "kb_document", "kb_collection", "candidate", "episode"
+        ],
+        Field(title="ObjectType"),
+    ]
+    provider: Annotated[str, Field(title="Provider")]
+    sync_status: Annotated[
+        Literal["pending", "synced", "failed", "deleting", "deleted"],
+        Field(title="SyncStatus"),
+    ]
+    synced_version: Annotated[int | None, Field(title="Synced Version")]
+
+
+class SyncRefPage(BaseModel):
+    items: Annotated[list[SyncRefOut], Field(title="Items")]
+    next_cursor: Annotated[UUID | None, Field(title="Next Cursor")]
+
+
+class UserDetailOut(BaseModel):
+    last_active_at: Annotated[AwareDatetime, Field(title="Last Active At")]
+    memory_count: Annotated[int, Field(title="Memory Count")]
+    pinned: Annotated[list[MemoryBrief], Field(title="Pinned")]
+    pinned_count: Annotated[int, Field(title="Pinned Count")]
+    profile: Annotated[dict[str, str], Field(title="Profile")]
+    user_id: Annotated[str, Field(title="User Id")]
+
+
+class UserPage(BaseModel):
+    items: Annotated[list[UserSummaryOut], Field(title="Items")]
 
 
 class Written(BaseModel):

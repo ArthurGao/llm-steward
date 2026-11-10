@@ -6,7 +6,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from llm_steward.schemas.bounds import Query, TopK
 from llm_steward.schemas.kb import CandidateOut
-from llm_steward.services.retrieval_service import Degraded
+from llm_steward.services.retrieval_service import Degraded, RetrieveRequest
 
 
 class RetrieveScope(BaseModel):
@@ -48,6 +48,26 @@ class RetrieveIn(BaseModel):
         le=100_000,
         description="Default: the namespace's (2000). Estimated tokens of the returned items.",
     )
+
+    def to_request(self, user_id: str | None, *, with_context: bool) -> RetrieveRequest:
+        """The service request (`/v1/retrieve` and the Admin's Playground build it the same)."""
+        return RetrieveRequest(
+            query=self.query,
+            user_id=user_id,
+            agent_id=self.scope.agent_id,
+            session_id=self.scope.session_id,
+            sources=tuple(dict.fromkeys(self.sources)),
+            collections=tuple(self.collections) if self.collections is not None else None,
+            top_k=self.top_k,
+            with_context=with_context,
+            as_of=self.as_of,
+            memory_types=tuple(self.memory_types) if self.memory_types is not None else None,
+            tags=tuple(self.filters.tags),
+            metadata=dict(self.filters.metadata),
+            include_pinned=self.include_pinned,
+            rerank=self.rerank,
+            token_budget=self.token_budget,
+        )
 
 
 class RetrievedItemOut(BaseModel):

@@ -363,6 +363,19 @@ class KbService:
             query = select(func.count()).where(*_open_cards(namespace_id, user_id, session_id))
             return int(await s.scalar(query) or 0)
 
+    async def suggestion_collection(self, namespace_id: uuid.UUID) -> uuid.UUID:
+        """The namespace's collection for suggested knowledge (`kb.suggest_collection`),
+        created on first use."""
+        async with self._sessions() as s:
+            name = (await read_config(s, namespace_id)).kb.suggest_collection
+        return await self._suggest_collection(namespace_id, name)
+
+    async def get_candidate(self, namespace_id: uuid.UUID, candidate_id: uuid.UUID) -> Candidate:
+        async with self._sessions() as s:
+            return await load_owned(
+                s, Candidate, namespace_id, candidate_id, "candidate", lock=False
+            )
+
     async def _suggest_collection(self, namespace_id: uuid.UUID, name: str) -> uuid.UUID:
         async with self._sessions() as s:
             found = await s.scalar(

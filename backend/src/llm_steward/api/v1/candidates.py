@@ -7,6 +7,8 @@ from llm_steward.api.deps import OwnReader, OwnWriter, ServicesDep
 from llm_steward.errors import Forbidden
 from llm_steward.models.enums import CandidateStage, CandidateStatus
 from llm_steward.schemas.kb import CandidateOut, CandidatePage, Decision, DecisionOut, EntryOut
+from llm_steward.services.container import Services
+from llm_steward.services.governance_service import Actor
 from llm_steward.services.kb_service import CandidateFilter
 from llm_steward.services.namespace_service import Principal
 from llm_steward.services.paging import MAX_PAGE
@@ -46,16 +48,25 @@ async def _decide(
         # The card's text is what the user was asked about: under their own token they may take
         # it as is, or keep an edit to themselves, but not rewrite what the team will read.
         raise Forbidden("a user token can keep an edited card only as a personal memory")
+    # an end user answering their card (a user token: only its own user), or the key itself
+    # (a reviewer with the review scope)
+    actor = principal.acting_for(body.user_id) if body.user_id else principal.actor
+    return await decide(services, principal.namespace_id, candidate_id, to, body, actor)
+
+
+async def decide(
+    services: Services,
+    namespace_id: uuid.UUID,
+    candidate_id: uuid.UUID,
+    to: CandidateStatus,
+    body: Decision,
+    actor: Actor,
+) -> DecisionOut:
+    """A decision as the API answers it (`/v1` and the Admin): the candidate, and the knowledge
+    it became."""
+    draft = body.draft.model_dump(exclude_none=True) if body.draft else None
     candidate, entry = await services.kb.decide(
-        principal.namespace_id,
-        candidate_id,
-        to,
-        # an end user answering their card (a user token: only its own user), or the key itself
-        # (a reviewer with the review scope)
-        principal.acting_for(body.user_id) if body.user_id else principal.actor,
-        draft=draft,
-        scope=body.scope,
-        note=body.note,
+        namespace_id, candidate_id, to, actor, draft=draft, scope=body.scope, note=body.note
     )
     out = DecisionOut.model_validate(candidate)
     out.entry = EntryOut.model_validate(entry) if entry else None

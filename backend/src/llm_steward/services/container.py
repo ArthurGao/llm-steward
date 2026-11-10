@@ -30,6 +30,7 @@ from llm_steward.providers.registry import (
     build_reranker,
     uses_native,
 )
+from llm_steward.services.admin_service import AdminService
 from llm_steward.services.document_service import DocumentService
 from llm_steward.services.episode_service import EpisodeService
 from llm_steward.services.extraction_service import ExtractionService, compensates
@@ -76,6 +77,9 @@ class Services:
     rate_limiter: RateLimiter
     webhooks: WebhookService
     outbound: Outbound
+    admin: AdminService
+    admin_token: str | None  # STEWARD_ADMIN_TOKEN; None: the Admin API is off
+    embedding_model: str | None  # what the native engine embeds with (the Admin shows it)
 
 
 def build_llm(settings: Settings, providers: Providers) -> LLM | None:
@@ -192,6 +196,9 @@ def build_services(
         rate_limiter=RateLimiter(settings.rate_limit_per_minute, namespace_rpm),
         webhooks=webhooks,
         outbound=out,
+        admin=AdminService(sessions),
+        admin_token=settings.admin_token.get_secret_value() if settings.admin_token else None,
+        embedding_model=settings.embedding_model if embedder is not None else None,
     )
 
 
