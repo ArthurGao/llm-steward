@@ -145,7 +145,10 @@ def build_services(
         embedder=embedder,
         reranker=reranker,
         governance=governance,
-        namespaces=NamespaceService(sessions),
+        namespaces=NamespaceService(
+            sessions,
+            settings.token_secret.get_secret_value() if settings.token_secret else None,
+        ),
         memories=MemoryService(sessions, governance, providers.memory),
         kb=kb,
         documents=DocumentService(

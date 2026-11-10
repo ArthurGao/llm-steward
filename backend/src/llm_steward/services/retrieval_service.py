@@ -26,7 +26,7 @@ from jinja2 import Environment, PackageLoader
 from sqlalchemy import Table, bindparam, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from llm_steward.errors import ProviderUnavailable, Unprocessable
+from llm_steward.errors import NotFound, ProviderUnavailable, Unprocessable
 from llm_steward.ids import uuid7
 from llm_steward.models import (
     ExternalRef,
@@ -306,14 +306,18 @@ class RetrievalService:
         helpful: bool,
         note: str | None,
         by: str | None,
+        user_id: str | None = None,
     ) -> None:
         """Feedback on one returned item (design §7): a row of its own (the note redacted) and,
         for a KB entry, its helpful / unhelpful count, at once (feedback is rare: no queue).
-        404: no such retrieval in this namespace; 422: the item was not one it returned."""
+        404: no such retrieval in this namespace (or, with `user_id`, not that user's own);
+        422: the item was not one it returned."""
         async with self._sessions() as s, s.begin():
             log_row = await load_owned(
                 s, RetrievalLog, namespace_id, retrieval_id, "retrieval", lock=False
             )
+            if user_id is not None and log_row.filters.get("user_id") != user_id:
+                raise NotFound(f"retrieval {retrieval_id} not found")
             returned = {r["id"]: r for r in log_row.results}
             row = returned.get(str(item_id))
             if row is None:

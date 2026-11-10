@@ -455,7 +455,7 @@ flowchart TB
 ### 鉴权
 
 - **业务调用**：`Authorization: Bearer stw_<prefix>_<secret>`。key 绑定 namespace，数据库只存 `sha256(secret)`。scopes 分 `read`、`write`、`review`、`admin`。
-- **终端用户身份**由宿主 app 在请求中传 `scope.user_id`，llm-steward 信任持 key 的服务端。如果要在浏览器里直接调用（例如确认卡片），宿主后端用 `POST /v1/tokens/user` 签发短期的 user token，该 token 只能操作这个 user 自己的 memory 和 candidate。
+- **终端用户身份**由宿主 app 在请求中传 `scope.user_id`，llm-steward 信任持 key 的服务端。如果要在浏览器里直接调用（例如确认卡片），宿主后端用 `POST /v1/tokens/user` 签发短期的 user token，该 token 只能操作这个 user 自己的 memory 和 candidate。实现（P5a）：HS256 JWT，密钥 `STEWARD_TOKEN_SECRET`（未配置则不签发也不接受）；claims `iss`/`aud`/`sub`=user_id/`ns`/`kid`=签发它的 key/`iat`/`exp`/`jti`；默认 15 分钟、最长 1 小时；每次使用都回查签发它的 key，key 吊销则 token 失效；权限最多是该 key 的 read/write，永远不带 review。只有声明了 `UserToken` 安全方案的路由接受它（OpenAPI 里可见，测试钉住清单）；这些路由把 `user_id` 固定为 token 的用户，按 id 访问别人的或共享的 memory 一律 404。
 - **Admin**：不做登录和账号（用户 2026-11-10 决定）：Admin 是内部使用的监控台，可能在本地运行、连接远程 backend。待 P6 定：远程部署时 `/admin/v1` 至少要一个静态 bearer（如 `STEWARD_ADMIN_TOKEN`），否则能连上端口的人就能读到所有 namespace 的记忆。
 - **审核者**：带 `review` scope 的 API key（P3a 起的做法，不再是过渡方案）。
 - 限流：按 key 做令牌桶。
@@ -470,7 +470,7 @@ flowchart TB
 |  | `GET /memories/{id}/history` | 变更历史和取代链 |
 |  | `POST /memories/{id}/promote` | 升级为 KB candidate |
 |  | `GET /profile?user_id=` | 该用户的所有 profile 与 pinned memory，以 key-value 形式返回 |
-|  | `DELETE /memories?user_id=` | 删除某用户的全部记忆（满足 GDPR 等合规要求，物理删除） |
+|  | `DELETE /memories?user_id=` | 删除某用户的全部记忆（满足 GDPR 等合规要求，物理删除）。P5a：只能用 API key；删除该用户的 memory 及其变更历史、episode、问该用户的或由其 episode 生成的待处理 candidate、检索日志；引擎里的副本由 outbox 按引擎 id 删除；已决定的 candidate 和由此形成的团队知识保留（KB 的审计记录） |
 | KB | `POST/GET /kb/collections` · `PATCH /kb/collections/{id}` | collection 管理与审核策略 |
 |  | `POST /kb/documents`（multipart 或 URL）· `GET /kb/documents/{id}` · `DELETE` | 文档导入与处理状态 |
 |  | `POST/GET /kb/entries` · `GET/PATCH/DELETE /kb/entries/{id}` | 知识条目；PATCH 会生成新版本 |
@@ -916,6 +916,10 @@ llm-steward/
      - `UpdateKbEntry`（仅内部和测试用，REST / MCP 都不构造它，有测试钉住）改为经过筛查：个人信息按策略处理，条目的风险等级随新文字只升不降；生效中的条目改成 high 风险文字必须是 reviewer，否则拒绝（这条路径没有审核队列可等）。两条编辑路径共用同一个筛查函数；直接生效的 `ReviseKbEntry`（reviewer 或自动路由）也把筛查后的风险记到条目上（之前不记）。
      - 失败任务的人工重试做成 CLI：`steward jobs failed [--ns]`、`steward jobs retry <id>… | --all-failed`（重置尝试次数、立即可领取；只动 `failed` 的任务）。抽取任务按 payload 里的 episode 重跑，P2 留下的"episode 已标记处理"问题由此解决。
      - 许可证 Apache-2.0（根目录 `LICENSE`，pyproject `license`）；v1 不做 TS SDK。
+   - P5a user token 与按用户隔离（2026-11-10）：
+     - `POST /v1/tokens/user`（API key + write）；token 的细节见第 7 节鉴权。`/v1/profile` 的 `user_id` 改为可选（user token 下默认是自己）。
+     - 用户 token 可用的路由：memories 的增、查、改、删、历史，profile，retrieve 与反馈，candidates 列表与 accept/reject，suggestions；其余（episodes、KB、collections、promote、tokens、按用户删除）一律 403。
+     - 按用户删除做成治理操作 `EraseUser`（规则 6 的例外，不写 change_log）。
 7. **P6 Admin 前端**
    - [ ] 布局、namespace 切换器、生成的客户端（不做登录；远程访问的保护方式在 P6 计划时定）
    - [ ] 按顺序实现：Memories → Knowledge Base → Review Queue → Providers → Dashboard → Playground → Users → Activity → Jobs → Settings

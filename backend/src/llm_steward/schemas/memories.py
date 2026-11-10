@@ -137,3 +137,13 @@ class ProfileOut(BaseModel):
     user_id: str
     values: dict[str, str]  # profile key -> current value
     pinned: list[MemoryBrief]
+
+
+class ErasedOut(BaseModel):
+    """What one user's erasure removed (counts only)."""
+
+    user_id: str
+    memories: int
+    episodes: int
+    candidates: int
+    retrieval_logs: int

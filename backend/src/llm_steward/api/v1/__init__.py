@@ -8,6 +8,7 @@ from llm_steward.api.v1 import (
     profile,
     retrieve,
     suggestions,
+    tokens,
 )
 
 router = APIRouter(prefix="/v1")
@@ -18,3 +19,4 @@ router.include_router(retrieve.router)
 router.include_router(kb.router)
 router.include_router(candidates.router)
 router.include_router(suggestions.router)
+router.include_router(tokens.router)

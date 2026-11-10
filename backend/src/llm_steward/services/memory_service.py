@@ -14,6 +14,8 @@ from llm_steward.services.governance_service import (
     Actor,
     CreateMemory,
     DeleteMemory,
+    Erased,
+    EraseUser,
     GovernanceService,
     PatchMemory,
     load_owned,
@@ -73,9 +75,13 @@ class MemoryService:
         memory: Memory = await self._governance.apply(op, actor)
         return MemoryView(memory, SyncStatus.PENDING)  # its ref was opened as pending
 
-    async def get(self, namespace_id: uuid.UUID, memory_id: uuid.UUID) -> MemoryView:
+    async def get(
+        self, namespace_id: uuid.UUID, memory_id: uuid.UUID, *, owner: str | None = None
+    ) -> MemoryView:
         async with self._sessions() as s:
-            memory = await load_owned(s, Memory, namespace_id, memory_id, "memory", lock=False)
+            memory = await load_owned(
+                s, Memory, namespace_id, memory_id, "memory", lock=False, owner=owner
+            )
             statuses = await self._sync_statuses(s, [memory.id])
         return MemoryView(memory, statuses.get(memory.id, SyncStatus.PENDING))
 
@@ -123,9 +129,13 @@ class MemoryService:
             if i in found
         ]
 
-    async def history(self, namespace_id: uuid.UUID, memory_id: uuid.UUID) -> MemoryHistory:
+    async def history(
+        self, namespace_id: uuid.UUID, memory_id: uuid.UUID, *, owner: str | None = None
+    ) -> MemoryHistory:
         async with self._sessions() as s:
-            memory = await load_owned(s, Memory, namespace_id, memory_id, "memory", lock=False)
+            memory = await load_owned(
+                s, Memory, namespace_id, memory_id, "memory", lock=False, owner=owner
+            )
             changes = list(
                 await s.scalars(
                     select(ChangeLog)
@@ -171,10 +181,21 @@ class MemoryService:
         return await self.get(memory.namespace_id, memory.id)
 
     async def delete(
-        self, namespace_id: uuid.UUID, memory_id: uuid.UUID, *, actor: Actor
+        self,
+        namespace_id: uuid.UUID,
+        memory_id: uuid.UUID,
+        *,
+        actor: Actor,
+        owner: str | None = None,
     ) -> MemoryView:
-        memory: Memory = await self._governance.apply(DeleteMemory(namespace_id, memory_id), actor)
+        op = DeleteMemory(namespace_id, memory_id, owner=owner)
+        memory: Memory = await self._governance.apply(op, actor)
         return MemoryView(memory, SyncStatus.DELETING)  # its ref was marked in the same write
+
+    async def erase_user(self, namespace_id: uuid.UUID, user_id: str, *, actor: Actor) -> Erased:
+        """Everything held about one end user, deleted (see `EraseUser`)."""
+        erased: Erased = await self._governance.apply(EraseUser(namespace_id, user_id), actor)
+        return erased
 
     async def _sync_statuses(
         self, s: AsyncSession, ids: list[uuid.UUID]

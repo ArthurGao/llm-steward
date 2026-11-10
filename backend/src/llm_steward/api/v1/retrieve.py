@@ -3,7 +3,7 @@ import uuid
 
 from fastapi import APIRouter
 
-from llm_steward.api.deps import Reader, ServicesDep, Writer
+from llm_steward.api.deps import OwnReader, OwnWriter, ServicesDep
 from llm_steward.providers.base import Scope
 from llm_steward.schemas.kb import CandidateOut
 from llm_steward.schemas.retrieve import FeedbackIn, RetrievedItemOut, RetrieveIn, RetrieveOut
@@ -13,14 +13,15 @@ router = APIRouter(tags=["retrieval"])
 
 
 @router.post("/retrieve")
-async def retrieve(body: RetrieveIn, principal: Reader, services: ServicesDep) -> RetrieveOut:
+async def retrieve(body: RetrieveIn, principal: OwnReader, services: ServicesDep) -> RetrieveOut:
     """Joint search over memory and KB: 200 with `degraded` if a source failed, 503 if all did."""
-    scope = Scope(principal.namespace_id, body.scope.user_id, None, body.scope.session_id)
+    user_id = principal.pin_user(body.scope.user_id)
+    scope = Scope(principal.namespace_id, user_id, None, body.scope.session_id)
     search = services.retrieval.retrieve(
         principal.namespace_id,
         RetrieveRequest(
             query=body.query,
-            user_id=body.scope.user_id,
+            user_id=user_id,
             agent_id=body.scope.agent_id,
             session_id=body.scope.session_id,
             sources=tuple(dict.fromkeys(body.sources)),
@@ -48,7 +49,7 @@ async def retrieve(body: RetrieveIn, principal: Reader, services: ServicesDep) -
 
 @router.post("/retrieve/{retrieval_id}/feedback", status_code=204)
 async def feedback(
-    retrieval_id: uuid.UUID, body: FeedbackIn, principal: Writer, services: ServicesDep
+    retrieval_id: uuid.UUID, body: FeedbackIn, principal: OwnWriter, services: ServicesDep
 ) -> None:
     """Was a returned item helpful? Recorded per answer; KB entries count it."""
     await services.retrieval.feedback(
@@ -58,4 +59,5 @@ async def feedback(
         helpful=body.helpful,
         note=body.note,
         by=principal.actor.id,
+        user_id=principal.user_id,
     )

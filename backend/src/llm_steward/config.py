@@ -2,7 +2,7 @@
 
 from typing import Literal
 
-from pydantic import Field, field_validator
+from pydantic import Field, SecretStr, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 MemoryProviderName = Literal["mem0", "native"]
@@ -67,6 +67,10 @@ class Settings(BaseSettings):
     # refused. Its own budget: a cross-encoder over 30 items takes about a second on a laptop.
     rerank_model: str | None = None
     rerank_timeout_ms: int = Field(default=3000, gt=0)
+    # User tokens (design §7, P5): `POST /v1/tokens/user` signs short-lived HS256 tokens with
+    # this secret (at least 32 bytes, e.g. `openssl rand -hex 32`). Unset: none issued or accepted.
+    token_secret: SecretStr | None = Field(default=None, min_length=32)
+
     # Run the outbox worker inside the API process (single-process deployments); otherwise run
     # `steward worker` separately.
     run_worker: bool = True

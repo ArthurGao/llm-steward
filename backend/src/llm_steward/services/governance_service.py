@@ -16,7 +16,7 @@ from datetime import datetime, timedelta
 from enum import Enum
 from typing import Any, Literal, cast
 
-from sqlalchemy import delete, select
+from sqlalchemy import delete, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from llm_steward.errors import Conflict, Forbidden, NotFound, Unprocessable
@@ -31,6 +31,7 @@ from llm_steward.models import (
     KbEntry,
     Memory,
     Namespace,
+    RetrievalLog,
 )
 from llm_steward.models.base import Base, utcnow
 from llm_steward.models.enums import (
@@ -191,6 +192,7 @@ class PatchMemory:
     confidence: float | None = None
     tags: list[str] | None = None
     meta: dict[str, Any] | None = None
+    owner: str | None = None  # a user token's user: only their own memory
 
 
 @dataclass(frozen=True)
@@ -208,6 +210,7 @@ class DeleteMemory:
     namespace_id: uuid.UUID
     memory_id: uuid.UUID
     reason: str | None = None
+    owner: str | None = None  # a user token's user: only their own memory
 
 
 @dataclass(frozen=True)
@@ -351,6 +354,26 @@ class DecideCandidate:
     risk_level: RiskLevel | None = None  # the decider's edit labelled (KB LLM): a floor
 
 
+@dataclass(frozen=True)
+class EraseUser:
+    """Per-user erasure (design §7; the one exception to rule 6's "invalidate, never delete"):
+    the user's memories and those memories' history, their episodes, the open cards asked of
+    them or drafted from their episodes, and their retrieval logs are deleted. Engine copies are
+    removed by the outbox (each job carries its engine id, since the rows and refs go now).
+    Decided candidates and the team knowledge they became stay: they are the KB's audit trail."""
+
+    namespace_id: uuid.UUID
+    user_id: str
+
+
+@dataclass(frozen=True)
+class Erased:
+    memories: int
+    episodes: int
+    candidates: int
+    retrieval_logs: int
+
+
 Operation = (
     CreateMemory
     | RecordProviderMemory
@@ -369,6 +392,7 @@ Operation = (
     | RetireKbDocument
     | CreateCandidate
     | DecideCandidate
+    | EraseUser
 )
 
 
@@ -437,6 +461,8 @@ class GovernanceService:
                 return await self._create_episode(s, op, actor)
             case DeleteMemory():
                 return await self._delete_memory(s, op, actor)
+            case EraseUser():
+                return await self._erase_user(s, op, actor)
             case CreateCollection():
                 return await self._create_collection(s, op, actor)
             case UpdateCollection():
@@ -561,7 +587,9 @@ class GovernanceService:
         self._log(s, ObjectType.MEMORY, memory, ChangeOp.TRANSITION, before, actor, reason)
 
     async def _patch_memory(self, s: AsyncSession, op: PatchMemory, actor: Actor) -> Memory:
-        memory = await load_owned(s, Memory, op.namespace_id, op.memory_id, "memory")
+        memory = await load_owned(
+            s, Memory, op.namespace_id, op.memory_id, "memory", owner=op.owner
+        )
         if memory.status != MemoryStatus.ACTIVE:
             raise Conflict(f"a {memory.status.value!r} memory cannot be edited")
         before = snapshot(memory)
@@ -588,7 +616,9 @@ class GovernanceService:
         return episode
 
     async def _delete_memory(self, s: AsyncSession, op: DeleteMemory, actor: Actor) -> Memory:
-        memory = await load_owned(s, Memory, op.namespace_id, op.memory_id, "memory")
+        memory = await load_owned(
+            s, Memory, op.namespace_id, op.memory_id, "memory", owner=op.owner
+        )
         before = snapshot(memory)
         _check(MEMORY_TRANSITIONS, "memory", memory.status, MemoryStatus.DELETED)
         memory.status = MemoryStatus.DELETED
@@ -598,6 +628,81 @@ class GovernanceService:
         await _mark_ref(s, ObjectType.MEMORY, memory, self._memory_provider, SyncStatus.DELETING)
         enqueue(s, op.namespace_id, JobType.MEMORY_REMOVE, {"memory_id": str(memory.id)})
         return memory
+
+    async def _erase_user(self, s: AsyncSession, op: EraseUser, actor: Actor) -> Erased:
+        if actor.type == ActorType.END_USER:
+            raise Forbidden("erasure is requested by the host app, not from a user token")
+        ns, user = op.namespace_id, op.user_id
+        # Subqueries, not id lists: a heavy user's ids would exceed SQLite's bound-parameter cap.
+        mine = (Memory.namespace_id == ns, Memory.user_id == user)
+        memory_ids = select(Memory.id).where(*mine)
+        episode_ids = select(Episode.id).where(Episode.namespace_id == ns, Episode.user_id == user)
+        open_cards = (
+            Candidate.namespace_id == ns,
+            Candidate.status == CandidateStatus.PENDING,
+            or_(Candidate.requested_for_user == user, Candidate.source_episode_id.in_(episode_ids)),
+        )
+        copies = await s.execute(
+            delete(ExternalRef)
+            .where(
+                ExternalRef.namespace_id == ns,
+                ExternalRef.object_type == ObjectType.MEMORY,
+                ExternalRef.object_id.in_(memory_ids),
+            )
+            .returning(ExternalRef.object_id, ExternalRef.external_id, ExternalRef.sync_status)
+        )
+        for memory_id, external_id, status in copies.all():
+            if external_id is not None and status != SyncStatus.DELETED:  # an engine copy
+                payload = {"memory_id": str(memory_id), "external_id": external_id}
+                enqueue(s, ns, JobType.MEMORY_REMOVE, payload)
+        await s.execute(
+            delete(ChangeLog).where(
+                ChangeLog.namespace_id == ns,
+                or_(
+                    ChangeLog.object_id.in_(memory_ids),
+                    ChangeLog.object_id.in_(episode_ids),
+                    ChangeLog.object_id.in_(select(Candidate.id).where(*open_cards)),
+                ),
+            )
+        )
+        cards = await s.execute(delete(Candidate).where(*open_cards).returning(Candidate.id))
+        # what stays must not point at what goes
+        await s.execute(
+            update(Memory)
+            .where(
+                Memory.namespace_id == ns,
+                Memory.id.not_in(memory_ids),
+                Memory.superseded_by.in_(memory_ids),
+            )
+            .values(superseded_by=None)
+        )
+        for model in (Memory, Candidate):
+            columns: Any = model
+            await s.execute(
+                update(model)
+                .where(columns.namespace_id == ns, columns.source_episode_id.in_(episode_ids))
+                .values(source_episode_id=None)
+            )
+        memories = await s.execute(delete(Memory).where(*mine).returning(Memory.id))
+        episodes = await s.execute(
+            delete(Episode)
+            .where(Episode.namespace_id == ns, Episode.user_id == user)
+            .returning(Episode.id)
+        )
+        logs = await s.execute(
+            delete(RetrievalLog)
+            .where(
+                RetrievalLog.namespace_id == ns,
+                RetrievalLog.filters["user_id"].as_string() == user,
+            )
+            .returning(RetrievalLog.id)
+        )
+        return Erased(
+            memories=len(memories.all()),
+            episodes=len(episodes.all()),
+            candidates=len(cards.all()),
+            retrieval_logs=len(logs.all()),
+        )
 
     # knowledge base
 
@@ -1190,11 +1295,16 @@ async def load_owned[T: Base](
     kind: str,
     *,
     lock: bool = True,
+    owner: str | None = None,
 ) -> T:
-    """Load by id within the namespace; another namespace's id is indistinguishable from none."""
+    """Load by id within the namespace; another namespace's id is indistinguishable from none.
+    `owner` (a user token's user): also only that user's own row, so another user's, or a shared
+    one, is indistinguishable from none too."""
     # `model` is any governed table; they all have `id` and `namespace_id` (not expressible on T).
     columns: Any = model
     query: Any = select(model).where(columns.id == object_id, columns.namespace_id == namespace_id)
+    if owner is not None:
+        query = query.where(columns.user_id == owner)
     if lock:
         query = query.with_for_update()
     obj: T | None = await s.scalar(query)

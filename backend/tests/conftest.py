@@ -139,6 +139,9 @@ def cli_db(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> str:
     return url
 
 
+TEST_TOKEN_SECRET = "test-only-user-token-secret-0123456789abcdef"
+
+
 def test_settings(database_url: str, **overrides: object) -> "Settings":
     """Validated Settings, then pointed at TEST_SCHEMA — which `Settings` itself rejects on purpose,
     so only tests can do this, by copying past validation."""
@@ -149,6 +152,7 @@ def test_settings(database_url: str, **overrides: object) -> "Settings":
         "memory_provider": "native",
         "kb_provider": "native",
         "run_worker": False,
+        "token_secret": TEST_TOKEN_SECRET,
         **overrides,
     }
     settings = Settings(_env_file=None, **values)  # type: ignore[call-arg, arg-type]

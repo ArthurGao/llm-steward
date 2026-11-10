@@ -3,7 +3,7 @@ from typing import Annotated
 
 from fastapi import APIRouter, Query
 
-from llm_steward.api.deps import Reader, ServicesDep, Writer
+from llm_steward.api.deps import OwnReader, OwnWriter, ServicesDep
 from llm_steward.models.enums import CandidateStage, CandidateStatus
 from llm_steward.schemas.kb import CandidateOut, CandidatePage, Decision, DecisionOut, EntryOut
 from llm_steward.services.kb_service import CandidateFilter
@@ -15,7 +15,7 @@ router = APIRouter(prefix="/candidates", tags=["candidates"])
 
 @router.get("")
 async def list_candidates(
-    principal: Reader,
+    principal: OwnReader,
     services: ServicesDep,
     stage: CandidateStage | None = None,
     status: CandidateStatus | None = CandidateStatus.PENDING,
@@ -25,7 +25,7 @@ async def list_candidates(
 ) -> CandidatePage:
     rows, next_cursor = await services.kb.list_candidates(
         principal.namespace_id,
-        CandidateFilter(stage, status, user_id),
+        CandidateFilter(stage, status, principal.pin_user(user_id)),
         cursor=cursor,
         limit=limit,
     )
@@ -45,7 +45,8 @@ async def _decide(
         principal.namespace_id,
         candidate_id,
         to,
-        # an end user answering their card, or the key itself (a reviewer with the review scope)
+        # an end user answering their card (a user token: only its own user), or the key itself
+        # (a reviewer with the review scope)
         principal.acting_for(body.user_id) if body.user_id else principal.actor,
         draft=draft,
         scope=body.scope,
@@ -58,7 +59,10 @@ async def _decide(
 
 @router.post("/{candidate_id}/accept")
 async def accept(
-    candidate_id: uuid.UUID, principal: Writer, services: ServicesDep, body: Decision | None = None
+    candidate_id: uuid.UUID,
+    principal: OwnWriter,
+    services: ServicesDep,
+    body: Decision | None = None,
 ) -> DecisionOut:
     return await _decide(
         candidate_id, CandidateStatus.ACCEPTED, body or Decision(), principal, services
@@ -67,7 +71,10 @@ async def accept(
 
 @router.post("/{candidate_id}/reject")
 async def reject(
-    candidate_id: uuid.UUID, principal: Writer, services: ServicesDep, body: Decision | None = None
+    candidate_id: uuid.UUID,
+    principal: OwnWriter,
+    services: ServicesDep,
+    body: Decision | None = None,
 ) -> DecisionOut:
     return await _decide(
         candidate_id, CandidateStatus.REJECTED, body or Decision(), principal, services
