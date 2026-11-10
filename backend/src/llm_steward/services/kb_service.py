@@ -30,6 +30,7 @@ from llm_steward.models.enums import (
     MemoryStatus,
     RiskLevel,
 )
+from llm_steward.namespace_config import read_config
 from llm_steward.pipeline.kb_llm import (
     DraftReply,
     draft_entry,
@@ -49,7 +50,6 @@ from llm_steward.services.governance_service import (
     SubmitKbEntry,
     load_owned,
     max_risk,
-    namespace_config,
 )
 from llm_steward.services.job_queue import ClaimedJob, enqueue
 from llm_steward.services.paging import page
@@ -284,7 +284,7 @@ class KbService:
         it can lose those suggestions instead, which only costs a card nobody saw."""
         llm = self._drafting()
         async with self._sessions() as s:
-            config = (await namespace_config(s, namespace_id)).kb
+            config = (await read_config(s, namespace_id)).kb
             memories = [
                 m
                 for m in await s.scalars(

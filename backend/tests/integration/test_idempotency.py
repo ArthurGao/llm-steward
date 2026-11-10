@@ -11,7 +11,7 @@ from sqlalchemy import select, update
 from llm_steward.errors import ProviderUnavailable
 from llm_steward.models import ChangeLog, IdempotencyKey, Job, Memory
 from llm_steward.models.base import utcnow
-from tests.conftest import AppClient, Tenant, running_app
+from tests.conftest import AppClient, Tenant, bearer, running_app
 
 H = dict[str, str]
 
@@ -47,9 +47,7 @@ def test_the_same_key_for_a_different_request_is_refused(app_client: AppClient) 
 
 def test_a_key_still_in_flight_is_a_conflict(app_client: AppClient) -> None:
     h, ns = app_client.new_tenant("acme")
-    principal = app_client.call(
-        app_client.services.namespaces.authenticate, h["Authorization"].removeprefix("Bearer ")
-    )
+    principal = app_client.call(app_client.services.namespaces.authenticate, bearer(h))
     assert principal is not None
     from llm_steward.services.idempotency_service import principal_ref, request_hash
 
@@ -103,10 +101,7 @@ def test_a_rate_limited_attempt_is_not_the_answer(
 
 def test_two_users_tokens_from_one_key_have_their_own_keys(app_client: AppClient) -> None:
     h, _ = app_client.new_tenant("acme")
-    tokens = []
-    for user in ("u1", "u2"):
-        r = app_client.http.post("/v1/tokens/user", json={"user_id": user}, headers=h)
-        tokens.append({"Authorization": f"Bearer {r.json()['token']}"})
+    tokens = [app_client.user_token(h, user) for user in ("u1", "u2")]
     body = {"content": "likes green tea"}
     first, second = (
         app_client.http.post("/v1/memories", json=body, headers={**t, "Idempotency-Key": "k-1"})

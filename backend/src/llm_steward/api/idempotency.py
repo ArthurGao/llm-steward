@@ -16,24 +16,19 @@ from starlette.responses import Response
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
 from llm_steward.api.deps import principal_from_scope
-from llm_steward.api.errors import http_problem, problem
-from llm_steward.errors import StewardError
+from llm_steward.api.errors import domain_problem, http_problem, problem
+from llm_steward.errors import StewardError, TooLarge
+from llm_steward.outbound import retryable
 from llm_steward.services.container import Services
 from llm_steward.services.idempotency_service import StoredResponse, principal_ref, request_hash
 
 WRITE_METHODS = frozenset({"POST", "PUT", "PATCH", "DELETE"})
 HEADER = "idempotency-key"
 _VALID_KEY = re.compile(r"[\x21-\x7e]{1,200}")  # visible ASCII, like a UUID or a ULID
-# Not answers to the request but "try again": the key is released, as for a server error.
-_RETRYABLE = frozenset({408, 429})
 # Never stored: a minted user token would sit in the table as a live credential, and a retrieval's
 # answer is memory content. Neither needs replaying (minting twice is harmless; reads write
 # nothing), so the header is ignored on them.
 NOT_STORED = frozenset({"/v1/tokens/user", "/v1/retrieve"})
-
-
-class _TooLarge(Exception):
-    pass
 
 
 class IdempotencyMiddleware:
@@ -70,8 +65,8 @@ class IdempotencyMiddleware:
             return
         try:
             body = await _read_body(receive, self.max_body)
-        except _TooLarge:
-            await problem(413, "too_large", "request body too large")(scope, receive, send)
+        except TooLarge as exc:
+            await domain_problem(exc)(scope, receive, send)
             return
         digest = request_hash(
             scope["method"],
@@ -85,7 +80,7 @@ class IdempotencyMiddleware:
                 principal.namespace_id, principal_ref(principal), key, digest
             )
         except StewardError as exc:
-            await problem(exc.status, exc.code, exc.detail)(scope, receive, send)
+            await domain_problem(exc)(scope, receive, send)
             return
         if isinstance(outcome, StoredResponse):
             replay = Response(
@@ -129,7 +124,8 @@ class IdempotencyMiddleware:
         except BaseException:
             await services.idempotency.release(reservation)
             raise
-        if status is None or status >= 500 or status in _RETRYABLE:
+        # "try again" (5xx, 408, 429) is not the request's answer: release, as for a crash
+        if status is None or retryable(status):
             await services.idempotency.release(reservation)
         else:
             await services.idempotency.complete(reservation, status, content_type, b"".join(chunks))
@@ -145,7 +141,7 @@ async def _read_body(receive: Receive, limit: int) -> bytes:
         chunk = message.get("body", b"")
         size += len(chunk)
         if size > limit:
-            raise _TooLarge
+            raise TooLarge("request body too large")
         parts.append(chunk)
         if not message.get("more_body", False):
             break

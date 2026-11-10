@@ -25,7 +25,7 @@ from urllib.parse import SplitResult, urljoin, urlsplit, urlunsplit
 
 import httpx2
 
-from llm_steward.errors import StewardError, TooLarge, Unprocessable
+from llm_steward.errors import TooLarge, Unprocessable
 
 Resolver = Callable[[str, int], Awaitable[list[str]]]
 REDIRECTS = 3
@@ -41,14 +41,6 @@ class UrlNotAllowed(Unprocessable):
     def __init__(self, detail: str, reason: UrlRefusal) -> None:
         super().__init__(detail)
         self.reason = reason  # for callers that record why, without echoing the URL
-
-
-class TryLater(StewardError):
-    """The remote end could not answer now (a `retryable` status or a network error): the job
-    backs off and retries."""
-
-    status = 502
-    code = "remote_unavailable"
 
 
 def retryable(status: int) -> bool:
@@ -202,3 +194,41 @@ async def request(
                     raise TooLarge(f"the response is over the {max_bytes} byte limit")
             return Fetched(response.status_code, dict(response.headers), bytes(body), url)
     raise UrlNotAllowed(f"more than {REDIRECTS} redirects", "redirects")
+
+
+class Outbound:
+    """The one way out to user-supplied URLs, shared by its callers (webhooks, document URLs):
+    the guard's settings in one place, and one seam where tests put a fake network."""
+
+    def __init__(self, *, allow_private: bool = False) -> None:
+        self.allow_private = allow_private  # STEWARD_ALLOW_PRIVATE_URLS
+        self.transport: httpx2.AsyncBaseTransport | None = None
+        self.resolve: Resolver = system_resolve
+
+    def check_form(self, url: str) -> SplitResult:
+        return check_form(url, allow_private=self.allow_private)
+
+    async def request(
+        self,
+        method: str,
+        url: str,
+        *,
+        max_bytes: int,
+        content: bytes | None = None,
+        headers: Mapping[str, str] | None = None,
+        follow_redirects: bool = False,
+        allowlist: tuple[str, ...] = (),
+    ) -> Fetched:
+        async with client(self.transport) as http:
+            return await request(
+                http,
+                method,
+                url,
+                max_bytes=max_bytes,
+                content=content,
+                headers=headers,
+                follow_redirects=follow_redirects,
+                allow_private=self.allow_private,
+                allowlist=allowlist,
+                resolve=self.resolve,
+            )

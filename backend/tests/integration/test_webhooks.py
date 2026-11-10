@@ -13,7 +13,7 @@ import pytest
 
 from llm_steward.models.enums import JobStatus, JobType, KbStatus
 from llm_steward.services.governance_service import TransitionKbEntry
-from tests.conftest import AppClient, Tenant, kb_entry_op, public_dns
+from tests.conftest import AppClient, Tenant, fake_network, kb_entry_op
 
 SECRET = "whsec-test-0123456789"
 HOOK = "https://hooks.example.com/steward"
@@ -38,9 +38,7 @@ class Receiver:
 def hooked(app_client: AppClient, monkeypatch: pytest.MonkeyPatch) -> tuple[Tenant, Receiver]:
     monkeypatch.setenv("STEWARD_WEBHOOK_SECRET_ACME", SECRET)
     receiver = Receiver()
-    webhooks = app_client.services.webhooks
-    monkeypatch.setattr(webhooks, "transport", httpx2.MockTransport(receiver))
-    monkeypatch.setattr(webhooks, "resolve", public_dns)
+    fake_network(app_client, monkeypatch, receiver)
     t = Tenant(app_client, "acme")
     hook = {
         "url": HOOK,
@@ -124,9 +122,7 @@ def test_a_parsed_document_is_announced(hooked: tuple[Tenant, Receiver]) -> None
     collection = t.collection(default_risk="low")
     uploaded = t.upload(collection, b"# Refunds\n\nRefunds take 5 days.")
     assert uploaded.status_code == 202, uploaded.text
-    t.c.drain()
-    t.c.make_jobs_due()
-    t.c.drain()
+    t.c.settle(1)
     [event] = receiver.events()
     assert event["type"] == "document.ready"
     document = uploaded.json()["document"]
@@ -152,9 +148,7 @@ def test_delivery_retries_only_what_retrying_can_fix(
     t, receiver = hooked
     receiver.answers = list(answers)
     _high_risk_entry(t, t.collection())
-    t.c.drain()
-    t.c.make_jobs_due()
-    t.c.drain()
+    t.c.settle(1)
     [job] = t.c.jobs(JobType.WEBHOOK_DELIVER)
     assert (job.status, len(receiver.got)) == (status, tries)
 
@@ -179,7 +173,7 @@ def test_an_internal_address_is_never_called(
     async def internal_dns(host: str, port: int) -> list[str]:
         return ["169.254.169.254"]
 
-    monkeypatch.setattr(t.c.services.webhooks, "resolve", internal_dns)
+    monkeypatch.setattr(t.c.services.outbound, "resolve", internal_dns)
     _high_risk_entry(t, t.collection())
     t.c.drain()
     [job] = t.c.jobs(JobType.WEBHOOK_DELIVER)

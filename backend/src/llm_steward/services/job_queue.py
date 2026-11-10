@@ -79,6 +79,13 @@ class PermanentFailure(StewardError):
     code = "permanent_failure"
 
 
+class TryLater(StewardError):
+    """The remote end could not answer now (e.g. a 503 or a network error): an ordinary failure,
+    backed off and retried; named so handlers say which of the two outcomes they mean."""
+
+    code = "try_later"
+
+
 class JobQueue:
     def __init__(
         self,

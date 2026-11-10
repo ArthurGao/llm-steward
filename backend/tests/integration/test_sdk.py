@@ -21,16 +21,12 @@ from llm_steward_client import (
 
 from llm_steward.errors import ProviderUnavailable
 from llm_steward.models import Memory
-from tests.conftest import AppClient, Tenant, running_app
+from tests.conftest import AppClient, Tenant, bearer, running_app
 from tests.fakes.embedder import FakeEmbedder
 from tests.fakes.llm import FakeLLM
 from tests.fakes.memory_provider import FakeMemoryProvider
 
 SPEC = Path(__file__).resolve().parents[3] / "sdk" / "python" / "openapi.json"
-
-
-def _key(headers: dict[str, str]) -> str:
-    return headers["Authorization"].removeprefix("Bearer ")
 
 
 @pytest.fixture
@@ -43,7 +39,7 @@ def pipeline(migrated_url: str) -> Iterator[AppClient]:
 def test_the_readme_flow(pipeline: AppClient) -> None:
     c = pipeline
     t = Tenant(c, "acme")
-    st = Steward(api_key=_key(t.host), http_client=c.http)
+    st = Steward(api_key=bearer(t.host), http_client=c.http)
     res = st.episodes.add(
         messages=[{"role": "user", "content": "我住上海"}], user_id="u_123", mode="sync"
     )
@@ -53,7 +49,9 @@ def test_the_readme_flow(pipeline: AppClient) -> None:
     ctx = st.retrieve("我住哪里 上海", user_id="u_123", format="context")
     assert ctx.context is not None and "我住上海" in ctx.context
 
-    collection = Steward(api_key=_key(t.reviewer), http_client=c.http).kb.collections.create("faq")
+    collection = Steward(api_key=bearer(t.reviewer), http_client=c.http).kb.collections.create(
+        "faq"
+    )
     written = st.kb.entries.create(
         collection.id, "Gift wrap", "Gift wrapping is free", risk_level="medium", user_id="u_123"
     )
@@ -64,7 +62,7 @@ def test_the_readme_flow(pipeline: AppClient) -> None:
 
 def test_errors_are_typed_and_a_user_token_reaches_only_its_user(app_client: AppClient) -> None:
     h, _ = app_client.new_tenant("acme")
-    st = Steward(api_key=_key(h), http_client=app_client.http)
+    st = Steward(api_key=bearer(h), http_client=app_client.http)
     mine = st.memories.create("likes green tea", user_id="u1")
     st.memories.create("likes black coffee", user_id="u2")
     token = st.tokens.user("u1").token
@@ -94,7 +92,7 @@ def test_a_retried_write_is_applied_once(
 
     monkeypatch.setattr(memories, "create", busy_once)
     monkeypatch.setattr(time, "sleep", lambda _: None)
-    st = Steward(api_key=_key(h), http_client=app_client.http)
+    st = Steward(api_key=bearer(h), http_client=app_client.http)
     st.memories.create("likes green tea", user_id="u1")
     assert failures == [] and app_client.count(Memory) == 1
 
@@ -105,7 +103,7 @@ def test_the_async_client_works_the_same(app_client: AppClient) -> None:
     async def flow() -> tuple[str, list[str]]:
         transport = httpx.ASGITransport(app=app_client.http.app)
         http = httpx.AsyncClient(transport=transport, base_url="http://steward")
-        async with AsyncSteward(api_key=_key(h), http_client=http) as st:
+        async with AsyncSteward(api_key=bearer(h), http_client=http) as st:
             created = await st.memories.create("likes green tea", user_id="u1")
             page = await st.memories.list(user_id="u1")
             return created.content, [m_.content for m_ in page.items]

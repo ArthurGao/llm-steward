@@ -42,10 +42,14 @@ def http_problem(exc: HTTPException) -> JSONResponse:
     return problem(exc.status_code, code, str(exc.detail), headers=exc.headers)
 
 
+def domain_problem(exc: StewardError) -> JSONResponse:
+    return problem(exc.status, exc.code, exc.detail)
+
+
 def install(app: FastAPI) -> None:
     @app.exception_handler(StewardError)
     async def _domain(_: Request, exc: StewardError) -> JSONResponse:
-        return problem(exc.status, exc.code, exc.detail)
+        return domain_problem(exc)
 
     @app.exception_handler(HTTPException)
     async def _http(_: Request, exc: HTTPException) -> JSONResponse:

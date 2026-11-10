@@ -144,6 +144,31 @@ async def public_dns(host: str, port: int) -> list[str]:
     return ["93.184.216.34"]
 
 
+def fake_network(
+    c: "AppClient", monkeypatch: pytest.MonkeyPatch, handler: Callable[..., Any]
+) -> None:
+    """User-supplied URLs (webhooks, document imports) reach `handler`, an httpx2 MockTransport
+    handler, with every name resolving to a public address."""
+    import httpx2
+
+    monkeypatch.setattr(c.services.outbound, "transport", httpx2.MockTransport(handler))
+    monkeypatch.setattr(c.services.outbound, "resolve", public_dns)
+
+
+def bearer(headers: dict[str, str]) -> str:
+    """The raw credential in auth headers."""
+    return headers["Authorization"].removeprefix("Bearer ")
+
+
+def provider_has(c: "AppClient", kind: str, external_id: str) -> bool:
+    """Whether the native memory engine holds this copy."""
+    from llm_steward.providers.native.providers import NativeMemoryProvider
+
+    provider = c.services.providers.memory
+    assert isinstance(provider, NativeMemoryProvider)
+    return c.call(provider._store.get, kind, external_id) is not None
+
+
 TEST_TOKEN_SECRET = "test-only-user-token-secret-0123456789abcdef"
 
 
@@ -212,11 +237,29 @@ class AppClient:
 
     def new_tenant(self, slug: str, *scopes: "ApiScope") -> tuple[dict[str, str], uuid.UUID]:
         """Create a namespace and an API key; returns auth headers and the namespace id."""
+        namespace = self.call(self.services.namespaces.create_namespace, slug)
+        return self.key(slug, *scopes), namespace.id
+
+    def key(self, slug: str, *scopes: "ApiScope") -> dict[str, str]:
+        """Another API key for an existing namespace (default read+write); its auth headers."""
         from llm_steward.services.namespace_service import DEFAULT_SCOPES
 
-        namespace = self.call(self.services.namespaces.create_namespace, slug)
         key = self.call(self.services.namespaces.create_key, slug, scopes or DEFAULT_SCOPES)
-        return {"Authorization": f"Bearer {key}"}, namespace.id
+        return {"Authorization": f"Bearer {key}"}
+
+    def user_token(self, headers: dict[str, str], user_id: str, **body: Any) -> dict[str, str]:
+        """POST /v1/tokens/user with an API key, asserting 201; the token's auth headers."""
+        r = self.http.post("/v1/tokens/user", json={"user_id": user_id, **body}, headers=headers)
+        assert r.status_code == 201, r.text
+        return {"Authorization": f"Bearer {r.json()['token']}"}
+
+    def settle(self, passes: int = 3) -> None:
+        """Run the outbox until it is quiet, making waiting jobs (backoffs, polls) due between
+        passes."""
+        for _ in range(passes):
+            self.drain()
+            self.make_jobs_due()
+        self.drain()
 
     def new_key(self, slug: str, *scopes: "ApiScope") -> dict[str, str]:
         return self.new_tenant(slug, *scopes)[0]
@@ -376,10 +419,7 @@ class Tenant:
 
         self.c = c
         self.host, self.ns = c.new_tenant(slug, ApiScope.READ, ApiScope.WRITE)
-        key = c.call(
-            c.services.namespaces.create_key, slug, (ApiScope.READ, ApiScope.WRITE, ApiScope.REVIEW)
-        )
-        self.reviewer = {"Authorization": f"Bearer {key}"}
+        self.reviewer = c.key(slug, ApiScope.READ, ApiScope.WRITE, ApiScope.REVIEW)
 
     def post(self, path: str, body: Any = None, *, as_reviewer: bool = False) -> Any:
         headers = self.reviewer if as_reviewer else self.host

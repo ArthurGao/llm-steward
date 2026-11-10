@@ -15,7 +15,7 @@ from mcp.client.streamable_http import streamable_http_client
 
 from llm_steward.models import KbEntry
 from llm_steward.models.enums import ApiScope, CandidateStage
-from tests.conftest import AppClient, Tenant, running_app
+from tests.conftest import AppClient, Tenant, bearer, running_app
 from tests.integration.test_kb_suggestions import _llm
 
 H = dict[str, str]
@@ -166,8 +166,7 @@ def test_a_user_token_recalls_only_its_own_user(app: AppClient) -> None:
         ("remember", {"fact": "Bob prefers black coffee", "user_id": "bob"}),
     )
     app.drain()
-    r = app.http.post("/v1/tokens/user", json={"user_id": "ada"}, headers=h)
-    token = {"Authorization": f"Bearer {r.json()['token']}"}
+    token = app.user_token(h, "ada")
     mine, theirs = _mcp(
         app,
         token,
@@ -180,8 +179,7 @@ def test_a_user_token_recalls_only_its_own_user(app: AppClient) -> None:
 
 def test_a_read_only_key_cannot_remember(app: AppClient) -> None:
     app.new_tenant("acme")
-    key = app.call(app.services.namespaces.create_key, "acme", (ApiScope.READ,))
-    [refused] = _mcp(app, {"Authorization": f"Bearer {key}"}, ("remember", {"fact": "x"}))
+    [refused] = _mcp(app, app.key("acme", ApiScope.READ), ("remember", {"fact": "x"}))
     assert refused.is_error
 
 
@@ -197,8 +195,7 @@ def test_an_unknown_memory_id_is_an_error_not_a_crash(app: AppClient) -> None:
 
 
 def _stdio_principal(c: AppClient, headers: H, user_id: str | None = None) -> Any:
-    key = headers["Authorization"].removeprefix("Bearer ")
-    principal = c.call(c.services.namespaces.authenticate, key)
+    principal = c.call(c.services.namespaces.authenticate, bearer(headers))
     return principal if user_id is None else principal.for_user(user_id)  # as `--user-id`
 
 

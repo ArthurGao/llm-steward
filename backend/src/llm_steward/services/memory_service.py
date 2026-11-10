@@ -10,11 +10,11 @@ from llm_steward.errors import Unprocessable
 from llm_steward.models import ChangeLog, ExternalRef, Memory
 from llm_steward.models.enums import MemoryStatus, ObjectType, SyncStatus
 from llm_steward.providers.base import EXTRACT, MemoryProvider, Scope
+from llm_steward.services.erasure import Erased
 from llm_steward.services.governance_service import (
     Actor,
     CreateMemory,
     DeleteMemory,
-    Erased,
     EraseUser,
     GovernanceService,
     PatchMemory,

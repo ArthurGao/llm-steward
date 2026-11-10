@@ -9,7 +9,7 @@ import pytest
 
 from llm_steward.models import KbDocument, KbDocumentFile
 from llm_steward.models.enums import DocStatus, JobStatus, JobType
-from tests.conftest import AppClient, Tenant, public_dns
+from tests.conftest import AppClient, Tenant, fake_network
 
 PAGE = b"# Refunds\n\nRefunds take five business days."
 
@@ -31,9 +31,7 @@ class Web:
 @pytest.fixture
 def web(app_client: AppClient, monkeypatch: pytest.MonkeyPatch) -> Web:
     fake = Web()
-    documents = app_client.services.documents
-    monkeypatch.setattr(documents, "transport", httpx2.MockTransport(fake))
-    monkeypatch.setattr(documents, "resolve", public_dns)
+    fake_network(app_client, monkeypatch, fake)
     return fake
 
 
@@ -47,18 +45,6 @@ def _doc(t: Tenant, document_id: str) -> KbDocument:
     return doc
 
 
-def _run(t: Tenant) -> None:
-    for _ in range(3):  # fetch, ingest, parse-status polls
-        t.c.drain()
-        t.c.make_jobs_due()
-    t.c.drain()
-
-
-@pytest.fixture
-def t(app_client: AppClient) -> Tenant:
-    return Tenant(app_client, "acme")
-
-
 def test_a_url_is_fetched_by_the_worker_then_ingested(t: Tenant, web: Web) -> None:
     web.routes["docs.example.com/policies/refunds.md"] = [httpx2.Response(200, content=PAGE)]
     collection = t.collection(default_risk="low")
@@ -69,7 +55,7 @@ def test_a_url_is_fetched_by_the_worker_then_ingested(t: Tenant, web: Web) -> No
     assert web.calls == []  # never fetched on the request path
     assert [j.type for j in t.c.jobs(JobType.DOC_FETCH)] == [JobType.DOC_FETCH]
     assert t.c.jobs(JobType.DOC_INGEST) == []  # nothing to hand over before the fetch
-    _run(t)
+    t.c.settle()
     stored = _doc(t, doc["id"])
     assert stored.source_uri == "https://docs.example.com/policies/refunds.md"
     assert (stored.status, stored.size_bytes) == (DocStatus.READY, len(PAGE))
@@ -81,7 +67,7 @@ def test_a_name_without_a_type_takes_it_from_the_answer(t: Tenant, web: Web) -> 
     answer = httpx2.Response(200, content=PAGE, headers={"content-type": "text/markdown"})
     web.routes["docs.example.com/faq"] = [answer]
     r = _import(t, t.collection(default_risk="low"), "https://docs.example.com/faq")
-    _run(t)
+    t.c.settle()
     doc = _doc(t, r.json()["document"]["id"])
     assert (doc.filename, doc.status) == ("faq.md", DocStatus.READY)
 
@@ -105,7 +91,7 @@ def test_a_fetch_that_cannot_succeed_fails_the_document(
         async def internal(host: str, port: int) -> list[str]:
             return ["10.0.0.5"]
 
-        monkeypatch.setattr(t.c.services.documents, "resolve", internal)
+        monkeypatch.setattr(t.c.services.outbound, "resolve", internal)
     web.routes["docs.example.com/moved.md"] = [
         httpx2.Response(302, headers={"location": "http://169.254.169.254/latest/meta-data"})
     ]
@@ -119,7 +105,7 @@ def test_a_fetch_that_cannot_succeed_fails_the_document(
     monkeypatch.setattr(t.c.services.documents, "max_bytes", 2**20)
     r = _import(t, t.collection(default_risk="low"), url)
     assert r.status_code == 202, r.text
-    _run(t)
+    t.c.settle()
     doc = _doc(t, r.json()["document"]["id"])
     assert doc.status == DocStatus.FAILED
     assert error in (doc.error or "")
@@ -130,7 +116,7 @@ def test_a_fetch_that_cannot_succeed_fails_the_document(
 def test_a_busy_server_is_retried(t: Tenant, web: Web) -> None:
     web.routes["docs.example.com/a.md"] = [httpx2.Response(503), httpx2.Response(200, content=PAGE)]
     r = _import(t, t.collection(default_risk="low"), "https://docs.example.com/a.md")
-    _run(t)
+    t.c.settle()
     assert _doc(t, r.json()["document"]["id"]).status == DocStatus.READY
     assert len(web.calls) == 2
 
@@ -138,9 +124,7 @@ def test_a_busy_server_is_retried(t: Tenant, web: Web) -> None:
 def test_a_server_busy_to_the_end_fails_the_document_and_the_job(t: Tenant, web: Web) -> None:
     web.routes["docs.example.com/a.md"] = [httpx2.Response(503)]
     r = _import(t, t.collection(default_risk="low"), "https://docs.example.com/a.md")
-    for _ in range(10):  # more passes than the job has attempts
-        t.c.make_jobs_due()
-        t.c.drain()
+    t.c.settle(10)  # more passes than the job has attempts
     doc = _doc(t, r.json()["document"]["id"])
     assert (doc.status, doc.error) == (DocStatus.FAILED, "fetch failed: HTTP 503")
     [job] = t.c.jobs(JobType.DOC_FETCH)
@@ -152,7 +136,7 @@ def test_a_namespace_allowlist_limits_the_hosts(t: Tenant, web: Web) -> None:
     t.c.set_config(t.ns, {"documents": {"url_allowlist": ["wiki.example.org"]}})
     web.routes["docs.example.com/a.md"] = [httpx2.Response(200, content=PAGE)]
     r = _import(t, t.collection(default_risk="low"), "https://docs.example.com/a.md")
-    _run(t)
+    t.c.settle()
     doc = _doc(t, r.json()["document"]["id"])
     assert doc.status == DocStatus.FAILED and "allowlist" in (doc.error or "")
     assert web.calls == []
@@ -164,14 +148,14 @@ def test_a_document_awaiting_review_is_fetched_but_waits(t: Tenant, web: Web) ->
     assert r.status_code == 202
     doc, candidate = r.json()["document"], r.json()["candidate"]
     assert doc["state"] == "draft" and candidate is not None
-    _run(t)
+    t.c.settle()
     assert _doc(t, doc["id"]).status == DocStatus.PENDING  # fetched, not handed to the engine
     assert t.c.get(KbDocumentFile, doc["id"]) is not None
     accepted = t.c.http.post(
         f"/v1/candidates/{candidate['id']}/accept", json={}, headers=t.reviewer
     )
     assert accepted.status_code == 200, accepted.text
-    _run(t)
+    t.c.settle()
     assert _doc(t, doc["id"]).status == DocStatus.READY
 
 
@@ -184,7 +168,7 @@ def test_approved_before_the_fetch_finishes_it_is_ingested_after(t: Tenant, web:
     )
     assert accepted.status_code == 200
     assert t.c.jobs(JobType.DOC_INGEST) == []  # nothing to hand over yet: the fetch queues it
-    _run(t)
+    t.c.settle()
     assert _doc(t, doc["id"]).status == DocStatus.READY
 
 
@@ -193,7 +177,7 @@ def test_the_same_content_twice_is_a_duplicate(t: Tenant, web: Web) -> None:
     assert t.upload(collection, PAGE, filename="refunds.md").status_code == 202
     web.routes["docs.example.com/refunds.md"] = [httpx2.Response(200, content=PAGE)]
     r = _import(t, collection, "https://docs.example.com/refunds.md")
-    _run(t)
+    t.c.settle()
     doc = _doc(t, r.json()["document"]["id"])
     assert doc.status == DocStatus.FAILED and "duplicate" in (doc.error or "")
 

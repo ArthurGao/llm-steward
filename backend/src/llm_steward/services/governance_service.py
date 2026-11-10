@@ -16,24 +16,20 @@ from datetime import datetime, timedelta
 from enum import Enum
 from typing import Any, Literal, cast
 
-from sqlalchemy import delete, or_, select, update
+from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from llm_steward.errors import Conflict, Forbidden, NotFound, Unprocessable
-from llm_steward.ids import uuid7
 from llm_steward.models import (
     Candidate,
     ChangeLog,
     Episode,
     ExternalRef,
-    IdempotencyKey,
     KbCollection,
     KbDocument,
     KbDocumentFile,
     KbEntry,
     Memory,
-    Namespace,
-    RetrievalLog,
 )
 from llm_steward.models.base import Base, utcnow
 from llm_steward.models.enums import (
@@ -57,12 +53,13 @@ from llm_steward.models.enums import (
     RiskLevel,
     SyncStatus,
 )
-from llm_steward.namespace_config import NamespaceConfig, WebhookEvent
-from llm_steward.namespace_config import load as load_config
+from llm_steward.namespace_config import read_config
 from llm_steward.pipeline.risk import Assessment, RiskPolicy, assess, redact_pii
 from llm_steward.providers.base import Scope
+from llm_steward.services.erasure import Erased, erase_user
 from llm_steward.services.job_queue import enqueue
 from llm_steward.services.scoping import exact
+from llm_steward.services.webhook_service import candidate_event, entry_event, queue_event
 
 # Allowed state changes (design §5). Anything else is a 409.
 KB_TRANSITIONS: dict[KbStatus, frozenset[KbStatus]] = {
@@ -398,14 +395,6 @@ class EraseUser:
     user_id: str
 
 
-@dataclass(frozen=True)
-class Erased:
-    memories: int
-    episodes: int
-    candidates: int
-    retrieval_logs: int
-
-
 Operation = (
     CreateMemory
     | RecordProviderMemory
@@ -670,80 +659,7 @@ class GovernanceService:
     async def _erase_user(self, s: AsyncSession, op: EraseUser, actor: Actor) -> Erased:
         if actor.type == ActorType.END_USER:
             raise Forbidden("erasure is requested by the host app, not from a user token")
-        ns, user = op.namespace_id, op.user_id
-        # Subqueries, not id lists: a heavy user's ids would exceed SQLite's bound-parameter cap.
-        mine = (Memory.namespace_id == ns, Memory.user_id == user)
-        memory_ids = select(Memory.id).where(*mine)
-        episode_ids = select(Episode.id).where(Episode.namespace_id == ns, Episode.user_id == user)
-        open_cards = (
-            Candidate.namespace_id == ns,
-            Candidate.status == CandidateStatus.PENDING,
-            or_(Candidate.requested_for_user == user, Candidate.source_episode_id.in_(episode_ids)),
-        )
-        copies = await s.execute(
-            delete(ExternalRef)
-            .where(
-                ExternalRef.namespace_id == ns,
-                ExternalRef.object_type == ObjectType.MEMORY,
-                ExternalRef.object_id.in_(memory_ids),
-            )
-            .returning(ExternalRef.object_id, ExternalRef.external_id, ExternalRef.sync_status)
-        )
-        for memory_id, external_id, status in copies.all():
-            if external_id is not None and status != SyncStatus.DELETED:  # an engine copy
-                payload = {"memory_id": str(memory_id), "external_id": external_id}
-                enqueue(s, ns, JobType.MEMORY_REMOVE, payload)
-        await s.execute(
-            delete(ChangeLog).where(
-                ChangeLog.namespace_id == ns,
-                or_(
-                    ChangeLog.object_id.in_(memory_ids),
-                    ChangeLog.object_id.in_(episode_ids),
-                    ChangeLog.object_id.in_(select(Candidate.id).where(*open_cards)),
-                ),
-            )
-        )
-        cards = await s.execute(delete(Candidate).where(*open_cards).returning(Candidate.id))
-        # what stays must not point at what goes
-        await s.execute(
-            update(Memory)
-            .where(
-                Memory.namespace_id == ns,
-                Memory.id.not_in(memory_ids),
-                Memory.superseded_by.in_(memory_ids),
-            )
-            .values(superseded_by=None)
-        )
-        for model in (Memory, Candidate):
-            columns: Any = model
-            await s.execute(
-                update(model)
-                .where(columns.namespace_id == ns, columns.source_episode_id.in_(episode_ids))
-                .values(source_episode_id=None)
-            )
-        memories = await s.execute(delete(Memory).where(*mine).returning(Memory.id))
-        episodes = await s.execute(
-            delete(Episode)
-            .where(Episode.namespace_id == ns, Episode.user_id == user)
-            .returning(Episode.id)
-        )
-        # Stored write responses (`Idempotency-Key`, kept a day) can carry the user's content, and
-        # an API key's write cannot be tied to the user it was for: forget the namespace's.
-        await s.execute(delete(IdempotencyKey).where(IdempotencyKey.namespace_id == ns))
-        logs = await s.execute(
-            delete(RetrievalLog)
-            .where(
-                RetrievalLog.namespace_id == ns,
-                RetrievalLog.filters["user_id"].as_string() == user,
-            )
-            .returning(RetrievalLog.id)
-        )
-        return Erased(
-            memories=len(memories.all()),
-            episodes=len(episodes.all()),
-            candidates=len(cards.all()),
-            retrieval_logs=len(logs.all()),
-        )
+        return await erase_user(s, op.namespace_id, op.user_id)
 
     # knowledge base
 
@@ -812,7 +728,7 @@ class GovernanceService:
         if entry.status in EFFECTIVE_KB_STATUSES:
             await self._queue_kb(s, entry, JobType.KB_UPSERT)
         if entry.status == KbStatus.VERIFIED:
-            await queue_event(s, entry.namespace_id, "kb_entry.verified", _entry_event(entry))
+            await queue_event(s, entry.namespace_id, "kb_entry.verified", entry_event(entry))
         return entry
 
     async def _create_from_draft(
@@ -928,9 +844,9 @@ class GovernanceService:
         elif was_effective:
             await self._queue_kb(s, entry, JobType.KB_REMOVE)
         if to == KbStatus.VERIFIED:
-            await queue_event(s, entry.namespace_id, "kb_entry.verified", _entry_event(entry))
+            await queue_event(s, entry.namespace_id, "kb_entry.verified", entry_event(entry))
         elif to == KbStatus.DEPRECATED:
-            await queue_event(s, entry.namespace_id, "kb_entry.deprecated", _entry_event(entry))
+            await queue_event(s, entry.namespace_id, "kb_entry.deprecated", entry_event(entry))
         return entry
 
     async def _screen(
@@ -943,7 +859,7 @@ class GovernanceService:
     ) -> Assessment:
         """Rule-based risk and PII (pipeline/risk.py) under the namespace's policy, in the write
         transaction: every outside write of knowledge text passes here, however it arrives."""
-        policy = RiskPolicy.from_config(await namespace_config(s, namespace_id))
+        policy = RiskPolicy.from_config(await read_config(s, namespace_id))
         return assess(title, content, policy, tags)
 
     async def _submit_kb_entry(
@@ -1182,7 +1098,7 @@ class GovernanceService:
         await s.flush()
         self._log(s, ObjectType.CANDIDATE, candidate, ChangeOp.CREATE, None, actor)
         await queue_event(
-            s, candidate.namespace_id, "candidate.created", _candidate_event(candidate)
+            s, candidate.namespace_id, "candidate.created", candidate_event(candidate)
         )
         return candidate
 
@@ -1437,9 +1353,6 @@ def _draft(op: SubmitKbEntry, checked: Assessment) -> dict[str, Any]:
     }
 
 
-# Webhook event data (design §7): ids and states, never content.
-
-
 def _has_bytes(doc: KbDocument) -> bool:
     """False for a document imported by URL whose fetch has not finished: it has nothing to hand
     to the engine yet, and the fetch queues the ingest itself (`AttachDocumentFile`)."""
@@ -1459,26 +1372,6 @@ async def _same_file(
         )
     )
     return found
-
-
-def _candidate_event(candidate: Candidate) -> dict[str, Any]:
-    return {
-        "candidate_id": str(candidate.id),
-        "stage": candidate.stage.value,
-        "target_type": candidate.target_type.value,
-        "op": candidate.op.value,
-        "risk_level": candidate.risk_level.value,
-        "user_id": candidate.requested_for_user,  # whom to show the card to
-    }
-
-
-def _entry_event(entry: KbEntry) -> dict[str, Any]:
-    return {
-        "entry_id": str(entry.id),
-        "collection_id": str(entry.collection_id),
-        "status": entry.status.value,
-        "version": entry.version,
-    }
 
 
 def _reason(given: str | None, checked: Assessment) -> str | None:
@@ -1525,24 +1418,3 @@ def _checked_policy(policy: dict[str, str]) -> dict[str, str]:
                 f"{', '.join(ROUTES)} (high always goes to review)"
             )
     return dict(policy)
-
-
-async def queue_event(
-    s: AsyncSession, namespace_id: uuid.UUID, event: WebhookEvent, data: dict[str, Any]
-) -> None:
-    """One webhook delivery per endpoint subscribed to `event` (design §7), queued in the
-    caller's transaction: sent only if the write commits. `data` holds ids and states only, never
-    content (the host fetches what it may see through the API)."""
-    hooks = [h for h in (await namespace_config(s, namespace_id)).webhooks if event in h.events]
-    if not hooks:
-        return
-    event_id, at = str(uuid7()), utcnow().isoformat()
-    for hook in hooks:
-        payload = {"event_id": event_id, "event": event, "url": hook.url, "at": at, "data": data}
-        enqueue(s, namespace_id, JobType.WEBHOOK_DELIVER, payload)
-
-
-async def namespace_config(s: AsyncSession, namespace_id: uuid.UUID) -> NamespaceConfig:
-    """A namespace's config (design §8), validated; every default for one that has none."""
-    namespace = await s.get(Namespace, namespace_id)
-    return load_config(namespace.config if namespace else None)

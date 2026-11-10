@@ -55,8 +55,8 @@ from llm_steward.providers.base import (
     Scope,
     document_parser,
 )
-from llm_steward.services.governance_service import queue_event
 from llm_steward.services.job_queue import ClaimedJob, describe_error, enqueue
+from llm_steward.services.webhook_service import queue_event
 
 # retired: a removal job is queued; gone: the object row itself was deleted (nothing to queue on)
 Outcome = Literal["synced", "retired", "gone", "outdated"]

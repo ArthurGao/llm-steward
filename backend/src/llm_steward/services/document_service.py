@@ -21,6 +21,8 @@ from llm_steward import outbound
 from llm_steward.errors import TooLarge, Unprocessable
 from llm_steward.models import Candidate, KbDocument
 from llm_steward.models.enums import DocStatus, KbStatus, RiskLevel
+from llm_steward.namespace_config import read_config
+from llm_steward.outbound import Outbound
 from llm_steward.providers.base import KnowledgeProvider, document_parser
 from llm_steward.services.governance_service import (
     SYSTEM,
@@ -30,9 +32,8 @@ from llm_steward.services.governance_service import (
     GovernanceService,
     SubmitKbDocument,
     load_owned,
-    namespace_config,
 )
-from llm_steward.services.job_queue import ClaimedJob, PermanentFailure
+from llm_steward.services.job_queue import ClaimedJob, PermanentFailure, TryLater
 from llm_steward.services.paging import page
 
 # Text documents WeKnora v0.9.0 parses (its upload list minus images, audio and video, which need
@@ -86,16 +87,13 @@ class DocumentService:
         kb: KnowledgeProvider,
         *,
         max_bytes: int,
-        allow_private_urls: bool = False,
+        outbound: Outbound | None = None,
     ) -> None:
         self._sessions = sessions
         self._governance = governance
         self._kb = kb
         self.max_bytes = max_bytes
-        self.allow_private_urls = allow_private_urls
-        # The network boundary for URL imports, replaceable (tests put a fake web here).
-        self.transport: httpx2.AsyncBaseTransport | None = None
-        self.resolve: outbound.Resolver = outbound.system_resolve
+        self._outbound = outbound or Outbound()
 
     async def upload(
         self,
@@ -146,7 +144,7 @@ class DocumentService:
         self._can_parse()
         if len(url) > 2000:
             raise Unprocessable("a document URL is at most 2000 characters")
-        parts = outbound.check_form(url, allow_private=self.allow_private_urls)  # 422 if not
+        parts = self._outbound.check_form(url)  # 422 if not
         name = PurePosixPath(unquote(parts.path)).name
         suffix = _suffix(name)
         if suffix:  # a type no engine reads is refused now, not after a fetch
@@ -174,19 +172,15 @@ class DocumentService:
             doc = await s.get(KbDocument, document_id)
             if doc is None or doc.source_uri is None or doc.status != DocStatus.PENDING:
                 return
-            config = await namespace_config(s, job.namespace_id)
+            config = await read_config(s, job.namespace_id)
         try:
-            async with outbound.client(self.transport) as http:
-                fetched = await outbound.request(
-                    http,
-                    "GET",
-                    doc.source_uri,
-                    max_bytes=self.max_bytes,
-                    follow_redirects=True,
-                    allow_private=self.allow_private_urls,
-                    allowlist=tuple(config.documents.url_allowlist),
-                    resolve=self.resolve,
-                )
+            fetched = await self._outbound.request(
+                "GET",
+                doc.source_uri,
+                max_bytes=self.max_bytes,
+                follow_redirects=True,
+                allowlist=tuple(config.documents.url_allowlist),
+            )
         except outbound.UrlNotAllowed as exc:
             await self._fail(job, document_id, f"fetch refused: {_REFUSED[exc.reason]}")
             return
@@ -220,7 +214,7 @@ class DocumentService:
 
     async def _busy(self, job: ClaimedJob, document_id: uuid.UUID, error: str) -> None:
         if not job.last_attempt:
-            raise outbound.TryLater(error)
+            raise TryLater(error)
         await self._fail(job, document_id, error)
         raise PermanentFailure(error)  # the job shows up in `steward jobs failed`
 

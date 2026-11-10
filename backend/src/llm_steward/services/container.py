@@ -20,6 +20,8 @@ from llm_steward.config import Settings
 from llm_steward.llm.client import LLM, OpenAICompatibleLLM
 from llm_steward.llm.roles import Role
 from llm_steward.models.enums import JobType
+from llm_steward.namespace_config import read_config
+from llm_steward.outbound import Outbound
 from llm_steward.providers.base import MemoryProvider, Providers, Reranker
 from llm_steward.providers.native.embedding import Embedder
 from llm_steward.providers.registry import (
@@ -31,7 +33,7 @@ from llm_steward.providers.registry import (
 from llm_steward.services.document_service import DocumentService
 from llm_steward.services.episode_service import EpisodeService
 from llm_steward.services.extraction_service import ExtractionService, compensates
-from llm_steward.services.governance_service import GovernanceService, namespace_config
+from llm_steward.services.governance_service import GovernanceService
 from llm_steward.services.idempotency_service import IdempotencyService
 from llm_steward.services.job_queue import ClaimedJob, JobQueue
 from llm_steward.services.kb_service import KbService
@@ -73,6 +75,7 @@ class Services:
     idempotency: IdempotencyService
     rate_limiter: RateLimiter
     webhooks: WebhookService
+    outbound: Outbound
 
 
 def build_llm(settings: Settings, providers: Providers) -> LLM | None:
@@ -106,18 +109,19 @@ def build_services(
     )
     reconcile = ReconcileService(sessions, providers.memory)
     idempotency = IdempotencyService(sessions)
-    webhooks = WebhookService(sessions, allow_private=settings.allow_private_urls)
+    out = Outbound(allow_private=settings.allow_private_urls)  # user-supplied URLs only
+    webhooks = WebhookService(sessions, out)
     documents = DocumentService(
         sessions,
         governance,
         providers.kb,
         max_bytes=settings.kb_max_upload_mb * 1024 * 1024,
-        allow_private_urls=settings.allow_private_urls,
+        outbound=out,
     )
 
     async def namespace_rpm(namespace_id: uuid.UUID) -> int | None:
         async with sessions() as s:
-            return (await namespace_config(s, namespace_id)).limits.requests_per_minute
+            return (await read_config(s, namespace_id)).limits.requests_per_minute
 
     retrieval = RetrievalService(
         sessions,
@@ -187,6 +191,7 @@ def build_services(
         idempotency=idempotency,
         rate_limiter=RateLimiter(settings.rate_limit_per_minute, namespace_rpm),
         webhooks=webhooks,
+        outbound=out,
     )
 
 

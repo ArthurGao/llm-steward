@@ -6,8 +6,9 @@ ignored. A section written with nothing under it (`kb:` in YAML) is null and mea
 """
 
 import re
+import uuid
 from collections.abc import Callable
-from typing import Annotated, Any, Literal
+from typing import TYPE_CHECKING, Annotated, Any, Literal
 
 from pydantic import (
     BaseModel,
@@ -19,6 +20,9 @@ from pydantic import (
 )
 
 from llm_steward.errors import StewardError, Unprocessable
+
+if TYPE_CHECKING:
+    from sqlalchemy.ext.asyncio import AsyncSession
 
 PiiAction = Literal["block", "redact", "allow"]
 WebhookEvent = Literal[
@@ -139,3 +143,12 @@ def _describe(exc: ValidationError) -> str:
     return "; ".join(
         f"{'.'.join(str(p) for p in e['loc']) or '<root>'}: {e['msg']}" for e in exc.errors()
     )
+
+
+async def read_config(s: "AsyncSession", namespace_id: uuid.UUID) -> NamespaceConfig:
+    """A namespace's config from the database, validated (`load`); every default for one that
+    has none."""
+    from llm_steward.models import Namespace
+
+    namespace = await s.get(Namespace, namespace_id)
+    return load(namespace.config if namespace else None)

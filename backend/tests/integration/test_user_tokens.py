@@ -14,17 +14,17 @@ import pytest
 from llm_steward.models import Candidate, ChangeLog, Episode, Memory
 from llm_steward.models.enums import ApiScope, CandidateStatus, EpisodeKind, KbStatus
 from llm_steward.services.governance_service import CreateEpisode
-from tests.conftest import TEST_TOKEN_SECRET, AppClient, Tenant, post_memory, running_app
+from tests.conftest import (
+    TEST_TOKEN_SECRET,
+    AppClient,
+    Tenant,
+    bearer,
+    post_memory,
+    provider_has,
+    running_app,
+)
 
 H = dict[str, str]
-
-
-def _token(c: AppClient, key: H, user_id: str, **body: Any) -> H:
-    r = c.http.post("/v1/tokens/user", json={"user_id": user_id, **body}, headers=key)
-    assert r.status_code == 201, r.text
-    out = r.json()
-    assert out["user_id"] == user_id and out["token_type"] == "Bearer"
-    return {"Authorization": f"Bearer {out['token']}"}
 
 
 def _bearer(token: str) -> H:
@@ -42,7 +42,7 @@ class World:
         self.u2 = post_memory(c, key, "u2 lives in Shanghai", user_id="u2")
         self.shared = post_memory(c, key, "the shop opens at nine")
         c.drain()
-        self.token = _token(c, key, "u1")
+        self.token = c.user_token(key, "u1")
 
     def get(self, path: str, **params: Any) -> Any:
         return self.c.http.get(path, params=params, headers=self.token)
@@ -213,7 +213,7 @@ def test_a_user_cannot_rewrite_a_card_into_shared_knowledge(w: World) -> None:
 
 
 def _claims(w: World, **overrides: Any) -> dict[str, Any]:
-    token = w.token["Authorization"].removeprefix("Bearer ")
+    token = bearer(w.token)
     claims = jwt.decode(token, options={"verify_signature": False})
     return {**claims, **overrides}
 
@@ -227,7 +227,7 @@ def test_forged_expired_or_misdirected_tokens_are_401(w: World) -> None:
     other = Tenant(w.c, "globex")
     other_key_id = str(w.c.call(_key_id, w.c, other.host))
     bad = {
-        "tampered": w.token["Authorization"].removeprefix("Bearer ")[:-2] + "xx",
+        "tampered": bearer(w.token)[:-2] + "xx",
         "wrong secret": _sign(_claims(w), "another-secret-that-is-long-enough-000"),
         "expired": _sign(_claims(w, iat=now - 7200, exp=now - 3600)),
         "wrong audience": _sign(_claims(w, aud="someone-else")),
@@ -242,16 +242,8 @@ def test_forged_expired_or_misdirected_tokens_are_401(w: World) -> None:
         assert r.headers["WWW-Authenticate"] == "Bearer"
 
 
-def _key(c: AppClient, slug: str, *scopes: ApiScope) -> H:
-    """Another key for an existing namespace."""
-    key = c.call(c.services.namespaces.create_key, slug, scopes)
-    return {"Authorization": f"Bearer {key}"}
-
-
 async def _key_id(c: AppClient, headers: H) -> uuid.UUID:
-    principal = await c.services.namespaces.authenticate(
-        headers["Authorization"].removeprefix("Bearer ")
-    )
+    principal = await c.services.namespaces.authenticate(bearer(headers))
     assert principal is not None
     return principal.key_id
 
@@ -265,13 +257,11 @@ def test_revoking_the_key_ends_its_tokens(w: World) -> None:
 
 def test_a_token_carries_no_more_than_its_keys_scopes(app_client: AppClient) -> None:
     h, _ = app_client.new_tenant("acme", ApiScope.READ, ApiScope.WRITE, ApiScope.REVIEW)
-    token = _token(app_client, h, "u1")
-    claims = jwt.decode(
-        token["Authorization"].removeprefix("Bearer "), options={"verify_signature": False}
-    )
+    token = app_client.user_token(h, "u1")
+    claims = jwt.decode(bearer(token), options={"verify_signature": False})
     assert set(claims) >= {"iss", "aud", "sub", "ns", "kid", "iat", "exp", "jti"}
     assert claims["exp"] - claims["iat"] == 900  # 15 minutes by default
-    reader = _key(app_client, "acme", ApiScope.READ)
+    reader = app_client.key("acme", ApiScope.READ)
     r = app_client.http.post("/v1/tokens/user", json={"user_id": "u1"}, headers=reader)
     assert r.status_code == 403  # minting needs `write`
     long = app_client.http.post(
@@ -286,10 +276,8 @@ def test_a_token_from_a_reviewer_key_cannot_review(app_client: AppClient) -> Non
     collection = t.collection()
     body = {"collection_id": collection, "title": "Fees", "content": "c", "risk_level": "high"}
     queued = t.post("/v1/kb/entries", body).json()["candidate"]["id"]
-    token = _token(app_client, t.reviewer, "u1")
-    principal = app_client.call(
-        app_client.services.namespaces.authenticate, token["Authorization"].removeprefix("Bearer ")
-    )
+    token = app_client.user_token(t.reviewer, "u1")
+    principal = app_client.call(app_client.services.namespaces.authenticate, bearer(token))
     assert principal is not None and principal.scopes == {ApiScope.READ, ApiScope.WRITE}
     r = app_client.http.post(f"/v1/candidates/{queued}/accept", json={}, headers=token)
     assert r.status_code == 403
@@ -347,15 +335,13 @@ def test_erasing_a_user_removes_their_data_everywhere(w: World) -> None:
 
     assert c.call(leftovers) == []  # its history went too: the history held its content
     c.drain()
-    from tests.integration.test_api import _provider_has
-
-    assert not _provider_has(c, "memory", w.u1)  # the engine's copy is removed by the outbox
-    assert _provider_has(c, "memory", w.u2)
+    assert not provider_has(c, "memory", w.u1)  # the engine's copy is removed by the outbox
+    assert provider_has(c, "memory", w.u2)
 
 
 def test_erasure_needs_a_user_id_and_a_key(w: World) -> None:
     assert w.c.http.delete("/v1/memories", headers=w.t.host).status_code == 422
-    reader = _key(w.c, "acme", ApiScope.READ)
+    reader = w.c.key("acme", ApiScope.READ)
     assert (
         w.c.http.delete("/v1/memories", params={"user_id": "u1"}, headers=reader).status_code == 403
     )

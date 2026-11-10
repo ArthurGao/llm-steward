@@ -12,7 +12,7 @@ from llm_steward.services.governance_service import (
     CreateCollection,
     TransitionKbEntry,
 )
-from tests.conftest import ADMIN, AppClient, kb_entry_op
+from tests.conftest import ADMIN, AppClient, kb_entry_op, provider_has
 
 
 def _post_memory(c: AppClient, headers: dict[str, str], **body: Any) -> dict[str, Any]:
@@ -307,14 +307,6 @@ def test_a_failed_sync_is_recorded_and_retried(
     assert app_client.call(last_error) == "ConnectionError: engine unreachable"
 
 
-def _provider_has(c: AppClient, kind: str, external_id: str) -> bool:
-    from llm_steward.providers.native.providers import NativeMemoryProvider
-
-    provider = c.services.providers.memory
-    assert isinstance(provider, NativeMemoryProvider)
-    return c.call(provider._store.get, kind, external_id) is not None
-
-
 def _ref(c: AppClient, object_id: str) -> Any:
     async def read() -> Any:
         from sqlalchemy import select
@@ -352,7 +344,7 @@ def test_a_stalled_upsert_cannot_resurrect_a_deleted_memory(
     monkeypatch.setattr(provider, "add", add_while_deleted)
     app_client.drain()
 
-    assert not _provider_has(app_client, "memory", memory["id"])
+    assert not provider_has(app_client, "memory", memory["id"])
     assert _ref(app_client, memory["id"]).sync_status == "deleted"
 
 
@@ -486,4 +478,4 @@ def test_a_memory_erased_mid_push_is_removed_even_if_the_first_removal_fails(
     app_client.make_jobs_due()
     app_client.drain()
     assert failures == []  # the failing removal did happen
-    assert not _provider_has(app_client, "memory", memory["id"])
+    assert not provider_has(app_client, "memory", memory["id"])

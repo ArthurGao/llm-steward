@@ -46,7 +46,7 @@ from llm_steward.models.enums import (
     ObjectType,
     SyncStatus,
 )
-from llm_steward.namespace_config import NamespaceConfig
+from llm_steward.namespace_config import NamespaceConfig, read_config
 from llm_steward.pipeline.risk import redact_pii
 from llm_steward.providers.base import ProviderHit, Providers, Reranker, Scope
 from llm_steward.ranking import (
@@ -58,7 +58,7 @@ from llm_steward.ranking import (
     similarity_terms,
     weigh,
 )
-from llm_steward.services.governance_service import load_owned, namespace_config
+from llm_steward.services.governance_service import load_owned
 from llm_steward.services.memory_service import core_memories
 from llm_steward.services.scoping import visible
 
@@ -234,7 +234,7 @@ class RetrievalService:
         scope = Scope(namespace_id, req.user_id, req.agent_id, req.session_id)
         degraded: list[Degraded] = []
         async with self._sessions() as s:  # one session for both reads before the search
-            scoring = Scoring.from_config(await namespace_config(s, namespace_id))
+            scoring = Scoring.from_config(await read_config(s, namespace_id))
             collection_ext_ids = (
                 await self._collection_ext_ids(s, namespace_id, req.collections)
                 if "kb" in req.sources
