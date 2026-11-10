@@ -139,6 +139,11 @@ def cli_db(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> str:
     return url
 
 
+async def public_dns(host: str, port: int) -> list[str]:
+    """A resolver for the outbound guard in tests: every name is one public address."""
+    return ["93.184.216.34"]
+
+
 TEST_TOKEN_SECRET = "test-only-user-token-secret-0123456789abcdef"
 
 

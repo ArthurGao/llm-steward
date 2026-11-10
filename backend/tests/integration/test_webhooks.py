@@ -13,14 +13,10 @@ import pytest
 
 from llm_steward.models.enums import JobStatus, JobType, KbStatus
 from llm_steward.services.governance_service import TransitionKbEntry
-from tests.conftest import AppClient, Tenant, kb_entry_op
+from tests.conftest import AppClient, Tenant, kb_entry_op, public_dns
 
 SECRET = "whsec-test-0123456789"
 HOOK = "https://hooks.example.com/steward"
-
-
-async def public_dns(host: str, port: int) -> list[str]:
-    return ["93.184.216.34"]
 
 
 class Receiver:

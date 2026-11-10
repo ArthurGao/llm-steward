@@ -20,19 +20,40 @@ import socket
 import ssl
 from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass
-from urllib.parse import urljoin, urlsplit, urlunsplit
+from typing import Literal
+from urllib.parse import SplitResult, urljoin, urlsplit, urlunsplit
 
 import httpx2
 
-from llm_steward.errors import TooLarge, Unprocessable
+from llm_steward.errors import StewardError, TooLarge, Unprocessable
 
 Resolver = Callable[[str, int], Awaitable[list[str]]]
 REDIRECTS = 3
 TIMEOUT_S = 10.0
 
 
+UrlRefusal = Literal["form", "allowlist", "unresolved", "not_public", "redirects"]
+
+
 class UrlNotAllowed(Unprocessable):
     code = "url_not_allowed"
+
+    def __init__(self, detail: str, reason: UrlRefusal) -> None:
+        super().__init__(detail)
+        self.reason = reason  # for callers that record why, without echoing the URL
+
+
+class TryLater(StewardError):
+    """The remote end could not answer now (a `retryable` status or a network error): the job
+    backs off and retries."""
+
+    status = 502
+    code = "remote_unavailable"
+
+
+def retryable(status: int) -> bool:
+    """An answer that says "try again": a server error, a timeout or throttling."""
+    return status >= 500 or status in (408, 429)
 
 
 @dataclass(frozen=True)
@@ -77,6 +98,20 @@ def _allowed_host(host: str, allowlist: tuple[str, ...]) -> bool:
     )
 
 
+def check_form(url: str, *, allow_private: bool = False) -> SplitResult:
+    """The checks that need no network: an http(s) URL (https only unless `allow_private`) with
+    a host and no credentials. Callers may run it on the request path; `check` adds the rest."""
+    parts = urlsplit(url)
+    scheme = parts.scheme.lower()
+    if scheme not in ("https", "http") or not parts.hostname:
+        raise UrlNotAllowed("only http(s) URLs with a host can be requested", "form")
+    if scheme != "https" and not allow_private:
+        raise UrlNotAllowed("only https URLs can be requested", "form")
+    if parts.username or parts.password:
+        raise UrlNotAllowed("URLs with credentials are not requested", "form")
+    return parts
+
+
 @dataclass(frozen=True)
 class _Target:
     url: str  # what the connection goes to: the checked address
@@ -92,25 +127,19 @@ async def check(
     resolve: Resolver = system_resolve,
 ) -> _Target:
     """Raise `UrlNotAllowed` unless `url` may be requested; the address to connect to."""
-    parts = urlsplit(url)
-    scheme, host = parts.scheme.lower(), (parts.hostname or "")
-    if scheme not in ("https", "http") or not host:
-        raise UrlNotAllowed("only http(s) URLs with a host can be requested")
-    if scheme != "https" and not allow_private:
-        raise UrlNotAllowed("only https URLs can be requested")
-    if parts.username or parts.password:
-        raise UrlNotAllowed("URLs with credentials are not requested")
+    parts = check_form(url, allow_private=allow_private)
+    scheme, host = parts.scheme.lower(), parts.hostname or ""
     if allowlist and not _allowed_host(host, allowlist):
-        raise UrlNotAllowed(f"{host} is not on this namespace's allowlist")
+        raise UrlNotAllowed(f"{host} is not on this namespace's allowlist", "allowlist")
     port = parts.port or (443 if scheme == "https" else 80)
     try:
         addresses = await resolve(host, port)
     except OSError as exc:
-        raise UrlNotAllowed(f"{host} does not resolve") from exc
+        raise UrlNotAllowed(f"{host} does not resolve", "unresolved") from exc
     if not addresses:
-        raise UrlNotAllowed(f"{host} does not resolve")
+        raise UrlNotAllowed(f"{host} does not resolve", "unresolved")
     if not allow_private and not all(_public(a) for a in addresses):
-        raise UrlNotAllowed(f"{host} is not a public internet address")
+        raise UrlNotAllowed(f"{host} is not a public internet address", "not_public")
     address = addresses[0]
     literal = f"[{address}]" if ":" in address else address
     netloc = literal if parts.port is None else f"{literal}:{parts.port}"
@@ -172,4 +201,4 @@ async def request(
                 if len(body) > max_bytes:
                     raise TooLarge(f"the response is over the {max_bytes} byte limit")
             return Fetched(response.status_code, dict(response.headers), bytes(body), url)
-    raise UrlNotAllowed(f"more than {REDIRECTS} redirects")
+    raise UrlNotAllowed(f"more than {REDIRECTS} redirects", "redirects")

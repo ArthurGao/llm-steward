@@ -21,19 +21,11 @@ import httpx2
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from llm_steward import outbound
-from llm_steward.errors import StewardError, TooLarge
+from llm_steward.errors import TooLarge
 from llm_steward.services.governance_service import namespace_config
 from llm_steward.services.job_queue import ClaimedJob, PermanentFailure
 
 MAX_ANSWER_BYTES = 64 * 1024  # what is read of the receiver's answer
-_RETRY = frozenset({408, 429})
-
-
-class DeliveryFailed(StewardError):
-    """The receiver could not take it now; retried with backoff."""
-
-    status = 502
-    code = "webhook_delivery_failed"
 
 
 def sign(secret: str, timestamp: int, body: bytes) -> str:
@@ -91,10 +83,10 @@ class WebhookService:
         except outbound.UrlNotAllowed as exc:
             raise PermanentFailure(f"webhook URL refused: {exc.detail}") from exc
         except (httpx2.TransportError, TooLarge) as exc:
-            raise DeliveryFailed(f"webhook delivery failed: {type(exc).__name__}") from exc
+            raise outbound.TryLater(f"webhook delivery failed: {type(exc).__name__}") from exc
         status = answer.status_code
         if 200 <= status < 300:
             return
-        if status >= 500 or status in _RETRY:
-            raise DeliveryFailed(f"the receiver answered {status}")
+        if outbound.retryable(status):
+            raise outbound.TryLater(f"the receiver answered {status}")
         raise PermanentFailure(f"the receiver answered {status}; not retried")

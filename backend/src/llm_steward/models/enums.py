@@ -126,6 +126,7 @@ class JobType(StrEnum):
     DOC_INGEST = "kb.doc_ingest"  # upload a document to the KB provider
     DOC_STATUS = "kb.doc_status"  # poll its parse status until ready or failed
     DOC_REMOVE = "kb.doc_remove"
+    DOC_FETCH = "kb.doc_fetch"  # fetch a document imported by URL (through the outbound guard)
     WEBHOOK_DELIVER = "webhook.deliver"  # one event to one endpoint (design §7)
 
 

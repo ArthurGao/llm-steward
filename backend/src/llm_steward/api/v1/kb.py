@@ -4,6 +4,7 @@ from typing import Annotated
 from fastapi import APIRouter, Form, Query, Response, UploadFile
 
 from llm_steward.api.deps import Reader, Reviewer, ServicesDep, Writer
+from llm_steward.errors import Unprocessable
 from llm_steward.models.enums import KbStatus, RiskLevel
 from llm_steward.schemas.kb import (
     CandidateOut,
@@ -152,25 +153,42 @@ async def deprecate_entry(
 async def upload_document(
     principal: Writer,
     services: ServicesDep,
-    file: UploadFile,
     collection_id: Annotated[uuid.UUID, Form()],
+    file: UploadFile | None = None,
+    url: Annotated[str | None, Form(max_length=2000)] = None,
     title: Annotated[str | None, Form(max_length=500)] = None,
     risk_level: Annotated[RiskLevel, Form()] = RiskLevel.LOW,
 ) -> DocumentWritten:
-    """Stored, then handed to the KB provider by the worker (202). Routed by the collection: high
-    risk waits for a reviewer (`candidate`), a reviewer's upload is verified, others go live.
-    The title is screened like an entry's; the content is parsed by the provider, not screened."""
-    data = await file.read(services.documents.max_bytes + 1)  # one byte over says "too large"
-    uploaded = await services.documents.upload(
-        principal.namespace_id,
-        collection_id,
-        file.filename or "",
-        data,
-        actor=principal.actor,
-        mime=file.content_type,
-        title=title or None,
-        risk_level=risk_level,
-    )
+    """A `file`, or a `url` to import (exactly one). Stored, then handed to the KB provider by the
+    worker (202); a URL is fetched by the worker first (public https only; the namespace's
+    `documents.url_allowlist` limits hosts), and a fetch that cannot succeed fails the document.
+    Routed by the collection: high risk waits for a reviewer (`candidate`), a reviewer's upload
+    is verified, others go live. The title is screened like an entry's; the content is parsed by
+    the provider, not screened."""
+    documents = services.documents
+    if url is not None and file is None:
+        uploaded = await documents.import_url(
+            principal.namespace_id,
+            collection_id,
+            url,
+            actor=principal.actor,
+            title=title or None,
+            risk_level=risk_level,
+        )
+    elif file is not None and url is None:
+        data = await file.read(documents.max_bytes + 1)  # one byte over says "too large"
+        uploaded = await documents.upload(
+            principal.namespace_id,
+            collection_id,
+            file.filename or "",
+            data,
+            actor=principal.actor,
+            mime=file.content_type,
+            title=title or None,
+            risk_level=risk_level,
+        )
+    else:
+        raise Unprocessable("send either a file or a url")
     candidate = uploaded.candidate
     return DocumentWritten(
         document=DocumentOut.model_validate(uploaded.document),

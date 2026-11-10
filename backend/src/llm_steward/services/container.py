@@ -107,6 +107,13 @@ def build_services(
     reconcile = ReconcileService(sessions, providers.memory)
     idempotency = IdempotencyService(sessions)
     webhooks = WebhookService(sessions, allow_private=settings.allow_private_urls)
+    documents = DocumentService(
+        sessions,
+        governance,
+        providers.kb,
+        max_bytes=settings.kb_max_upload_mb * 1024 * 1024,
+        allow_private_urls=settings.allow_private_urls,
+    )
 
     async def namespace_rpm(namespace_id: uuid.UUID) -> int | None:
         async with sessions() as s:
@@ -125,6 +132,7 @@ def build_services(
         JobType.MEMORY_RECONCILE: reconcile.handle,
         JobType.KB_SUGGEST: kb.handle,
         JobType.WEBHOOK_DELIVER: webhooks.handle,
+        JobType.DOC_FETCH: documents.handle_fetch,
     }
     missing = set(JobType) - set(handlers)
     if missing:
@@ -170,12 +178,7 @@ def build_services(
         ),
         memories=MemoryService(sessions, governance, providers.memory),
         kb=kb,
-        documents=DocumentService(
-            sessions,
-            governance,
-            providers.kb,
-            max_bytes=settings.kb_max_upload_mb * 1024 * 1024,
-        ),
+        documents=documents,
         episodes=episodes,
         reconcile=reconcile,
         retrieval=retrieval,

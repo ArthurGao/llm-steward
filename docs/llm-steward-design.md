@@ -472,7 +472,7 @@ flowchart TB
 |  | `GET /profile?user_id=` | 该用户的所有 profile 与 pinned memory，以 key-value 形式返回 |
 |  | `DELETE /memories?user_id=` | 删除某用户的全部记忆（满足 GDPR 等合规要求，物理删除）。P5a：只能用 API key；删除该用户的 memory 及其变更历史、episode、问该用户的或由其 episode 生成的待处理 candidate、检索日志；引擎里的副本由 outbox 按引擎 id 删除；已决定的 candidate 和由此形成的团队知识保留（KB 的审计记录） |
 | KB | `POST/GET /kb/collections` · `PATCH /kb/collections/{id}` | collection 管理与审核策略 |
-|  | `POST /kb/documents`（multipart 或 URL）· `GET /kb/documents/{id}` · `DELETE` | 文档导入与处理状态 |
+|  | `POST /kb/documents`（multipart 或 URL）· `GET /kb/documents/{id}` · `DELETE` | 文档导入与处理状态。URL 导入（P5c2）：表单字段 `url` 代替 `file`（二选一）；请求里只做格式检查，worker 经出站防护去拉取，再走上传的流程；拉取失败的文档标记 `failed`，错误是固定文字 |
 |  | `POST/GET /kb/entries` · `GET/PATCH/DELETE /kb/entries/{id}` | 知识条目；PATCH 会生成新版本 |
 |  | `POST /kb/entries/{id}/deprecate` · `/verify` | 状态流转（需要 review scope） |
 | Retrieval | `POST /retrieve` | 统一检索（第 6 节） |
@@ -924,7 +924,12 @@ llm-steward/
    - P5b 限流、幂等、任务状态（2026-11-10）：细节见第 7 节。迁移 0009 新增 `idempotency_keys`；worker 每小时清理过期的 key。`GET /v1/jobs/{id}`（read，只看本命名空间，不返回 payload）。`/metrics` 推到 P6，和 Admin 的统计一起做。
    - P5c1 出站防护与 webhooks（2026-11-10）：
      - `outbound.py`：用户给的 URL（webhook、文档 URL）只能访问公网。解析主机名，所有解析结果都必须是 global 地址（拒绝私网、回环、链路本地含云元数据、CGNAT、组播、保留、未指定，以及任何写成 IPv6 的 IPv4）；连接直接发往检查过的那个地址，主机名留给 TLS SNI 和 `Host` 头，防 DNS rebinding；每一跳重定向重新检查，最多 3 跳；只允许 https；不复用连接；响应体有上限。`STEWARD_ALLOW_PRIVATE_URLS=true` 只给本地开发用（放开地址和 http，不放开大小和跳数）。配置好的引擎（WeKnora、lite-rag）不是用户输入，走自己的客户端。
+     - 提交后的安全审查（75ec4fa）发现：Python 把 NAT64（`64:ff9b::/96`）和 IPv4-compatible（`::/96`）地址算作 global，不管里面嵌的是哪个 IPv4，经过转换网关就能打到内网。已修：凡是内嵌 IPv4 的 IPv6 段（IPv4-compatible、IPv4-mapped、NAT64 两段、6to4、Teredo）一律拒绝。
      - 迁移 0010 给 `jobs.type` 加 `webhook.deliver`。任务队列新增"永久失败"：重试解决不了的错误直接标记 failed，不再白白退避 8 次。
+   - P5c2 按 URL 导入文档（2026-11-10）：
+     - 请求只记录：URL 必须是 https（本地开发可放开 http）且有主机；文件名带类型时当场检查类型；不做任何网络访问。文档行带 `source_uri`，排一个 `kb.doc_fetch` 任务（迁移 0011）；无论是否需要审核都先拉取，审核者能看到内容。
+     - worker 经 `outbound.py` 拉取（跟随最多 3 次已检查的重定向，大小上限同上传，命名空间 `documents.url_allowlist` 限定主机），然后用治理操作 `AttachDocumentFile` 交回字节：存成和上传一样的文件，文档已生效就排 ingest。审核在拉取之前或之后通过都行：两者都锁文档行，后发生的那个排 ingest。
+     - 名字没有类型时按响应的 Content-Type 命名；类型不支持、404 等 4xx、超大、地址被拒、集合里已有相同内容，文档直接 `failed`（`FailDocumentFetch`，固定错误文字，不含 URL 和对方的响应）；5xx、408、429、网络错误退避重试，用到任务自己的最后一次尝试时文档 `failed`、任务也标记 failed（`steward jobs failed` 可见）。webhook 和文档拉取共用 `outbound.retryable` 判断哪些答复值得重试；被拒的原因带结构化的 `reason`，不靠匹配错误文字。
 7. **P6 Admin 前端**
    - [ ] 布局、namespace 切换器、生成的客户端（不做登录；远程访问的保护方式在 P6 计划时定）
    - [ ] 按顺序实现：Memories → Knowledge Base → Review Queue → Providers → Dashboard → Playground → Users → Activity → Jobs → Settings

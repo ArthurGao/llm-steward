@@ -303,16 +303,42 @@ class SubmitKbDocument:
     caller's estimate, the rules on its title, the collection's default). A reviewer's upload is
     verified; high risk (or a `review` route) waits in the review queue and nothing reaches the
     engine; otherwise it is live at once (no end user is asked about a document). The content is
-    not screened: it has not been parsed yet."""
+    not screened: it has not been parsed yet. Imported by URL (`source_uri`, no `data` yet): the
+    worker fetches it (`kb.doc_fetch`) and hands the bytes back with `AttachDocumentFile`."""
 
     namespace_id: uuid.UUID
     collection_id: uuid.UUID
     title: str
-    filename: str
+    filename: str  # may be "" for a URL whose name has no type: the fetch names it
     mime: str | None
-    data: bytes = field(repr=False)
-    content_hash: str  # sha256 of `data`, computed by the caller off the event loop
+    data: bytes | None = field(repr=False)  # None: imported by URL, fetched later
+    content_hash: str  # sha256 of `data` (computed off the event loop); "" until fetched
     risk_level: RiskLevel = RiskLevel.LOW
+    source_uri: str | None = None
+
+
+@dataclass(frozen=True)
+class AttachDocumentFile:
+    """The bytes the worker fetched for a document imported by URL: stored like an upload's,
+    and queued for the engine if the document is live by now (approved before or after the
+    fetch: whichever comes second queues the ingest). A copy already in the collection fails it."""
+
+    namespace_id: uuid.UUID
+    document_id: uuid.UUID
+    data: bytes = field(repr=False)
+    content_hash: str
+    mime: str | None
+    filename: str
+
+
+@dataclass(frozen=True)
+class FailDocumentFetch:
+    """A fetch that cannot succeed: the document's parse status becomes `failed` with a fixed
+    reason (never the URL or the server's answer)."""
+
+    namespace_id: uuid.UUID
+    document_id: uuid.UUID
+    error: str
 
 
 @dataclass(frozen=True)
@@ -393,6 +419,8 @@ Operation = (
     | TransitionKbEntry
     | SubmitKbDocument
     | RetireKbDocument
+    | AttachDocumentFile
+    | FailDocumentFetch
     | CreateCandidate
     | DecideCandidate
     | EraseUser
@@ -482,6 +510,10 @@ class GovernanceService:
                 return await self._transition_kb_entry(s, op, actor)
             case SubmitKbDocument():
                 return await self._submit_kb_document(s, op, actor)
+            case AttachDocumentFile():
+                return await self._attach_document_file(s, op, actor)
+            case FailDocumentFetch():
+                return await self._fail_document_fetch(s, op, actor)
             case RetireKbDocument():
                 return await self._retire_kb_document(s, op, actor)
             case CreateCandidate():
@@ -980,16 +1012,10 @@ class GovernanceService:
             s, KbCollection, op.namespace_id, op.collection_id, "collection", lock=False
         )
         digest = op.content_hash
-        same = await s.scalar(
-            select(KbDocument.id).where(
-                KbDocument.namespace_id == op.namespace_id,
-                KbDocument.collection_id == op.collection_id,
-                KbDocument.content_hash == digest,
-                KbDocument.state.in_((KbStatus.DRAFT, *EFFECTIVE_KB_STATUSES)),
-            )
-        )
-        if same is not None:
-            raise Conflict(f"this file is already document {same} in the collection")
+        if op.data is not None:
+            same = await _same_file(s, op.namespace_id, op.collection_id, digest)
+            if same is not None:
+                raise Conflict(f"this file is already document {same} in the collection")
         checked = await self._screen(s, op.namespace_id, op.title, "")
         risk = max_risk(op.risk_level, checked.level, collection.default_risk)
         if actor.is_reviewer:
@@ -1006,19 +1032,24 @@ class GovernanceService:
             filename=op.filename,
             mime=op.mime,
             content_hash=digest,
-            size_bytes=len(op.data),
+            size_bytes=len(op.data or b""),
             status=DocStatus.PENDING,
             risk_level=risk,
             state=state,
             created_by=actor.id,
+            source_uri=op.source_uri,
         )
         s.add(doc)
         await s.flush()
-        s.add(KbDocumentFile(document_id=doc.id, namespace_id=doc.namespace_id, data=op.data))
         reason = _reason(None, checked)
         self._log(s, ObjectType.KB_DOCUMENT, doc, ChangeOp.CREATE, None, actor, reason)
+        if op.data is None:  # fetched by the worker, approved or not (a reviewer may read it)
+            enqueue(s, op.namespace_id, JobType.DOC_FETCH, {"document_id": str(doc.id)})
+        else:
+            s.add(KbDocumentFile(document_id=doc.id, namespace_id=doc.namespace_id, data=op.data))
         if not waits:
-            await self._queue_kb(s, doc, JobType.DOC_INGEST)
+            if op.data is not None:
+                await self._queue_kb(s, doc, JobType.DOC_INGEST)
             return doc, None
         candidate = CreateCandidate(
             namespace_id=op.namespace_id,
@@ -1032,6 +1063,45 @@ class GovernanceService:
             reason=reason,
         )
         return doc, await self._create_candidate(s, candidate, actor)
+
+    async def _attach_document_file(
+        self, s: AsyncSession, op: AttachDocumentFile, actor: Actor
+    ) -> KbDocument:
+        doc = await load_owned(s, KbDocument, op.namespace_id, op.document_id, "document")
+        if (
+            doc.state not in (KbStatus.DRAFT, *EFFECTIVE_KB_STATUSES)
+            or doc.status != DocStatus.PENDING
+        ):
+            return doc  # taken out, or already settled, while it was being fetched
+        same = await _same_file(s, doc.namespace_id, doc.collection_id, op.content_hash)
+        if same is not None:
+            return await self._fail_fetch(s, doc, f"duplicate of document {same}", actor)
+        before = snapshot(doc)
+        doc.content_hash, doc.size_bytes, doc.mime = op.content_hash, len(op.data), op.mime
+        doc.filename = doc.filename or op.filename
+        s.add(KbDocumentFile(document_id=doc.id, namespace_id=doc.namespace_id, data=op.data))
+        await s.flush()
+        self._log(s, ObjectType.KB_DOCUMENT, doc, ChangeOp.UPDATE, before, actor, "fetched")
+        if doc.state in EFFECTIVE_KB_STATUSES:
+            await self._queue_kb(s, doc, JobType.DOC_INGEST)
+        return doc
+
+    async def _fail_document_fetch(
+        self, s: AsyncSession, op: FailDocumentFetch, actor: Actor
+    ) -> KbDocument:
+        doc = await load_owned(s, KbDocument, op.namespace_id, op.document_id, "document")
+        if doc.status != DocStatus.PENDING:
+            return doc
+        return await self._fail_fetch(s, doc, op.error, actor)
+
+    async def _fail_fetch(
+        self, s: AsyncSession, doc: KbDocument, error: str, actor: Actor
+    ) -> KbDocument:
+        before = snapshot(doc)
+        doc.status, doc.error = DocStatus.FAILED, error[:200]
+        await s.flush()
+        self._log(s, ObjectType.KB_DOCUMENT, doc, ChangeOp.UPDATE, before, actor, "fetch failed")
+        return doc
 
     async def _retire_kb_document(
         self, s: AsyncSession, op: RetireKbDocument, actor: Actor
@@ -1072,7 +1142,7 @@ class GovernanceService:
             await s.execute(delete(KbDocumentFile).where(KbDocumentFile.document_id == doc.id))
         await s.flush()
         self._log(s, ObjectType.KB_DOCUMENT, doc, ChangeOp.TRANSITION, before, actor, reason)
-        if to in EFFECTIVE_KB_STATUSES and not was_live:
+        if to in EFFECTIVE_KB_STATUSES and not was_live and _has_bytes(doc):
             await self._queue_kb(s, doc, JobType.DOC_INGEST)
         elif was_live and to not in EFFECTIVE_KB_STATUSES:
             await self._queue_kb(s, doc, JobType.DOC_REMOVE)
@@ -1358,6 +1428,27 @@ def _draft(op: SubmitKbEntry, checked: Assessment) -> dict[str, Any]:
 
 
 # Webhook event data (design §7): ids and states, never content.
+
+
+def _has_bytes(doc: KbDocument) -> bool:
+    """False for a document imported by URL whose fetch has not finished: it has nothing to hand
+    to the engine yet, and the fetch queues the ingest itself (`AttachDocumentFile`)."""
+    return doc.source_uri is None or doc.content_hash != ""
+
+
+async def _same_file(
+    s: AsyncSession, namespace_id: uuid.UUID, collection_id: uuid.UUID, digest: str
+) -> uuid.UUID | None:
+    """A copy of the same file already in the collection (live or waiting for review)."""
+    found: uuid.UUID | None = await s.scalar(
+        select(KbDocument.id).where(
+            KbDocument.namespace_id == namespace_id,
+            KbDocument.collection_id == collection_id,
+            KbDocument.content_hash == digest,
+            KbDocument.state.in_((KbStatus.DRAFT, *EFFECTIVE_KB_STATUSES)),
+        )
+    )
+    return found
 
 
 def _candidate_event(candidate: Candidate) -> dict[str, Any]:

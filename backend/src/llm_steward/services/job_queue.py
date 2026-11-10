@@ -32,6 +32,12 @@ class ClaimedJob:
     type: JobType
     payload: dict[str, Any]
     attempts: int
+    max_attempts: int = 8
+
+    @property
+    def last_attempt(self) -> bool:
+        """A handler that settles its own object on giving up (e.g. a failed document) asks."""
+        return self.attempts >= self.max_attempts
 
 
 def enqueue(
@@ -113,12 +119,21 @@ class JobQueue:
                         locked_until=now + self._lease,
                         attempts=Job.attempts + 1,
                     )
-                    .returning(Job.id, Job.namespace_id, Job.type, Job.payload, Job.attempts)
+                    .returning(
+                        Job.id,
+                        Job.namespace_id,
+                        Job.type,
+                        Job.payload,
+                        Job.attempts,
+                        Job.max_attempts,
+                    )
                 )
             ).first()
         if row is None:  # another worker won the race
             return None
-        return ClaimedJob(row.id, row.namespace_id, JobType(row.type), row.payload, row.attempts)
+        return ClaimedJob(
+            row.id, row.namespace_id, JobType(row.type), row.payload, row.attempts, row.max_attempts
+        )
 
     @property
     def lease(self) -> timedelta:
