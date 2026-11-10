@@ -20,17 +20,18 @@ from sqlalchemy import delete, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from llm_steward.errors import Conflict, Forbidden, NotFound, Unprocessable
+from llm_steward.ids import uuid7
 from llm_steward.models import (
     Candidate,
     ChangeLog,
     Episode,
     ExternalRef,
+    IdempotencyKey,
     KbCollection,
     KbDocument,
     KbDocumentFile,
     KbEntry,
     Memory,
-    IdempotencyKey,
     Namespace,
     RetrievalLog,
 )
@@ -56,7 +57,7 @@ from llm_steward.models.enums import (
     RiskLevel,
     SyncStatus,
 )
-from llm_steward.namespace_config import NamespaceConfig
+from llm_steward.namespace_config import NamespaceConfig, WebhookEvent
 from llm_steward.namespace_config import load as load_config
 from llm_steward.pipeline.risk import Assessment, RiskPolicy, assess, redact_pii
 from llm_steward.providers.base import Scope
@@ -775,6 +776,8 @@ class GovernanceService:
         self._log(s, ObjectType.KB_ENTRY, entry, ChangeOp.CREATE, None, actor)
         if entry.status in EFFECTIVE_KB_STATUSES:
             await self._queue_kb(s, entry, JobType.KB_UPSERT)
+        if entry.status == KbStatus.VERIFIED:
+            await queue_event(s, entry.namespace_id, "kb_entry.verified", _entry_event(entry))
         return entry
 
     async def _create_from_draft(
@@ -889,6 +892,10 @@ class GovernanceService:
             await self._queue_kb(s, entry, JobType.KB_UPSERT)
         elif was_effective:
             await self._queue_kb(s, entry, JobType.KB_REMOVE)
+        if to == KbStatus.VERIFIED:
+            await queue_event(s, entry.namespace_id, "kb_entry.verified", _entry_event(entry))
+        elif to == KbStatus.DEPRECATED:
+            await queue_event(s, entry.namespace_id, "kb_entry.deprecated", _entry_event(entry))
         return entry
 
     async def _screen(
@@ -1094,6 +1101,9 @@ class GovernanceService:
         s.add(candidate)
         await s.flush()
         self._log(s, ObjectType.CANDIDATE, candidate, ChangeOp.CREATE, None, actor)
+        await queue_event(
+            s, candidate.namespace_id, "candidate.created", _candidate_event(candidate)
+        )
         return candidate
 
     async def _decide_candidate(
@@ -1347,6 +1357,29 @@ def _draft(op: SubmitKbEntry, checked: Assessment) -> dict[str, Any]:
     }
 
 
+# Webhook event data (design §7): ids and states, never content.
+
+
+def _candidate_event(candidate: Candidate) -> dict[str, Any]:
+    return {
+        "candidate_id": str(candidate.id),
+        "stage": candidate.stage.value,
+        "target_type": candidate.target_type.value,
+        "op": candidate.op.value,
+        "risk_level": candidate.risk_level.value,
+        "user_id": candidate.requested_for_user,  # whom to show the card to
+    }
+
+
+def _entry_event(entry: KbEntry) -> dict[str, Any]:
+    return {
+        "entry_id": str(entry.id),
+        "collection_id": str(entry.collection_id),
+        "status": entry.status.value,
+        "version": entry.version,
+    }
+
+
 def _reason(given: str | None, checked: Assessment) -> str | None:
     """What is written about a change; a caller's or model's free text is redacted (PII)."""
     return "; ".join([*([redact_pii(given)] if given else []), *checked.reasons]) or None
@@ -1389,6 +1422,21 @@ def _checked_policy(policy: dict[str, str]) -> dict[str, str]:
                 f"{', '.join(ROUTES)} (high always goes to review)"
             )
     return dict(policy)
+
+
+async def queue_event(
+    s: AsyncSession, namespace_id: uuid.UUID, event: WebhookEvent, data: dict[str, Any]
+) -> None:
+    """One webhook delivery per endpoint subscribed to `event` (design §7), queued in the
+    caller's transaction: sent only if the write commits. `data` holds ids and states only, never
+    content (the host fetches what it may see through the API)."""
+    hooks = [h for h in (await namespace_config(s, namespace_id)).webhooks if event in h.events]
+    if not hooks:
+        return
+    event_id, at = str(uuid7()), utcnow().isoformat()
+    for hook in hooks:
+        payload = {"event_id": event_id, "event": event, "url": hook.url, "at": at, "data": data}
+        enqueue(s, namespace_id, JobType.WEBHOOK_DELIVER, payload)
 
 
 async def namespace_config(s: AsyncSession, namespace_id: uuid.UUID) -> NamespaceConfig:

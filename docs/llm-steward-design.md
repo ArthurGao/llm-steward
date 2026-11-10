@@ -489,9 +489,9 @@ flowchart TB
 
 - 错误统一为 RFC 9457 Problem Details：`{type, title, status, detail, code}`。
 - 列表使用 cursor 分页：`?cursor=&limit=`。
-- 写接口支持 `Idempotency-Key` 请求头，避免重试时重复写入。实现（P5b，语义按 IETF 草案）：key 归属于调用方（命名空间 + API key + token 的用户），保留 24 小时；同 key 同请求重放已存的响应（带 `Idempotent-Replayed: true`），同 key 不同请求 422 `idempotency_key_reused`，第一次还在处理时 409 `idempotency_in_progress`；5xx、408、429 释放 key（可以真正重试），其他 4xx 是这次请求的答案，照样重放。key 须为 1–200 个可见 ASCII 字符，否则 400。鉴权和限流在每个请求里只做一次（结果缓存在请求里，幂等中间件、路由和 MCP 共用），被限流的请求在预留 key 之前就被拒绝；为算哈希缓冲的请求体不超过上传上限 + 1 MB，否则 413。
+- 写接口支持 `Idempotency-Key` 请求头，避免重试时重复写入。实现（P5b，语义按 IETF 草案）：key 归属于调用方（命名空间 + API key + token 的用户），保留 24 小时；同 key 同请求重放已存的响应（带 `Idempotent-Replayed: true`），同 key 不同请求 422 `idempotency_key_reused`，第一次还在处理时 409 `idempotency_in_progress`；5xx、408、429 释放 key（可以真正重试），其他 4xx 是这次请求的答案，照样重放。key 须为 1–200 个可见 ASCII 字符，否则 400。鉴权和限流在每个请求里只做一次（结果缓存在请求里，幂等中间件、路由和 MCP 共用），被限流的请求在预留 key 之前就被拒绝；为算哈希缓冲的请求体不超过上传上限 + 1 MB，否则 413。不存储的：`/v1/tokens/user`（存下来就是一张有效的凭证）和 `/v1/retrieve`（响应是记忆内容），这两个路由忽略这个请求头；按用户删除时清掉该命名空间已存的响应（API key 的写入无法对应到具体用户，丢掉一天的重试缓存无害）。这两点来自 e98164f 的提交后安全审查。
 - 所有对象都返回 `source_refs`，可以追溯出处。
-- **Webhooks**（可选）：`candidate.created`、`kb_entry.verified`、`kb_entry.deprecated`、`document.ready`。使用 HMAC 签名，让宿主 app 实时知道审核结果。
+- **Webhooks**（可选）：`candidate.created`、`kb_entry.verified`、`kb_entry.deprecated`、`document.ready`。使用 HMAC 签名，让宿主 app 实时知道审核结果。实现（P5c）：命名空间配置 `webhooks: [{url, events, secret_env}]`，密钥从 `secret_env` 指定的环境变量读（不入库）。事件在治理写入的同一事务里排进 outbox（`webhook.deliver`），写入回滚就不会发；worker 投递。请求体 `{id, type, created_at, namespace_id, data}`，`data` 只有 id 和状态，不含内容。请求头 `Steward-Event-Id`、`Steward-Event`、`Steward-Signature: t=<秒>,v1=<HMAC-SHA256("<t>." + body) 的十六进制>`；接收方验签、拒绝过旧的时间戳、按事件 id 去重（至少投递一次）。2xx 成功；408、429、5xx、网络错误退避重试；其他状态码（包括 3xx：不跟随重定向）、缺密钥、地址被拒，任务直接失败（`steward jobs failed` 可见）。配置里已移除的 endpoint 不再调用。地址只允许公网 https（见下面的出站防护）。
 
 ### Python SDK
 
@@ -922,6 +922,9 @@ llm-steward/
      - 提交后的安全审查（2026-11-10）发现的自批路径，已修：`/v1/suggestions` 原本也开放给 user token，但中风险建议会生成问"同一个用户"的卡片，用户就能自己提议、自己批准进团队 KB；改为只接受 API key。同理，user token 接受卡片时带修改后的 `draft`，只能 `scope: personal`（存成自己的记忆）；改写团队知识返回 403。宿主后端（API key）代用户转交修改不受影响。
      - 按用户删除做成治理操作 `EraseUser`（规则 6 的例外，不写 change_log）。
    - P5b 限流、幂等、任务状态（2026-11-10）：细节见第 7 节。迁移 0009 新增 `idempotency_keys`；worker 每小时清理过期的 key。`GET /v1/jobs/{id}`（read，只看本命名空间，不返回 payload）。`/metrics` 推到 P6，和 Admin 的统计一起做。
+   - P5c1 出站防护与 webhooks（2026-11-10）：
+     - `outbound.py`：用户给的 URL（webhook、文档 URL）只能访问公网。解析主机名，所有解析结果都必须是 global 地址（拒绝私网、回环、链路本地含云元数据、CGNAT、组播、保留、未指定，以及任何写成 IPv6 的 IPv4）；连接直接发往检查过的那个地址，主机名留给 TLS SNI 和 `Host` 头，防 DNS rebinding；每一跳重定向重新检查，最多 3 跳；只允许 https；不复用连接；响应体有上限。`STEWARD_ALLOW_PRIVATE_URLS=true` 只给本地开发用（放开地址和 http，不放开大小和跳数）。配置好的引擎（WeKnora、lite-rag）不是用户输入，走自己的客户端。
+     - 迁移 0010 给 `jobs.type` 加 `webhook.deliver`。任务队列新增"永久失败"：重试解决不了的错误直接标记 failed，不再白白退避 8 次。
 7. **P6 Admin 前端**
    - [ ] 布局、namespace 切换器、生成的客户端（不做登录；远程访问的保护方式在 P6 计划时定）
    - [ ] 按顺序实现：Memories → Knowledge Base → Review Queue → Providers → Dashboard → Playground → Users → Activity → Jobs → Settings

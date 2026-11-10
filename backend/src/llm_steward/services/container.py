@@ -41,6 +41,7 @@ from llm_steward.services.rate_limit import RateLimiter
 from llm_steward.services.reconcile_service import ReconcileService, schedule_reconcile
 from llm_steward.services.retrieval_service import RetrievalService
 from llm_steward.services.sync_service import SyncService
+from llm_steward.services.webhook_service import WebhookService
 from llm_steward.services.worker import Tick, Worker
 from llm_steward.storage.db import engine_scope, session_factory
 
@@ -71,6 +72,7 @@ class Services:
     jobs: JobQueue
     idempotency: IdempotencyService
     rate_limiter: RateLimiter
+    webhooks: WebhookService
 
 
 def build_llm(settings: Settings, providers: Providers) -> LLM | None:
@@ -104,6 +106,7 @@ def build_services(
     )
     reconcile = ReconcileService(sessions, providers.memory)
     idempotency = IdempotencyService(sessions)
+    webhooks = WebhookService(sessions, allow_private=settings.allow_private_urls)
 
     async def namespace_rpm(namespace_id: uuid.UUID) -> int | None:
         async with sessions() as s:
@@ -121,6 +124,7 @@ def build_services(
         JobType.MEMORY_EXTRACT: extraction.handle,
         JobType.MEMORY_RECONCILE: reconcile.handle,
         JobType.KB_SUGGEST: kb.handle,
+        JobType.WEBHOOK_DELIVER: webhooks.handle,
     }
     missing = set(JobType) - set(handlers)
     if missing:
@@ -179,6 +183,7 @@ def build_services(
         jobs=jobs,
         idempotency=idempotency,
         rate_limiter=RateLimiter(settings.rate_limit_per_minute, namespace_rpm),
+        webhooks=webhooks,
     )
 
 

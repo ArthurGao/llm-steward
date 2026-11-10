@@ -73,6 +73,9 @@ class Settings(BaseSettings):
     # Requests per minute per API key (a user token spends its key's), in this process; a
     # namespace may set its own (`limits.requests_per_minute`). None: unlimited.
     rate_limit_per_minute: int | None = Field(default=600, ge=1)
+    # Webhooks and document URLs are user-supplied: only public https addresses are called.
+    # Local development only: also private addresses and plain http (e.g. a receiver on localhost).
+    allow_private_urls: bool = False
 
     # Run the outbox worker inside the API process (single-process deployments); otherwise run
     # `steward worker` separately.

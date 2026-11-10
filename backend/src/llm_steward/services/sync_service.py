@@ -55,6 +55,7 @@ from llm_steward.providers.base import (
     Scope,
     document_parser,
 )
+from llm_steward.services.governance_service import queue_event
 from llm_steward.services.job_queue import ClaimedJob, describe_error, enqueue
 
 # retired: a removal job is queued; gone: the object row itself was deleted (nothing to queue on)
@@ -309,6 +310,13 @@ class SyncService:
                 await s.execute(
                     delete(KbDocumentFile).where(KbDocumentFile.document_id == document_id)
                 )
+            if status == DocStatus.READY:
+                data = {
+                    "document_id": str(doc.id),
+                    "collection_id": str(doc.collection_id),
+                    "status": doc.state.value,
+                }
+                await queue_event(s, doc.namespace_id, "document.ready", data)
             if status == DocStatus.FAILED:  # final: take the engine's copy out too
                 enqueue(s, doc.namespace_id, JobType.DOC_REMOVE, {"document_id": str(doc.id)})
             elif status != DocStatus.READY:

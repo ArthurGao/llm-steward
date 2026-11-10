@@ -66,6 +66,13 @@ def describe_error(exc: BaseException) -> str:
     return f"{type(exc).__name__}: {message}"[:ERROR_MAX_CHARS]
 
 
+class PermanentFailure(StewardError):
+    """A job failure retrying cannot fix (e.g. a webhook endpoint answering 410): the job is
+    failed at once, visible to `steward jobs failed`, instead of backing off for nothing."""
+
+    code = "permanent_failure"
+
+
 class JobQueue:
     def __init__(
         self,
@@ -133,7 +140,7 @@ class JobQueue:
                 return JobStatus.RUNNING
             current.error = describe_error(exc)
             current.locked_until = None
-            if current.attempts >= current.max_attempts:
+            if current.attempts >= current.max_attempts or isinstance(exc, PermanentFailure):
                 current.status = JobStatus.FAILED
             else:
                 delay = min(self._backoff_base_s * 2 ** (current.attempts - 1), self._backoff_cap_s)

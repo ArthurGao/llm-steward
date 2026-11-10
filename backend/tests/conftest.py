@@ -177,6 +177,19 @@ class AppClient:
 
         return session_factory(self.services.engine)
 
+    def jobs(self, job_type: Any) -> list[Any]:
+        """Every job of one type, oldest first."""
+        from sqlalchemy import select
+
+        from llm_steward.models import Job
+
+        async def read() -> list[Any]:
+            async with self.sessions() as s:
+                query = select(Job).where(Job.type == job_type).order_by(Job.created_at)
+                return list(await s.scalars(query))
+
+        return self.call(read)
+
     def count(self, model: Any) -> int:
         """Rows in a table (every namespace)."""
         from sqlalchemy import func, select
