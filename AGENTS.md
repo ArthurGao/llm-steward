@@ -54,9 +54,8 @@ stay in P5); API-key writes are actor `host_app`; real LLM calls in local develo
 subscription profiles — **only when the user has started the gateway and asked for it**; tests use FakeLLM.
 WeKnora's own embedding model is local, served by Ollama on the host (decided 2026-11-08).
 
-Open questions (design §11) — do not decide them silently; ask, or implement the conservative option behind config:
-- License (design suggests Apache-2.0).
-- TypeScript SDK in v1?
+Decided (2026-11-10): license Apache-2.0; no TypeScript SDK in v1; Admin has no login or accounts (an internal
+monitor; how a remote `/admin/v1` is protected is decided in the P6 plan); reviewers are `review`-scoped API keys.
 
 ## Non-negotiable rules
 
@@ -116,6 +115,8 @@ uv run pytest -m eval              # opt-in: recall@8 on the synthetic labelled 
 uv run steward migrate             # alembic upgrade head on STEWARD_DATABASE_URL
 uv run steward ns create <slug>    # a namespace (no HTTP route creates one)
 uv run steward key create <slug>   # prints an API key once: Authorization: Bearer stw_<prefix>_<secret>
+uv run steward ns apply -f ns.yaml # create/update a namespace and its config (validated; design §8)
+uv run steward jobs failed         # jobs out of attempts; `steward jobs retry <id>… | --all-failed`
 uv run steward serve               # http://127.0.0.1:8600 (+ outbox worker unless STEWARD_RUN_WORKER=false)
 uv run steward worker              # the outbox worker on its own
 ```

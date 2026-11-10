@@ -178,7 +178,7 @@ GovernanceService 是唯一的写入出口；同步器（Syncer）通过任务�
 | native 实现 | sqlite-vec（`vec0`）+ FTS5 + jieba + fastembed | 零依赖、离线可跑 |
 | 后台任务 | 数据库任务表（outbox）+ asyncio worker | llm-steward 本身不依赖 Redis（WeKnora 自带的 Redis 只供 WeKnora 使用），两种数据库都能用 |
 | MCP | 官方 `mcp` Python SDK（streamable HTTP），挂载在 `/mcp` | 与 REST 共用 service 和鉴权 |
-| 鉴权 | Namespace API key（哈希存储）+ Admin JWT | 机器调用和人工登录分开 |
+| 鉴权 | Namespace API key（哈希存储）+ 短期 user token（浏览器端）；Admin 不做登录（2026-11-10） | 机器调用和终端用户分开；Admin 是内部监控台 |
 | 前端 | React + Vite + TypeScript + TanStack Router/Query + shadcn/ui + Tailwind | 用 `@hey-api/openapi-ts` 生成客户端 |
 | 可观测 | structlog、Prometheus `/metrics`、可选 OpenTelemetry | 重点监控检索延迟、同步失败率、provider 错误率 |
 | 部署 | Docker Compose，三个 profile | 一条命令启动 |
@@ -204,7 +204,7 @@ STEWARD_LLM_MODEL=anthropic/claude-haiku-5-5
 | --- | --- | --- |
 | `namespaces` | 接入项目 | `slug`、`name`、`config`（JSON，含选用的 provider，第 8 节） |
 | `api_keys` | 机器调用的凭证 | `namespace_id`、`prefix`、`key_hash`、`scopes`（read / write / review / admin）、`last_used_at`、`revoked_at` |
-| `admin_users` | Admin 登录用户 | `email`、`password_hash`、`role`（owner / reviewer / viewer）、可访问的 namespace |
+| `admin_users` | Admin 登录用户（2026-11-10 决定 Admin 不做登录，表暂未使用，P6 再定去留） | `email`、`password_hash`、`role`（owner / reviewer / viewer）、可访问的 namespace |
 | `episodes` | 原始输入（对话、导入、手工操作），溯源的依据 | `kind`、`user_id`/`agent_id`/`session_id`、`content`（JSON messages）、`processed_at` |
 | `memories` | memory 的镜像 + 治理元数据（内容由 memory provider 产生和检索） | 见下方 DDL |
 | `kb_collections` | KB 分组，对应 provider 里的一个知识库 | `name`、`review_policy`、`default_risk` |
@@ -450,13 +450,14 @@ flowchart TB
 
 ## 7. API 设计
 
-对外提供三种接入方式，共用同一套 service 层和鉴权：REST（`/v1`）、Python SDK（`llm-steward-client`）和 MCP（`/mcp`）。Admin 前端使用单独的 `/admin/v1` 路由，由 JWT 鉴权。
+对外提供三种接入方式，共用同一套 service 层和鉴权：REST（`/v1`）、Python SDK（`llm-steward-client`）和 MCP（`/mcp`）。Admin 前端使用单独的 `/admin/v1` 路由（P6 与页面一起实现）。
 
 ### 鉴权
 
 - **业务调用**：`Authorization: Bearer stw_<prefix>_<secret>`。key 绑定 namespace，数据库只存 `sha256(secret)`。scopes 分 `read`、`write`、`review`、`admin`。
 - **终端用户身份**由宿主 app 在请求中传 `scope.user_id`，llm-steward 信任持 key 的服务端。如果要在浏览器里直接调用（例如确认卡片），宿主后端用 `POST /v1/tokens/user` 签发短期的 user token，该 token 只能操作这个 user 自己的 memory 和 candidate。
-- **Admin**：邮箱 + 密码登录获取 JWT；v2 再加 OIDC。
+- **Admin**：不做登录和账号（用户 2026-11-10 决定）：Admin 是内部使用的监控台，可能在本地运行、连接远程 backend。待 P6 定：远程部署时 `/admin/v1` 至少要一个静态 bearer（如 `STEWARD_ADMIN_TOKEN`），否则能连上端口的人就能读到所有 namespace 的记忆。
+- **审核者**：带 `review` scope 的 API key（P3a 起的做法，不再是过渡方案）。
 - 限流：按 key 做令牌桶。
 
 ### REST 端点（`/v1`）
@@ -535,7 +536,7 @@ MCP 的 agent **不能直接写入或审批 KB**，只能提议。这是防止 p
 
 ### 第一层：Namespace 配置（YAML / JSON）
 
-可以在 Admin 中编辑，也可以用 `steward ns apply -f ns.yaml` 导入（配置即代码）。
+可以在 Admin 中编辑，也可以用 `steward ns apply -f ns.yaml` 导入（配置即代码）。写入时按 `llm_steward/namespace_config.py` 的模型校验，未知的键直接拒绝（P5.0）。下面示例里的 `providers`、`llm`、`memory.profile_keys` / `buffer` / `conflict_compensation`、`memory.types[].schema`、`kb.review_due_days` 是设计目标，目前由全局环境变量决定或尚未实现，写进去会被拒绝；P5 新增 `limits.requests_per_minute`、`webhooks[]`、`documents.url_allowlist`。
 
 ```yaml
 slug: support-bot
@@ -656,7 +657,7 @@ Admin 是一个单页应用（SPA），顶部是 namespace 切换器，左侧是
 | **Settings** | namespace 配置（YAML 编辑器 + 校验）、prompt 模板（可试运行）、API key 管理（创建时只展示一次）、embedding space 切换与重建进度、成员与角色 | — |
 | **Providers** | 每个 namespace 当前使用的 memory / KB provider、版本、capabilities、健康状态、延迟与错误率；同步队列（pending / failed 数量）和对账结果 | 重试失败的同步、触发对账、更换 provider 并全量重新同步（带进度） |
 
-**权限**：`viewer` 只读；`reviewer` 可以审核和编辑 KB；`owner` 管理配置、key 和成员。
+**权限**：原设计为 `viewer` 只读、`reviewer` 审核和编辑 KB、`owner` 管理配置、key 和成员；2026-11-10 决定 Admin 不做登录和账号，审核权来自带 `review` scope 的 API key。
 
 **可嵌入组件**：`frontend/packages/widget` 发布为 npm 包 `@llm-steward/widget`，包含 `<SuggestionCard />`（第 5 节的确认卡片）和 `<MemoryPanel />`（让终端用户查看和删除自己的记忆），使用 user token 调用 API。
 
@@ -760,7 +761,7 @@ llm-steward/
    - [x] `POST/GET /v1/memories`（`infer=false`）、基础 `POST /v1/retrieve`
    - [x] `tests/contract/` 初版，先对 native 跑通
    - 实现说明（2026-11-08）：
-     - API key 鉴权（`stw_<prefix>_<secret>`、scope、吊销）提前到 P1，namespace 与 key 只能用 CLI 创建；user token、Admin JWT、限流仍在 P5。
+     - API key 鉴权（`stw_<prefix>_<secret>`、scope、吊销）提前到 P1，namespace 与 key 只能用 CLI 创建；user token、限流仍在 P5（Admin JWT 在 2026-11-10 取消）。
      - native 的 `native_*` 表归 provider 所有，首次使用时建表，不进治理迁移，Alembic 的自动生成也会忽略它们；在 PG 上，若治理 schema 不存在就拒绝建表，以免落进 `public`。
      - native embedding 默认用本地 fastembed `paraphrase-multilingual-MiniLM-L12-v2`（384 维），一个库只允许一种 embedding 模型。
      - native 的混合检索中，一条全文命中至少要覆盖查询一半的词才参与 RRF 融合，否则一个通用词（"user"/"用户"）就会压过向量检索的正确结果（真实模型测试发现）。
@@ -774,7 +775,7 @@ llm-steward/
      - 冲突补偿：provider 能 `extract` 却没有 `resolves_conflicts` 能力时，由 `memory.resolve` 角色判断；模型指向候选之外的记忆时由代码兜底为 ADD。抽取出的记忆在 `change_log` 中记录 `memory.extract:<model>` 作为来源。
      - profile key 是用户级（加 agent）的：一个用户每个 key 只有一个当前值，带 `session_id` 的 profile 写入返回 422。`GET /v1/profile` 与检索前置的 pinned/profile 用同一个查询。
      - 抽取任务重试时从已写入的镜像继续，不会再次调用 `provider.add`；`add` 成功、镜像提交之前进程崩溃时仍可能重复（mem0 没有幂等 key），由对账报告孤儿记录。
-     - 阶段收尾 review 中推迟的项（2026-11-08）：抽取任务最终失败（`failed`）后，其 episode 已标记处理，需要人工重放——放到 P5 的 admin「重试失败任务」；冲突补偿逐条串行、mem0 每次检索查两次（本人 + 共享）、episode token 数每次重算——在有真实负载数据后（P4）再优化。
+     - 阶段收尾 review 中推迟的项（2026-11-08）：抽取任务最终失败（`failed`）后，其 episode 已标记处理，需要人工重放——放到 P5 的 admin「重试失败任务」（P5.0 做成 `steward jobs retry`）；冲突补偿逐条串行、mem0 每次检索查两次（本人 + 共享）、episode token 数每次重算——在有真实负载数据后（P4）再优化。
      - 新操作者类型 `host_app`（API key 写入），与 llm-steward 自己的 `system` 写入区分。
      - 合约测试 `pytest -m contract` 默认不跑，CI 不跑；真实 LLM 只在手动验证时经 llm-gateway 调用。
    - 验收：Mem0Provider 通过合约测试；金标测试——先写入"我住北京"，再写入"我搬到上海了"，得到旧记录 superseded、新记录 active，检索只返回上海，`as_of` 能查到北京
@@ -790,7 +791,7 @@ llm-steward/
      - ~~留到 P4：lite-rag 一次只查一个 kb~~ 已在 P4a 完成（2026-11-09）：lite-rag S10 加了多 kb 检索，pin 升到 6d52f90。
    - [x] collections、entries、candidates、风险分级（含 PII）、KB 价值评分、promote、suggestions、accept / reject
    - P3a 治理核心（2026-11-09，不含 LLM）：
-     - 只有 reviewer 能产生 `verified`（新建或流转）：`admin`，或带 `review` scope 的 API key（用户 2026-11-09 选定，P5 有 Admin 登录前的做法）。review 是 `Actor` 的能力（`can_review`），不是身份：这种 key 在 change_log 里仍记为 `host_app`，审计能分清是人还是 key；终端用户、AI、system 都不能 verify。
+     - 只有 reviewer 能产生 `verified`（新建或流转）：`admin`，或带 `review` scope 的 API key（用户 2026-11-09 选定；2026-11-10 决定 Admin 不做登录，这就是长期做法）。review 是 `Actor` 的能力（`can_review`），不是身份：这种 key 在 change_log 里仍记为 `host_app`，审计能分清是人还是 key；终端用户、AI、system 都不能 verify。
      - 外部写入走 `SubmitKbEntry`：风险取调用方估计、规则结果和 collection 的 `default_risk`（下限）三者最高；low → `active`，medium → 有终端用户就生成 `awaiting_user` 卡片、否则 `active`，high → `awaiting_review`，reviewer 提交直接 `verified`。collection 的 `review_policy` 只能改 low / medium 的路由，high 永远进审核。
      - 修改走 `ReviseKbEntry`：非 reviewer 改 verified 条目、或新内容是 high，生成 UPDATE candidate 进审核，条目不变。
      - candidate 被接受时在同一事务里落地：ADD 建条目（并把 `target_id` 指向它）、UPDATE 改内容出新版本、DELETE 废弃；终端用户接受卡片：`personal` 存成自己的 memory，`team` 时 medium 生效为 `active`，high 转进审核队列；只有被问的那个用户（或 reviewer）能回答卡片，审核队列只有 reviewer 能处理；candidate 7 天后过期，过期后不能接受。
@@ -842,7 +843,7 @@ llm-steward/
        - （medium）`describe_error` 原来把异常原文写进 `jobs.error` 和 `external_refs.last_error`；驱动或库的异常可能带出 SQL 参数、请求内容。现在我们自己的错误（adapter 已保证不带响应正文）照旧记录；其他异常的消息先脱敏，再截断。
      - 跳过、留作后续的：
        - 条目和文档的状态流转、风险路由合并成一套受治理对象的生命周期，以及拆分 `governance_service.py`（约 1250 行）：改动大，两者语义也有差别（文档没有 verified_by、没有"问终端用户"这条路由）。P5 前再评估。
-       - `UpdateKbEntry` / `CreateKbEntry` 是只给内部和测试用的操作，`UpdateKbEntry` 会绕过筛查直接改条目文字。P5 接入 MCP 之前要决定：删掉，或者改成必须经过筛查。
+       - `UpdateKbEntry` / `CreateKbEntry` 是只给内部和测试用的操作，`UpdateKbEntry` 会绕过筛查直接改条目文字。P5 接入 MCP 之前要决定：删掉，或者改成必须经过筛查。→ 改成经过筛查（P5.0）。
        - 会改变行为的优化：建议卡片的条数上限、调用风险 LLM 前先做便宜的校验、过期任务批量处理，留到 P4 有真实负载数据之后。
        - 条目同步在任务里等待引擎就绪：已有的 pending → confirm 待办。
      - 最终检查：`uv run pytest` 410 passed（SQLite + PG）；ruff、format、mypy、lint-imports 通过；`-m contract` 12 passed（真实 WeKnora、mem0、lite-rag）。
@@ -867,7 +868,7 @@ llm-steward/
      - 排序在数据库事务之外进行，日志用单独的短事务写。
      - 留到以后：
        - 声明了 `metadata_filter` 的 provider（native、mem0）实际忽略 `filters` 参数，所以过滤条件还没有下推，放在 P4 收尾处理。
-       - 命名空间配置改成一个 Pydantic 模型、写入时校验，和 P5 的 `steward ns apply` 一起做；现在配置写错会让检索报 500。
+       - 命名空间配置改成一个 Pydantic 模型、写入时校验，和 P5 的 `steward ns apply` 一起做；现在配置写错会让检索报 500。→ 已做（P5.0）。
    - P4c 文档多块（2026-11-09）：
      - KB provider 的 `search` 约定改为每个外部 id 一条命中，最多带 3 块（`CHUNKS_PER_ID`）放在 `ProviderHit.passages`，最好的在前（`group_hits`）。provider 只搜 `top_k` 块；多取只在检索层做一次（`CANDIDATES_PER_RESULT`，带过滤时再乘 3）。/simplify 时发现三层倍数叠加过：native 一次要取 216 到 648 块，九成被丢掉，已改掉。
      - 文档结果带 `passages`（API 新字段），`content` 是它们用 `\n…\n` 拼起来的文本。上下文里第一段跟引用 id 和"已验证/未验证"标注在同一行，后面几段缩进在下面。token 预算放不下整篇时先减到前几段，仍放不下再跳过。条目照旧用库里的完整内容，多出的块不用。
@@ -907,11 +908,16 @@ llm-steward/
      - 最终检查：`uv run pytest` 504 passed（SQLite + PG）；ruff、format、mypy、lint-imports 通过；`-m contract` 12 passed（真实 WeKnora、mem0、lite-rag）；`-m model` 4 passed；`-m eval` 两种数据库都过门槛（recall@8 0.960，开 rerank 0.980）。
    - 验收：用 Fake provider 注入 2 秒延迟，响应仍在超时预算内返回并标记 degraded；在小型标注集（20–30 条 query）上 recall@8 达标（阈值在建立基线后确定）。**已自动化**：见上面 P4f。
 6. **P5 接入与安全**
-   - [ ] API key、user token、Admin JWT、限流、幂等、Problem Details、webhooks
+   - [ ] API key、user token、限流、幂等、Problem Details、webhooks（Admin JWT 取消，见第 7 节鉴权）
    - [ ] MCP server（HTTP 和 stdio）、Python SDK（含嵌入模式）
    - 验收：在 Claude Code 中接入 MCP，能完成 remember → recall；不带 key 的请求返回 401；user token 无法读取其他用户的数据；MCP 无法直接写入 KB
+   - P5.0 准备（2026-11-10）：
+     - 命名空间配置改成 Pydantic 模型（`namespace_config.py`），写入时校验、未知键拒绝；`steward ns apply -f` / `ns show`。库里已存的旧配置读出时不合法，返回 `namespace_config_invalid` 并提示用 `ns apply` 修正，不再在检索深处报 500。
+     - `UpdateKbEntry`（仅内部和测试用，REST / MCP 都不构造它，有测试钉住）改为经过筛查：个人信息按策略处理，条目的风险等级随新文字只升不降；生效中的条目改成 high 风险文字必须是 reviewer，否则拒绝（这条路径没有审核队列可等）。两条编辑路径共用同一个筛查函数；直接生效的 `ReviseKbEntry`（reviewer 或自动路由）也把筛查后的风险记到条目上（之前不记）。
+     - 失败任务的人工重试做成 CLI：`steward jobs failed [--ns]`、`steward jobs retry <id>… | --all-failed`（重置尝试次数、立即可领取；只动 `failed` 的任务）。抽取任务按 payload 里的 episode 重跑，P2 留下的"episode 已标记处理"问题由此解决。
+     - 许可证 Apache-2.0（根目录 `LICENSE`，pyproject `license`）；v1 不做 TS SDK。
 7. **P6 Admin 前端**
-   - [ ] 布局、登录、namespace 切换器、生成的客户端
+   - [ ] 布局、namespace 切换器、生成的客户端（不做登录；远程访问的保护方式在 P6 计划时定）
    - [ ] 按顺序实现：Memories → Knowledge Base → Review Queue → Providers → Dashboard → Playground → Users → Activity → Jobs → Settings
    - 验收：Playwright 覆盖"审核一条 high 风险 candidate 并看到它同步到 WeKnora"和"在 Playground 发现缺口并加入 KB"两条主流程
 8. **P7 RAGFlow 与收尾**
@@ -933,8 +939,8 @@ CI 矩阵以及 CLAUDE.md。完成后运行测试，逐条对照 P0 的验收标
 
 - [x] 默认 LLM 和 embedding 是否允许联网调用？还是默认本地（fastembed / Ollama）？→ embedding 默认本地：llm-steward / mem0 用 fastembed MiniLM，WeKnora 用宿主机上的 Ollama（2026-11-08 确认）；LLM 在本地开发经 llm-gateway，生产按环境变量指向供应商
 - [x] mem0 是进程内调用（本文默认），还是部署 mem0 的自托管 server 由 REST 调用？→ 进程内（2026-11-08 确认）
-- [ ] 开源协议：建议 Apache-2.0（与 mem0、RAGFlow 一致，与 WeKnora 的 MIT 兼容）。
-- [ ] v1 是否需要 TypeScript SDK？
+- [x] 开源协议：建议 Apache-2.0（与 mem0、RAGFlow 一致，与 WeKnora 的 MIT 兼容）。→ Apache-2.0（2026-11-10 确认，仓库根目录 `LICENSE`）
+- [x] v1 是否需要 TypeScript SDK？→ 不需要（2026-11-10 确认）：前端和 widget 用 `@hey-api/openapi-ts` 从 OpenAPI 生成的客户端
 
 ### 参考来源
 

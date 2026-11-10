@@ -128,6 +128,17 @@ def migrated_url(db_url: str) -> str:
     return db_url
 
 
+@pytest.fixture
+def cli_db(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> str:
+    """A migrated SQLite file the `steward` CLI uses (via STEWARD_DATABASE_URL), run away from
+    backend/.env so no real database can be picked up. Returns its URL."""
+    url = f"sqlite+aiosqlite:///{tmp_path / 'cli.db'}"
+    migrate(url)
+    monkeypatch.setenv("STEWARD_DATABASE_URL", url)
+    monkeypatch.chdir(tmp_path)
+    return url
+
+
 def test_settings(database_url: str, **overrides: object) -> "Settings":
     """Validated Settings, then pointed at TEST_SCHEMA — which `Settings` itself rejects on purpose,
     so only tests can do this, by copying past validation."""
@@ -153,6 +164,13 @@ class AppClient:
 
     http: "TestClient"
     services: "Services"
+
+    @property
+    def sessions(self) -> "async_sessionmaker[AsyncSession]":
+        """Sessions on the app's own engine (use them inside `call`)."""
+        from llm_steward.storage.db import session_factory
+
+        return session_factory(self.services.engine)
 
     def call(self, fn: Callable[..., Awaitable[T]], *args: object, **kwargs: object) -> T:
         portal = self.http.portal
@@ -187,12 +205,11 @@ class AppClient:
 
     def get(self, model: Any, object_id: Any) -> Any:
         """One row by primary key (a str id is parsed), read in its own session."""
-        from llm_steward.storage.db import session_factory
 
         key = uuid.UUID(object_id) if isinstance(object_id, str) else object_id
 
         async def read() -> Any:
-            async with session_factory(self.services.engine)() as s:
+            async with self.sessions() as s:
                 return await s.get(model, key)
 
         return self.call(read)
@@ -203,13 +220,19 @@ class AppClient:
         assert r.status_code == 200, r.text
         return dict(r.json())
 
-    def set_config(self, namespace_id: uuid.UUID, config: dict[str, Any]) -> None:
-        """A namespace's config (design §8); no route sets it yet (`steward ns apply` later)."""
+    def set_config(
+        self, namespace_id: uuid.UUID, config: dict[str, Any], *, validate: bool = True
+    ) -> None:
+        """A namespace's config (design §8), validated as `steward ns apply` does; `validate=False`
+        stores it raw, like a row written before validation existed."""
         from llm_steward.models import Namespace
-        from llm_steward.storage.db import session_factory
+        from llm_steward.namespace_config import NamespaceConfig
+
+        if validate:
+            config = NamespaceConfig.parse(config).dump()
 
         async def write() -> None:
-            async with session_factory(self.services.engine)() as s, s.begin():
+            async with self.sessions() as s, s.begin():
                 namespace = await s.get(Namespace, namespace_id)
                 assert namespace is not None
                 namespace.config = config
@@ -223,10 +246,9 @@ class AppClient:
         from llm_steward.models import Job
         from llm_steward.models.base import utcnow
         from llm_steward.models.enums import JobStatus
-        from llm_steward.storage.db import session_factory
 
         async def due() -> None:
-            async with session_factory(self.services.engine)() as s, s.begin():
+            async with self.sessions() as s, s.begin():
                 pending = Job.status == JobStatus.PENDING
                 await s.execute(update(Job).where(pending).values(run_after=utcnow()))
 

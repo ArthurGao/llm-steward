@@ -4,6 +4,7 @@ import pytest
 
 from llm_steward.errors import Unprocessable
 from llm_steward.models.enums import RiskLevel
+from llm_steward.namespace_config import NamespaceConfig
 from llm_steward.pipeline.risk import RiskPolicy, assess, find_pii
 
 POLICY = RiskPolicy(high_risk_keywords=("退款政策", "price"), pii_action="redact")
@@ -83,8 +84,8 @@ def test_pii_in_the_title_is_redacted_too() -> None:
 
 def test_the_policy_comes_from_the_namespace_config() -> None:
     config = {"kb": {"high_risk_keywords": ["法律"]}, "memory": {"pii": {"action": "block"}}}
-    assert RiskPolicy.from_config(config) == RiskPolicy(("法律",), "block")
-    assert RiskPolicy.from_config({}) == RiskPolicy((), "redact")
+    assert RiskPolicy.from_config(NamespaceConfig.parse(config)) == RiskPolicy(("法律",), "block")
+    assert RiskPolicy.from_config(NamespaceConfig.parse({})) == RiskPolicy((), "redact")
 
 
 def test_detection_stays_linear_on_hostile_input() -> None:
@@ -104,7 +105,6 @@ def test_tags_are_screened_like_the_text() -> None:
 
 def test_a_config_section_written_empty_is_no_section() -> None:
     """`kb:` with nothing under it is null in YAML/JSON: the defaults apply, nothing breaks."""
-    assert RiskPolicy.from_config({"kb": None}).high_risk_keywords == ()
-    from llm_steward.services.kb_service import SuggestConfig
-
-    assert SuggestConfig.of({"kb": None}) == SuggestConfig.of({})
+    empty = NamespaceConfig.parse({"kb": None})
+    assert RiskPolicy.from_config(empty).high_risk_keywords == ()
+    assert empty.kb == NamespaceConfig.parse({}).kb  # suggestion settings: the defaults

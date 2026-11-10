@@ -8,7 +8,7 @@ import pytest
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from llm_steward.errors import Conflict, NotFound
+from llm_steward.errors import Conflict, Forbidden, NotFound
 from llm_steward.models import Candidate, ChangeLog, ExternalRef, Job, KbEntry, Memory
 from llm_steward.models.enums import (
     ActorType,
@@ -33,6 +33,7 @@ from llm_steward.services.governance_service import (
     DecideCandidate,
     DeleteMemory,
     GovernanceService,
+    ReviseKbEntry,
     TransitionKbEntry,
     UpdateKbEntry,
 )
@@ -180,6 +181,48 @@ async def test_a_retired_entry_cannot_be_edited(stack: Stack) -> None:
     await stack.apply(TransitionKbEntry(stack.ns, entry.id, KbStatus.DEPRECATED))
     with pytest.raises(Conflict):
         await stack.apply(UpdateKbEntry(stack.ns, entry.id, content="sneaky"))
+
+
+async def test_an_internal_update_is_screened_like_any_outside_text(stack: Stack) -> None:
+    """`UpdateKbEntry` (internal and tests only) cannot slip personal data past the rules."""
+    entry = await stack.entry(KbStatus.ACTIVE)
+    updated = await stack.apply(
+        UpdateKbEntry(stack.ns, entry.id, content="Escalate to bob@example.com"), REVIEWER
+    )
+    assert updated.content == "Escalate to [REDACTED:email]"
+    assert updated.risk_level == RiskLevel.HIGH  # the stored risk follows the new text
+    draft = await stack.entry(KbStatus.DRAFT)
+    await stack.apply(UpdateKbEntry(stack.ns, draft.id, content="mail bob@example.com"))
+    with pytest.raises(Forbidden):  # live knowledge, high risk, nobody reviewing
+        await stack.apply(UpdateKbEntry(stack.ns, entry.id, content="call 13800138000"))
+    async with stack.sessions() as s:
+        assert (await s.get(KbEntry, entry.id)).content == "Escalate to [REDACTED:email]"  # type: ignore[union-attr]
+
+
+async def test_a_revision_applied_at_once_raises_the_stored_risk(stack: Stack) -> None:
+    """A reviewer's revision goes live without waiting; its screened risk is still recorded."""
+    entry = await stack.entry(KbStatus.ACTIVE)
+    revised = await stack.apply(
+        ReviseKbEntry(stack.ns, entry.id, content="Escalate to bob@example.com"), REVIEWER
+    )
+    assert revised.content == "Escalate to [REDACTED:email]"
+    assert revised.risk_level == RiskLevel.HIGH
+
+
+def test_no_request_path_builds_the_unscreened_internal_operations() -> None:
+    """REST and MCP reach knowledge only through Submit/Revise (screened and routed)."""
+    from pathlib import Path
+
+    import llm_steward
+
+    root = Path(llm_steward.__file__).parent
+    offenders = [
+        str(path.relative_to(root))
+        for folder in ("api", "mcp")
+        for path in (root / folder).rglob("*.py")
+        if any(name in path.read_text() for name in ("UpdateKbEntry", "CreateKbEntry"))
+    ]
+    assert offenders == []
 
 
 # --- candidates -------------------------------------------------------------------------------

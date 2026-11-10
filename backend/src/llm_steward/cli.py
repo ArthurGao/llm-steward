@@ -1,25 +1,30 @@
 """`steward` command line.
 
-Namespaces and API keys are created here, never over HTTP. Further commands (ns apply, resync, mcp)
-arrive with their stage.
+Namespaces, their config and API keys are managed here, never over HTTP. Further commands
+(resync, mcp) arrive with their stage.
 """
 
 import asyncio
 import signal
+import uuid
 from collections.abc import Awaitable, Callable
 from pathlib import Path
 from typing import Annotated
 
 import typer
 import uvicorn
+import yaml
 from alembic import command
 from alembic.config import Config
 from sqlalchemy.engine import make_url
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from llm_steward.config import Settings
 from llm_steward.errors import StewardError
+from llm_steward.models import Job
 from llm_steward.models.enums import ApiScope
 from llm_steward.services.container import runtime
+from llm_steward.services.job_queue import JobQueue
 from llm_steward.services.namespace_service import DEFAULT_SCOPES, NamespaceService
 from llm_steward.storage.db import engine_scope, session_factory
 
@@ -27,7 +32,9 @@ app = typer.Typer(no_args_is_help=True, add_completion=False)
 ns_app = typer.Typer(no_args_is_help=True, help="Namespaces (one per integrating project).")
 key_app = typer.Typer(no_args_is_help=True, help="API keys (Bearer stw_<prefix>_<secret>).")
 app.add_typer(ns_app, name="ns")
+jobs_app = typer.Typer(no_args_is_help=True, help="Outbox jobs that ran out of attempts.")
 app.add_typer(key_app, name="key")
+app.add_typer(jobs_app, name="jobs")
 
 MIGRATIONS_DIR = Path(__file__).parent / "migrations"
 
@@ -42,11 +49,15 @@ def alembic_config(database_url: str, schema: str) -> Config:
 
 
 def _with_namespaces[T](action: Callable[[NamespaceService], Awaitable[T]]) -> T:
+    return _with_sessions(lambda sessions: action(NamespaceService(sessions)))
+
+
+def _with_sessions[T](action: Callable[[async_sessionmaker[AsyncSession]], Awaitable[T]]) -> T:
     settings = Settings()
 
     async def run() -> T:
         async with engine_scope(settings.database_url, schema=settings.db_schema) as engine:
-            return await action(NamespaceService(session_factory(engine)))
+            return await action(session_factory(engine))
 
     try:
         return asyncio.run(run())
@@ -93,6 +104,29 @@ def ns_create(slug: str, name: Annotated[str | None, typer.Option()] = None) -> 
     typer.echo(f"namespace {namespace.slug} ({namespace.id})")
 
 
+@ns_app.command("apply")
+def ns_apply(
+    file: Annotated[Path, typer.Option("--file", "-f", exists=True, dir_okay=False)],
+) -> None:
+    """Create or update a namespace from a YAML/JSON file: `slug`, optional `name`, then the
+    config sections (design §8). The file replaces the whole config; it is validated first."""
+    raw = yaml.safe_load(file.read_text(encoding="utf-8")) or {}
+    if not isinstance(raw, dict) or not isinstance(raw.get("slug"), str):
+        typer.echo("error: the file must be a mapping with a `slug`", err=True)
+        raise typer.Exit(1)
+    slug, name = raw.pop("slug"), raw.pop("name", None)
+    namespace, created = _with_namespaces(lambda svc: svc.apply_config(slug, raw, name))
+    typer.echo(f"namespace {namespace.slug} ({namespace.id}) {'created' if created else 'updated'}")
+
+
+@ns_app.command("show")
+def ns_show(slug: str) -> None:
+    """Print a namespace's stored config as YAML (only what was set; the rest are defaults)."""
+    namespace = _with_namespaces(lambda svc: svc.get_namespace(slug))
+    document = {"slug": namespace.slug, "name": namespace.name, **namespace.config}
+    typer.echo(yaml.safe_dump(document, allow_unicode=True, sort_keys=False), nl=False)
+
+
 @key_app.command("create")
 def key_create(
     slug: str,
@@ -112,6 +146,39 @@ def key_revoke(prefix: str) -> None:
     """Revoke an API key by its prefix (the part after `stw_`)."""
     _with_namespaces(lambda svc: svc.revoke_key(prefix))
     typer.echo(f"revoked {prefix}")
+
+
+@jobs_app.command("failed")
+def jobs_failed(
+    namespace: Annotated[str | None, typer.Option("--ns", help="Namespace slug")] = None,
+    limit: int = 100,
+) -> None:
+    """List failed jobs: id, type, attempts, when, and the last error (already redacted)."""
+
+    async def run(sessions: async_sessionmaker[AsyncSession]) -> list[Job]:
+        found = await NamespaceService(sessions).get_namespace(namespace) if namespace else None
+        return await JobQueue(sessions).failed(found.id if found else None, limit)
+
+    for job in _with_sessions(run):
+        typer.echo(
+            f"{job.id}  {job.type}  attempts={job.attempts}  {job.updated_at:%Y-%m-%d %H:%M}"
+            f"  {job.error or ''}"
+        )
+
+
+@jobs_app.command("retry")
+def jobs_retry(
+    job_ids: Annotated[list[uuid.UUID] | None, typer.Argument()] = None,
+    all_failed: Annotated[bool, typer.Option("--all-failed")] = False,
+) -> None:
+    """Requeue failed jobs with fresh attempts: the given ids, or --all-failed."""
+    if bool(job_ids) == all_failed:
+        typer.echo("error: give job ids or --all-failed (not both)", err=True)
+        raise typer.Exit(1)
+    count = _with_sessions(lambda sessions: JobQueue(sessions).retry(job_ids or None))
+    typer.echo(f"requeued {count} job(s)")
+    if job_ids and count < len(job_ids):
+        typer.echo("note: only failed jobs are requeued; the others were left alone", err=True)
 
 
 if __name__ == "__main__":

@@ -54,6 +54,8 @@ from llm_steward.models.enums import (
     RiskLevel,
     SyncStatus,
 )
+from llm_steward.namespace_config import NamespaceConfig
+from llm_steward.namespace_config import load as load_config
 from llm_steward.pipeline.risk import Assessment, RiskPolicy, assess, redact_pii
 from llm_steward.providers.base import Scope
 from llm_steward.services.job_queue import enqueue
@@ -691,8 +693,33 @@ class GovernanceService:
         return await self._create_kb_entry(s, create, actor)
 
     async def _update_kb_entry(self, s: AsyncSession, op: UpdateKbEntry, actor: Actor) -> KbEntry:
+        """Internal edits (no route builds this; outside text comes as `ReviseKbEntry`) are still
+        screened: personal data is handled by policy, and high-risk text on live knowledge needs
+        a reviewer, since this path has no review queue to wait in."""
         entry = await load_owned(s, KbEntry, op.namespace_id, op.entry_id, "KB entry")
-        return await self._edit(s, entry, op.title, op.content, op.reason, actor)
+        checked, title, content = await self._screen_edit(s, entry, op.title, op.content)
+        live = entry.status in EFFECTIVE_KB_STATUSES
+        if checked.level == RiskLevel.HIGH and live and not actor.is_reviewer:
+            raise Forbidden("high-risk text on live knowledge needs a reviewer: submit a revision")
+        reason = _reason(op.reason, checked)
+        return await self._edit(s, entry, title, content, reason, actor, risk=checked.level)
+
+    async def _screen_edit(
+        self, s: AsyncSession, entry: KbEntry, title: str | None, content: str | None
+    ) -> tuple[Assessment, str | None, str | None]:
+        """Screen an edit as the whole new text (unchanged parts kept); returns the assessment
+        and the screened title and content, each None where the edit leaves it alone."""
+        checked = await self._screen(
+            s,
+            entry.namespace_id,
+            title if title is not None else entry.title,
+            content if content is not None else entry.content,
+        )
+        return (
+            checked,
+            checked.title if title is not None else None,
+            checked.content if content is not None else None,
+        )
 
     async def _edit(
         self,
@@ -702,8 +729,10 @@ class GovernanceService:
         content: str | None,
         reason: str | None,
         actor: Actor,
+        risk: RiskLevel | None = None,
     ) -> KbEntry:
-        """A new version of `entry` (locked by the caller); nothing when the text is unchanged."""
+        """A new version of `entry` (locked by the caller); nothing when the text is unchanged.
+        `risk`, the new text's screened level, can only raise the entry's stored risk."""
         if entry.status not in (KbStatus.DRAFT, *EFFECTIVE_KB_STATUSES):
             raise Conflict(f"a {entry.status.value!r} KB entry cannot be edited")
         before = snapshot(entry)
@@ -714,6 +743,8 @@ class GovernanceService:
             return entry  # nothing changed: no new version, no log, no sync
         entry.content_hash = new_hash
         entry.version += 1
+        if risk is not None:
+            entry.risk_level = max_risk(entry.risk_level, risk)
         await s.flush()
         self._log(s, ObjectType.KB_ENTRY, entry, ChangeOp.UPDATE, before, actor, reason)
         if entry.status in EFFECTIVE_KB_STATUSES:
@@ -803,18 +834,12 @@ class GovernanceService:
         collection = await load_owned(
             s, KbCollection, op.namespace_id, entry.collection_id, "collection", lock=False
         )
-        checked = await self._screen(
-            s,
-            op.namespace_id,
-            op.title if op.title is not None else entry.title,
-            op.content if op.content is not None else entry.content,
-        )
-        title = checked.title if op.title is not None else None
-        content = checked.content if op.content is not None else None
+        checked, title, content = await self._screen_edit(s, entry, op.title, op.content)
         risk = max_risk(op.risk_level, checked.level, collection.default_risk)
         waits = entry.status == KbStatus.VERIFIED or _route(collection, risk) == "review"
         if actor.is_reviewer or not waits:
-            return await self._edit(s, entry, title, content, _reason(op.reason, checked), actor)
+            reason = _reason(op.reason, checked)
+            return await self._edit(s, entry, title, content, reason, actor, risk=risk)
         draft = {k: v for k, v in (("title", title), ("content", content)) if v is not None}
         candidate = CreateCandidate(
             namespace_id=op.namespace_id,
@@ -1251,7 +1276,7 @@ def _checked_policy(policy: dict[str, str]) -> dict[str, str]:
     return dict(policy)
 
 
-async def namespace_config(s: AsyncSession, namespace_id: uuid.UUID) -> dict[str, Any]:
-    """A namespace's config (design §8); empty for a namespace that has none (or no row)."""
+async def namespace_config(s: AsyncSession, namespace_id: uuid.UUID) -> NamespaceConfig:
+    """A namespace's config (design §8), validated; every default for one that has none."""
     namespace = await s.get(Namespace, namespace_id)
-    return dict(namespace.config) if namespace else {}
+    return load_config(namespace.config if namespace else None)

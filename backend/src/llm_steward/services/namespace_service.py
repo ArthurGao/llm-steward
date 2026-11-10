@@ -10,6 +10,7 @@ import secrets
 import uuid
 from dataclasses import dataclass
 from datetime import timedelta
+from typing import Any, Literal, overload
 
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
@@ -19,6 +20,7 @@ from llm_steward.errors import Conflict, NotFound
 from llm_steward.models import ApiKey, Namespace
 from llm_steward.models.base import utcnow
 from llm_steward.models.enums import ActorType, ApiScope
+from llm_steward.namespace_config import NamespaceConfig
 from llm_steward.services.governance_service import Actor
 
 KEY_PREFIX = "stw"
@@ -59,6 +61,19 @@ def parse_key(token: str) -> tuple[str, str] | None:
     return parts[1], parts[2]
 
 
+@overload
+async def _by_slug(s: AsyncSession, slug: str) -> Namespace: ...
+@overload
+async def _by_slug(
+    s: AsyncSession, slug: str, *, missing_ok: Literal[True]
+) -> Namespace | None: ...
+async def _by_slug(s: AsyncSession, slug: str, *, missing_ok: bool = False) -> Namespace | None:
+    namespace = await s.scalar(select(Namespace).where(Namespace.slug == slug))
+    if namespace is None and not missing_ok:
+        raise NotFound(f"namespace {slug!r} not found")
+    return namespace
+
+
 class NamespaceService:
     def __init__(self, sessions: async_sessionmaker[AsyncSession]) -> None:
         self._sessions = sessions
@@ -73,14 +88,33 @@ class NamespaceService:
                 raise Conflict(f"namespace {slug!r} already exists") from exc
             return namespace
 
+    async def apply_config(
+        self, slug: str, config: dict[str, Any] | None, name: str | None = None
+    ) -> tuple[Namespace, bool]:
+        """Config as code (`steward ns apply`, design §8): validate, then create the namespace or
+        replace its whole config. Returns the namespace and whether it was created."""
+        parsed = NamespaceConfig.parse(config)  # before any write: a bad file changes nothing
+        async with self._sessions() as s, s.begin():
+            namespace = await _by_slug(s, slug, missing_ok=True)
+            created = namespace is None
+            if namespace is None:
+                namespace = Namespace(slug=slug, name=name or slug)
+                s.add(namespace)
+            elif name:
+                namespace.name = name
+            namespace.config = parsed.dump()
+        return namespace, created
+
+    async def get_namespace(self, slug: str) -> Namespace:
+        async with self._sessions() as s:
+            return await _by_slug(s, slug)
+
     async def create_key(
         self, slug: str, scopes: tuple[ApiScope, ...] = DEFAULT_SCOPES, name: str = ""
     ) -> str:
         """Returns the plaintext key — the only time it exists outside the caller's hands."""
         async with self._sessions() as s, s.begin():
-            namespace = await s.scalar(select(Namespace).where(Namespace.slug == slug))
-            if namespace is None:
-                raise NotFound(f"namespace {slug!r} not found")
+            namespace = await _by_slug(s, slug)
             prefix, secret = secrets.token_hex(4), secrets.token_urlsafe(32)
             s.add(
                 ApiKey(

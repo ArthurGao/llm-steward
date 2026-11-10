@@ -46,6 +46,7 @@ from llm_steward.models.enums import (
     ObjectType,
     SyncStatus,
 )
+from llm_steward.namespace_config import NamespaceConfig
 from llm_steward.pipeline.risk import redact_pii
 from llm_steward.providers.base import ProviderHit, Providers, Reranker, Scope
 from llm_steward.ranking import (
@@ -101,22 +102,20 @@ class Scoring:
     half_lives: dict[str, float] = field(default_factory=lambda: dict(HALF_LIVES))
 
     @classmethod
-    def from_config(cls, config: dict[str, Any]) -> "Scoring":
-        default = cls()
-        retrieval = config.get("retrieval") or {}
-        types = (config.get("memory") or {}).get("types") or []
+    def from_config(cls, config: NamespaceConfig) -> "Scoring":
+        default, retrieval = cls(), config.retrieval
         return cls(
-            top_k=int(retrieval.get("top_k", default.top_k)),
-            token_budget=int(retrieval.get("token_budget", default.token_budget)),
-            rerank=bool(retrieval.get("rerank", default.rerank)),
-            trust=default.trust | dict(retrieval.get("trust_weights") or {}),
-            importance_boost=float(retrieval.get("importance_boost", default.importance_boost)),
+            top_k=retrieval.top_k or default.top_k,
+            token_budget=retrieval.token_budget or default.token_budget,
+            rerank=retrieval.rerank,
+            trust=default.trust | retrieval.trust_weights,
+            importance_boost=(
+                default.importance_boost
+                if retrieval.importance_boost is None
+                else retrieval.importance_boost
+            ),
             half_lives=default.half_lives
-            | {
-                t["name"]: float(t["half_life_days"])
-                for t in types
-                if isinstance(t, dict) and t.get("name") and t.get("half_life_days")
-            },
+            | {t.name: t.half_life_days for t in config.memory.types if t.half_life_days},
         )
 
     def memory_weight(self, m: Memory, now: datetime) -> float:

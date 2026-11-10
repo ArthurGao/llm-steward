@@ -61,25 +61,6 @@ DRAFTS_AT_ONCE = 4  # concurrent kb.draft calls in one suggest job
 
 
 @dataclass(frozen=True)
-class SuggestConfig:
-    """A namespace's `kb` settings (design §8): suggest_threshold, max_suggestions_per_session,
-    suggest_collection (where extracted knowledge lands; created on first use)."""
-
-    threshold: float = 0.7
-    max_per_session: int = 2
-    collection: str = "inbox"
-
-    @classmethod
-    def of(cls, config: dict[str, Any]) -> "SuggestConfig":
-        kb = config.get("kb") or {}  # a section written as `kb:` with nothing under it is null
-        return cls(
-            float(kb.get("suggest_threshold", cls.threshold)),
-            int(kb.get("max_suggestions_per_session", cls.max_per_session)),
-            str(kb.get("suggest_collection", cls.collection)),
-        )
-
-
-@dataclass(frozen=True)
 class Submitted:
     """What a write became: live knowledge, or a candidate waiting for someone."""
 
@@ -303,7 +284,7 @@ class KbService:
         it can lose those suggestions instead, which only costs a card nobody saw."""
         llm = self._drafting()
         async with self._sessions() as s:
-            config = SuggestConfig.of(await namespace_config(s, namespace_id))
+            config = (await namespace_config(s, namespace_id)).kb
             memories = [
                 m
                 for m in await s.scalars(
@@ -320,9 +301,13 @@ class KbService:
             SYSTEM,
         )
         scores, scored_by = await score_memories(llm, [(str(m.id), m.content) for m in memories])
-        worthy = set(worthy_ids(scores, {str(m.id) for m in memories}, threshold=config.threshold))
+        worthy = set(
+            worthy_ids(scores, {str(m.id) for m in memories}, threshold=config.suggest_threshold)
+        )
         chosen = await self._within_budget(
-            namespace_id, [m for m in memories if str(m.id) in worthy], config.max_per_session
+            namespace_id,
+            [m for m in memories if str(m.id) in worthy],
+            config.max_suggestions_per_session,
         )
         if not chosen:
             return 0
@@ -333,7 +318,7 @@ class KbService:
                 return await draft_entry(llm, memory.content)
 
         drafts = await asyncio.gather(*(draft(m) for m in chosen))
-        collection = await self._suggest_collection(namespace_id, config.collection)
+        collection = await self._suggest_collection(namespace_id, config.suggest_collection)
         for memory, drafted in zip(chosen, drafts, strict=True):
             refs = [{"type": "memory", "id": str(memory.id)}]
             if scored_by is not None:

@@ -8,12 +8,11 @@ makes the entry high risk, so a person reviews it before it is shared.
 
 import re
 from dataclasses import dataclass, field
-from typing import Any, Literal
+from typing import Any
 
 from llm_steward.errors import Unprocessable
 from llm_steward.models.enums import RiskLevel
-
-PiiAction = Literal["block", "redact", "allow"]
+from llm_steward.namespace_config import NamespaceConfig, PiiAction
 
 _SECRET = re.compile(
     r"sk-[A-Za-z0-9_-]{20,}"  # OpenAI-style keys
@@ -97,11 +96,9 @@ class RiskPolicy:
     pii_action: PiiAction = "redact"
 
     @classmethod
-    def from_config(cls, config: dict[str, Any]) -> "RiskPolicy":
+    def from_config(cls, config: NamespaceConfig) -> "RiskPolicy":
         """From a namespace's config (design §8): `kb.high_risk_keywords`, `memory.pii.action`."""
-        keywords = tuple((config.get("kb") or {}).get("high_risk_keywords", ()))
-        action = config.get("memory", {}).get("pii", {}).get("action", "redact")
-        return cls(keywords, action)
+        return cls(tuple(config.kb.high_risk_keywords), config.memory.pii.action)
 
 
 @dataclass(frozen=True)

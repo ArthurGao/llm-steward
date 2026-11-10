@@ -8,6 +8,7 @@ reclaimed) can no longer settle someone else's claim.
 """
 
 import uuid
+from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import timedelta
 from typing import Any
@@ -139,6 +140,29 @@ class JobQueue:
                 current.status = JobStatus.PENDING
                 current.run_after = utcnow() + timedelta(seconds=delay)
             return current.status
+
+    async def failed(self, namespace_id: uuid.UUID | None = None, limit: int = 100) -> list[Job]:
+        """Jobs that ran out of attempts, newest first (what an operator looks at)."""
+        query = select(Job).where(Job.status == JobStatus.FAILED)
+        if namespace_id is not None:
+            query = query.where(Job.namespace_id == namespace_id)
+        async with self._sessions() as session:
+            return list(await session.scalars(query.order_by(Job.updated_at.desc()).limit(limit)))
+
+    async def retry(self, job_ids: Sequence[uuid.UUID] | None = None) -> int:
+        """Give failed jobs (those ids, or every failed job when None) a fresh set of attempts,
+        due now. Handlers are idempotent, so a retried extraction resumes where it stopped.
+        Only `failed` jobs are touched; returns how many were requeued."""
+        query = update(Job).where(Job.status == JobStatus.FAILED)
+        if job_ids is not None:
+            query = query.where(Job.id.in_(job_ids))
+        async with self._sessions() as session, session.begin():
+            result = await session.execute(
+                query.values(status=JobStatus.PENDING, attempts=0, run_after=utcnow())
+                .execution_options(synchronize_session=False)
+                .returning(Job.id)
+            )
+            return len(result.all())
 
 
 def _still_ours(job: ClaimedJob) -> tuple[Any, ...]:
