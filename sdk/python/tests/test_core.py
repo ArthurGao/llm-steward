@@ -23,6 +23,8 @@ from llm_steward_client import (
     models,
 )
 
+SOME_ID = "01a1c4a2-dca2-73e9-ae9a-bcdb6f27ba22"
+
 MEMORY: dict[str, Any] = {
     "id": str(uuid.uuid4()),
     "content": "likes green tea",
@@ -94,8 +96,8 @@ def test_a_shared_http_client_keeps_each_clients_own_key(waits: list[float]) -> 
         Steward(api_key="stw_a_host", http_client=http),
         Steward(api_key="stw_b_reviewer", http_client=http),
     )
-    host.memories.get("x")
-    reviewer.memories.get("x")
+    host.memories.get(SOME_ID)
+    reviewer.memories.get(SOME_ID)
     assert [r.headers["Authorization"] for r in net.sent] == [
         "Bearer stw_a_host",
         "Bearer stw_b_reviewer",
@@ -116,7 +118,7 @@ def test_problems_become_typed_errors(
     waits: list[float], status: int, code: str, kind: type[Exception]
 ) -> None:
     with pytest.raises(kind) as raised:
-        client(Network(problem(status, code, "what went wrong"))).memories.get("x")
+        client(Network(problem(status, code, "what went wrong"))).memories.get(SOME_ID)
     error: Any = raised.value
     assert (error.status, error.code, error.detail) == (status, code, "what went wrong")
 
@@ -150,7 +152,7 @@ def test_each_write_gets_its_own_key_and_reads_none(waits: list[float]) -> None:
     keys = {r.headers["Idempotency-Key"] for r in net.sent}
     assert len(keys) == 2
     read = Network(httpx.Response(200, json=MEMORY))
-    client(read).memories.get("x")
+    client(read).memories.get(SOME_ID)
     assert "Idempotency-Key" not in read.sent[0].headers
 
 
@@ -160,26 +162,26 @@ def test_throttling_honours_retry_after_within_a_cap(waits: list[float]) -> None
         problem(429, "rate_limited", **{"Retry-After": "9999"}),
         httpx.Response(200, json=MEMORY),
     )
-    client(net).memories.get("x")
+    client(net).memories.get(SOME_ID)
     assert waits == [7.0, 30.0]
 
 
 def test_after_the_retries_the_last_answer_is_raised(waits: list[float]) -> None:
     net = Network(*(problem(429, "rate_limited", **{"Retry-After": "2"}) for _ in range(3)))
     with pytest.raises(RateLimitError) as raised:
-        client(net, max_retries=2).memories.get("x")
+        client(net, max_retries=2).memories.get(SOME_ID)
     assert raised.value.retry_after == 2.0 and len(net.sent) == 3
     net = Network(*(problem(502, "http_error") for _ in range(2)))
     with pytest.raises(ServerError):
-        client(net, max_retries=1).memories.get("x")
+        client(net, max_retries=1).memories.get(SOME_ID)
 
 
 def test_network_errors_are_retried_then_raised(waits: list[float]) -> None:
     down = httpx.ConnectError("refused")
     net = Network(down, httpx.Response(200, json=MEMORY))
-    assert client(net).memories.get("x").content == "likes green tea"
+    assert client(net).memories.get(SOME_ID).content == "likes green tea"
     with pytest.raises(StewardConnectionError):
-        client(Network(down, down), max_retries=1).memories.get("x")
+        client(Network(down, down), max_retries=1).memories.get(SOME_ID)
 
 
 def test_unset_options_are_not_sent(waits: list[float]) -> None:
@@ -191,8 +193,8 @@ def test_unset_options_are_not_sent(waits: list[float]) -> None:
 
 def test_a_body_less_answer_is_none(waits: list[float]) -> None:
     net = Network(httpx.Response(204))
-    client(net).feedback("r", "i", helpful=True)  # returns None; nothing to parse
-    assert net.sent[0].read() == b'{"item_id":"i","helpful":true}'
+    client(net).feedback(SOME_ID, SOME_ID, helpful=True)  # returns None; nothing to parse
+    assert net.sent[0].read() == f'{{"item_id":"{SOME_ID}","helpful":true}}'.encode()
 
 
 # --- async: the same rules ----------------------------------------------------------------------
@@ -221,5 +223,25 @@ def test_async_retries_and_keys_like_sync(monkeypatch: pytest.MonkeyPatch) -> No
     assert slept == [0.5]
     one = Network(problem(401, "unauthenticated"))
     with pytest.raises(AuthenticationError):
-        _run(lambda: aclient(one).memories.get("x"))
+        _run(lambda: aclient(one).memories.get(SOME_ID))
     assert len(one.sent) == 1
+
+
+@pytest.mark.parametrize(
+    "bad", ["../../v1/tokens/user", "x/accept", "a?user_id=other", "%2e%2e", ""]
+)
+def test_an_id_that_is_not_a_uuid_never_becomes_a_path(waits: list[float], bad: str) -> None:
+    """Ids go into URL paths: one an end user controls must not redirect a call made with the
+    host's key to another route (security review of 71014f5). Every id is a UUID."""
+    net = Network()
+    st = client(net)
+    for call in (
+        lambda: st.memories.get(bad),
+        lambda: st.memories.promote(bad, SOME_ID),
+        lambda: st.candidates.accept(bad, user_id="u1"),
+        lambda: st.kb.entries.verify(bad),
+        lambda: st.feedback(SOME_ID, bad, helpful=True),
+    ):
+        with pytest.raises(ValueError):
+            call()
+    assert net.sent == []

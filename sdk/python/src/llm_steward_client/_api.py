@@ -11,6 +11,12 @@ from llm_steward_client._core import Call
 Id = UUID | str
 
 
+def _path(value: Id) -> str:
+    """An id placed in a URL path: always a UUID, so an id a caller got from an end user can never
+    turn into another route ("../tokens/user", "x/accept"); anything else raises ValueError."""
+    return str(value if isinstance(value, UUID) else UUID(str(value)))
+
+
 def _body(**fields: Any) -> dict[str, Any]:
     return {k: (str(v) if isinstance(v, UUID) else v) for k, v in fields.items() if v is not None}
 
@@ -27,24 +33,24 @@ def memory_list(**filters: Any) -> Call[m.MemoryPage]:
 
 
 def memory_get(memory_id: Id) -> Call[m.MemoryOut]:
-    return Call("GET", f"/v1/memories/{memory_id}", model=m.MemoryOut)
+    return Call("GET", f"/v1/memories/{_path(memory_id)}", model=m.MemoryOut)
 
 
 def memory_update(memory_id: Id, **patch: Any) -> Call[m.MemoryOut]:
-    return Call("PATCH", f"/v1/memories/{memory_id}", json=_body(**patch), model=m.MemoryOut)
+    return Call("PATCH", f"/v1/memories/{_path(memory_id)}", json=_body(**patch), model=m.MemoryOut)
 
 
 def memory_delete(memory_id: Id) -> Call[m.MemoryOut]:
-    return Call("DELETE", f"/v1/memories/{memory_id}", model=m.MemoryOut)
+    return Call("DELETE", f"/v1/memories/{_path(memory_id)}", model=m.MemoryOut)
 
 
 def memory_history(memory_id: Id) -> Call[m.MemoryHistoryOut]:
-    return Call("GET", f"/v1/memories/{memory_id}/history", model=m.MemoryHistoryOut)
+    return Call("GET", f"/v1/memories/{_path(memory_id)}/history", model=m.MemoryHistoryOut)
 
 
 def memory_promote(memory_id: Id, collection_id: Id, user_id: str | None = None) -> Call[m.Written]:
     body = _body(collection_id=collection_id, user_id=user_id)
-    return Call("POST", f"/v1/memories/{memory_id}/promote", json=body, model=m.Written)
+    return Call("POST", f"/v1/memories/{_path(memory_id)}/promote", json=body, model=m.Written)
 
 
 def erase_user(user_id: str) -> Call[m.ErasedOut]:
@@ -99,8 +105,8 @@ def retrieve(
 def feedback(
     retrieval_id: Id, item_id: Id, *, helpful: bool, note: str | None = None
 ) -> Call[None]:
-    body = _body(item_id=item_id, helpful=helpful, note=note)
-    return Call("POST", f"/v1/retrieve/{retrieval_id}/feedback", json=body)
+    body = _body(item_id=_path(item_id), helpful=helpful, note=note)
+    return Call("POST", f"/v1/retrieve/{_path(retrieval_id)}/feedback", json=body)
 
 
 # --- knowledge ---------------------------------------------------------------------------------
@@ -116,7 +122,7 @@ def collection_create(name: str, **fields: Any) -> Call[m.CollectionOut]:
 
 
 def collection_update(collection_id: Id, **patch: Any) -> Call[m.CollectionOut]:
-    path = f"/v1/kb/collections/{collection_id}"
+    path = f"/v1/kb/collections/{_path(collection_id)}"
     return Call("PATCH", path, json=_body(**patch), model=m.CollectionOut)
 
 
@@ -130,19 +136,19 @@ def entry_list(**filters: Any) -> Call[m.EntryPage]:
 
 
 def entry_get(entry_id: Id) -> Call[m.EntryOut]:
-    return Call("GET", f"/v1/kb/entries/{entry_id}", model=m.EntryOut)
+    return Call("GET", f"/v1/kb/entries/{_path(entry_id)}", model=m.EntryOut)
 
 
 def entry_update(entry_id: Id, **patch: Any) -> Call[m.Written]:
-    return Call("PATCH", f"/v1/kb/entries/{entry_id}", json=_body(**patch), model=m.Written)
+    return Call("PATCH", f"/v1/kb/entries/{_path(entry_id)}", json=_body(**patch), model=m.Written)
 
 
 def entry_verify(entry_id: Id) -> Call[m.EntryOut]:
-    return Call("POST", f"/v1/kb/entries/{entry_id}/verify", model=m.EntryOut)
+    return Call("POST", f"/v1/kb/entries/{_path(entry_id)}/verify", model=m.EntryOut)
 
 
 def entry_deprecate(entry_id: Id) -> Call[m.EntryOut]:
-    return Call("POST", f"/v1/kb/entries/{entry_id}/deprecate", model=m.EntryOut)
+    return Call("POST", f"/v1/kb/entries/{_path(entry_id)}/deprecate", model=m.EntryOut)
 
 
 def document_upload(
@@ -169,11 +175,11 @@ def document_list(**filters: Any) -> Call[m.DocumentPage]:
 
 
 def document_get(document_id: Id) -> Call[m.DocumentOut]:
-    return Call("GET", f"/v1/kb/documents/{document_id}", model=m.DocumentOut)
+    return Call("GET", f"/v1/kb/documents/{_path(document_id)}", model=m.DocumentOut)
 
 
 def document_delete(document_id: Id) -> Call[m.DocumentOut]:
-    return Call("DELETE", f"/v1/kb/documents/{document_id}", model=m.DocumentOut)
+    return Call("DELETE", f"/v1/kb/documents/{_path(document_id)}", model=m.DocumentOut)
 
 
 # --- governance --------------------------------------------------------------------------------
@@ -198,7 +204,8 @@ def candidate_decide(
     note: str | None = None,
 ) -> Call[m.DecisionOut]:
     body = _body(user_id=user_id, scope=scope, draft=draft, note=note)
-    return Call("POST", f"/v1/candidates/{candidate_id}/{to}", json=body, model=m.DecisionOut)
+    path = f"/v1/candidates/{_path(candidate_id)}/{to}"
+    return Call("POST", path, json=body, model=m.DecisionOut)
 
 
 def candidate_accept(candidate_id: Id, **decision: Any) -> Call[m.DecisionOut]:
@@ -219,4 +226,4 @@ def user_token(user_id: str, ttl_seconds: int | None = None) -> Call[m.UserToken
 
 
 def job_get(job_id: Id) -> Call[m.JobOut]:
-    return Call("GET", f"/v1/jobs/{job_id}", model=m.JobOut)
+    return Call("GET", f"/v1/jobs/{_path(job_id)}", model=m.JobOut)
