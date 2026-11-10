@@ -59,6 +59,7 @@ dev = [
     "pre-commit>=4.0",
     "llm-steward[literag]",  # the default suite imports lite-rag; one pin, in the extra
     "types-pyyaml>=6.0",
+    "llm-steward-client",
 ]
 
 [build-system]
@@ -125,3 +126,6 @@ source_modules = [
     "llm_steward.storage",
 ]
 forbidden_modules = ["fastapi", "starlette"]
+
+[tool.uv.sources]
+llm-steward-client = { path = "../sdk/python", editable = true }

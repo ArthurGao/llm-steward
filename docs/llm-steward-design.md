@@ -496,9 +496,9 @@ flowchart TB
 ### Python SDK
 
 ```python
-from llm_steward import Steward
+from llm_steward_client import Steward
 
-st = Steward(base_url="http://localhost:8000", api_key="stw_...")
+st = Steward(base_url="http://127.0.0.1:8600", api_key="stw_...")
 
 # 写入对话，由 memory provider 抽取记忆
 res = st.episodes.add(messages=msgs, user_id="u_123", session_id="s_9")
@@ -510,10 +510,16 @@ system_prompt = BASE_PROMPT + ctx.context
 # 展示确认卡片
 for s in res.suggestions:
     ...
-st.candidates.accept(s.id, scope="team", draft=edited)
+st.candidates.accept(s.id, user_id="u_123", scope="team", draft=edited)
 ```
 
-提供同步和异步两套客户端，由 OpenAPI 生成基础代码后再手工封装。另外提供 **嵌入模式**：`Steward.embedded("sqlite:///./steward.db")`，不启动 HTTP 服务，直接在调用方进程内使用 service 层。这是选择 SQLite 的主要收益之一。
+提供同步和异步两套客户端，由 OpenAPI 生成基础代码后再手工封装。另外提供 **嵌入模式**：`Steward.embedded("sqlite+aiosqlite:///./steward.db")`，不启动 HTTP 服务，在调用方进程内运行。这是选择 SQLite 的主要收益之一。
+
+实现（P5e，`sdk/python`，包名 `llm-steward-client`）：
+- 导入名是 `llm_steward_client`，不是 `llm_steward`：后者是后端包，同一个环境里会冲突（嵌入模式就要求两者共存）。
+- 模型由 `datamodel-code-generator`（锁定版本）从仓库里提交的 `openapi.json` 生成，请求部分手写（每个操作写一次，同步、异步两套客户端共用）。`scripts/generate.py --check` 和后端的一个测试都会在规格变了而 SDK 没重新生成时失败。没有用 `openapi-python-client`：它会生成一整套 attrs 模型和每个接口一个模块，最后都被包装层盖住。
+- 写操作自动带 `Idempotency-Key`（重试时不变）；重试 408、429（遵守 `Retry-After`，最多 30 秒）、5xx 和网络错误；401/403 从不重试。凭证按请求加在头上，传入的共享 `httpx` 客户端不会被改。
+- 嵌入模式走同一个 ASGI 应用（不是另一套 service 层调用）：启动时迁移数据库、确保有 `default` 命名空间，outbox worker 在进程内运行；没有 API key，调用方就是该命名空间的本地 principal（read/write，`review=True` 才有审核权），不限流。
 
 ### MCP server
 
@@ -938,6 +944,8 @@ llm-steward/
      - worker 经 `outbound.py` 拉取（跟随最多 3 次已检查的重定向，大小上限同上传，命名空间 `documents.url_allowlist` 限定主机），然后用治理操作 `AttachDocumentFile` 交回字节：存成和上传一样的文件，文档已生效就排 ingest。审核在拉取之前或之后通过都行：两者都锁文档行，后发生的那个排 ingest。
      - 名字没有类型时按响应的 Content-Type 命名；类型不支持、404 等 4xx、超大、地址被拒、集合里已有相同内容，文档直接 `failed`（`FailDocumentFetch`，固定错误文字，不含 URL 和对方的响应）；5xx、408、429、网络错误退避重试，用到任务自己的最后一次尝试时文档 `failed`、任务也标记 failed（`steward jobs failed` 可见）。webhook 和文档拉取共用 `outbound.retryable` 判断哪些答复值得重试；被拒的原因带结构化的 `reason`，不靠匹配错误文字。
    - P5d MCP server（2026-11-10）：细节见第 7 节"MCP server"。治理层新增 `Actor.propose_only`（规则 5 落在 actor 上，见第 7 节）。验收：进程内 MCP 客户端走 streamable HTTP 完成 remember → recall，其他用户的记忆召回不到；带审核权的 key 用 `suggest_kb` 也只产生 awaiting_review 的 candidate；`/mcp` 不带 key 返回 401。
+   - P5d 提交后的安全审查（71c1cb7）：MCP 工具参数原来没有 REST 的长度和范围限制（如 `top_k` 可以传 100000）。已修：限制集中在 `schemas/bounds.py`，REST 的请求模型和 MCP 工具签名共用。
+   - P5e Python SDK（2026-11-10）：细节见第 7 节"Python SDK"。CI 新增 `sdk` 任务。后端测试里有 SDK 的端到端测试（README 流程、异步、重试的写入只生效一次、嵌入模式）。
 7. **P6 Admin 前端**
    - [ ] 布局、namespace 切换器、生成的客户端（不做登录；远程访问的保护方式在 P6 计划时定）
    - [ ] 按顺序实现：Memories → Knowledge Base → Review Queue → Providers → Dashboard → Playground → Users → Activity → Jobs → Settings

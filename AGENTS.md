@@ -129,8 +129,10 @@ docker compose --profile native up -d --build      # llm-steward alone, SQLite v
 docker compose --profile standard up -d --build    # llm-steward + WeKnora, shared PG
 ```
 
-Later stages add `uv run pytest -m contract` for real engines (P2+), `pnpm -C frontend test` and
-`generate-client` (P6).
+SDK (run from `sdk/python/`): `uv sync --all-extras && uv run pytest` (includes the OpenAPI drift check);
+after an API change, `uv run python scripts/generate.py` regenerates `openapi.json` and the models.
+
+Later stages add `pnpm -C frontend test` and `generate-client` (P6).
 
 ## Workflow
 

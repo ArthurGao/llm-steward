@@ -38,3 +38,19 @@ jobs:
       - run: uv run mypy
       - run: uv run lint-imports
       - run: uv run pytest -v   # `-m model` / `-m contract` (real model, real engines) stay local
+
+  sdk:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: sdk/python
+    steps:
+      - uses: actions/checkout@v7
+      - uses: astral-sh/setup-uv@v10.3.3
+        with:
+          version: "0.10.8"
+      - run: uv sync --locked --all-extras   # `embedded` installs the backend from ../../backend
+      - run: uv run ruff check
+      - run: uv run ruff format --check
+      - run: uv run mypy
+      - run: uv run pytest -v   # includes the spec/models drift check (scripts/generate.py --check)

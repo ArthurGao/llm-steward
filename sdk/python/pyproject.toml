@@ -1,0 +1,50 @@
+[project]
+name = "llm-steward-client"
+version = "0.1.0"
+description = "Python client for llm-steward: governed memory and knowledge for AI apps (sync, async, embedded)"
+license = "Apache-2.0"
+readme = "README.md"
+requires-python = ">=3.12,<3.13"
+dependencies = [
+    "httpx>=0.27",
+    "pydantic>=2.9",
+]
+
+[project.optional-dependencies]
+# Run llm-steward in this process on SQLite (no server): `Steward.embedded("sqlite+aiosqlite:///./steward.db")`.
+embedded = ["llm-steward"]
+
+[dependency-groups]
+dev = [
+    "pytest>=8.3",
+    "ruff>=0.8",
+    "mypy>=1.13",
+    # Pinned exactly: the committed models must regenerate byte for byte (tests/test_generated.py).
+    "datamodel-code-generator==0.92.0",
+]
+
+[tool.uv]
+default-groups = ["dev"]
+
+[tool.uv.sources]
+llm-steward = { path = "../../backend", editable = true }
+
+[build-system]
+requires = ["uv_build>=0.10,<0.11"]
+build-backend = "uv_build"
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+extend-exclude = ["src/llm_steward_client/_models.py"]  # generated
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM", "RUF"]
+
+[tool.mypy]
+strict = true
+files = ["src", "tests"]
+plugins = ["pydantic.mypy"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
