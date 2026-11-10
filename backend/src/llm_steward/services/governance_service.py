@@ -30,6 +30,7 @@ from llm_steward.models import (
     KbDocumentFile,
     KbEntry,
     Memory,
+    IdempotencyKey,
     Namespace,
     RetrievalLog,
 )
@@ -358,7 +359,8 @@ class DecideCandidate:
 class EraseUser:
     """Per-user erasure (design §7; the one exception to rule 6's "invalidate, never delete"):
     the user's memories and those memories' history, their episodes, the open cards asked of
-    them or drafted from their episodes, and their retrieval logs are deleted. Engine copies are
+    them or drafted from their episodes, their retrieval logs, and the namespace's stored write
+    responses (`Idempotency-Key`) are deleted. Engine copies are
     removed by the outbox (each job carries its engine id, since the rows and refs go now).
     Decided candidates and the team knowledge they became stay: they are the KB's audit trail."""
 
@@ -689,6 +691,9 @@ class GovernanceService:
             .where(Episode.namespace_id == ns, Episode.user_id == user)
             .returning(Episode.id)
         )
+        # Stored write responses (`Idempotency-Key`, kept a day) can carry the user's content, and
+        # an API key's write cannot be tied to the user it was for: forget the namespace's.
+        await s.execute(delete(IdempotencyKey).where(IdempotencyKey.namespace_id == ns))
         logs = await s.execute(
             delete(RetrievalLog)
             .where(

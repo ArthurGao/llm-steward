@@ -27,6 +27,10 @@ HEADER = "idempotency-key"
 _VALID_KEY = re.compile(r"[\x21-\x7e]{1,200}")  # visible ASCII, like a UUID or a ULID
 # Not answers to the request but "try again": the key is released, as for a server error.
 _RETRYABLE = frozenset({408, 429})
+# Never stored: a minted user token would sit in the table as a live credential, and a retrieval's
+# answer is memory content. Neither needs replaying (minting twice is harmless; reads write
+# nothing), so the header is ignored on them.
+NOT_STORED = frozenset({"/v1/tokens/user", "/v1/retrieve"})
 
 
 class _TooLarge(Exception):
@@ -43,6 +47,7 @@ class IdempotencyMiddleware:
             scope["type"] != "http"
             or scope["method"] not in WRITE_METHODS
             or not scope["path"].startswith("/v1/")
+            or scope["path"] in NOT_STORED
         ):
             await self.app(scope, receive, send)
             return

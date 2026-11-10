@@ -205,6 +205,35 @@ def test_a_malformed_key_is_refused(app_client: AppClient, key: str) -> None:
     assert app_client.count(Memory) == 0
 
 
+def test_credentials_and_reads_are_never_stored(app_client: AppClient) -> None:
+    """A minted token would sit in the table as a live bearer credential, and a retrieval's
+    answer is memory content: neither needs replaying (minting twice is harmless, reads write
+    nothing), so the header is ignored there (security review of e98164f)."""
+    h, _ = app_client.new_tenant("acme")
+    headers = {**h, "Idempotency-Key": "k-1"}
+    first, again = (
+        app_client.http.post("/v1/tokens/user", json={"user_id": "u1"}, headers=headers)
+        for _ in range(2)
+    )
+    assert (first.status_code, again.status_code) == (201, 201)
+    assert first.json()["token"] != again.json()["token"]  # minted twice, nothing replayed
+    r = app_client.http.post("/v1/retrieve", json={"query": "tea"}, headers=headers)
+    assert r.status_code == 200 and "Idempotent-Replayed" not in r.headers
+    assert app_client.count(IdempotencyKey) == 0
+
+
+def test_erasing_a_user_forgets_stored_responses(app_client: AppClient) -> None:
+    """A stored response can carry the user's content and an API key's write cannot be tied to
+    the user it was for: erasure clears the namespace's (a day's retry cache, nothing more)."""
+    h, _ = app_client.new_tenant("acme")
+    other, _ = app_client.new_tenant("globex")
+    assert _post(app_client, h, "k-1").status_code == 201
+    assert _post(app_client, other, "k-1").status_code == 201
+    r = app_client.http.delete("/v1/memories", params={"user_id": "u1"}, headers=h)
+    assert r.status_code == 200
+    assert app_client.count(IdempotencyKey) == 1  # only the other namespace's is left
+
+
 def test_after_a_day_a_key_is_forgotten(app_client: AppClient) -> None:
     h, _ = app_client.new_tenant("acme")
     assert _post(app_client, h, "k-1").status_code == 201
