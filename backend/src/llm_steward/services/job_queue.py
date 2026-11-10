@@ -16,7 +16,7 @@ from typing import Any
 from sqlalchemy import and_, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from llm_steward.errors import StewardError
+from llm_steward.errors import NotFound, StewardError
 from llm_steward.models import Job
 from llm_steward.models.base import utcnow
 from llm_steward.models.enums import JobStatus, JobType
@@ -140,6 +140,16 @@ class JobQueue:
                 current.status = JobStatus.PENDING
                 current.run_after = utcnow() + timedelta(seconds=delay)
             return current.status
+
+    async def get(self, namespace_id: uuid.UUID, job_id: uuid.UUID) -> Job:
+        """One job's status (`GET /v1/jobs/{id}`); another namespace's is not found."""
+        async with self._sessions() as session:
+            job = await session.scalar(
+                select(Job).where(Job.id == job_id, Job.namespace_id == namespace_id)
+            )
+        if job is None:
+            raise NotFound(f"job {job_id} not found")
+        return job
 
     async def failed(self, namespace_id: uuid.UUID | None = None, limit: int = 100) -> list[Job]:
         """Jobs that ran out of attempts, newest first (what an operator looks at)."""

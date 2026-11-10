@@ -70,6 +70,9 @@ class Settings(BaseSettings):
     # User tokens (design §7, P5): `POST /v1/tokens/user` signs short-lived HS256 tokens with
     # this secret (at least 32 bytes, e.g. `openssl rand -hex 32`). Unset: none issued or accepted.
     token_secret: SecretStr | None = Field(default=None, min_length=32)
+    # Requests per minute per API key (a user token spends its key's), in this process; a
+    # namespace may set its own (`limits.requests_per_minute`). None: unlimited.
+    rate_limit_per_minute: int | None = Field(default=600, ge=1)
 
     # Run the outbox worker inside the API process (single-process deployments); otherwise run
     # `steward worker` separately.

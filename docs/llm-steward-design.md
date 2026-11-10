@@ -458,7 +458,7 @@ flowchart TB
 - **终端用户身份**由宿主 app 在请求中传 `scope.user_id`，llm-steward 信任持 key 的服务端。如果要在浏览器里直接调用（例如确认卡片），宿主后端用 `POST /v1/tokens/user` 签发短期的 user token，该 token 只能操作这个 user 自己的 memory 和 candidate。实现（P5a）：HS256 JWT，密钥 `STEWARD_TOKEN_SECRET`（未配置则不签发也不接受）；claims `iss`/`aud`/`sub`=user_id/`ns`/`kid`=签发它的 key/`iat`/`exp`/`jti`；默认 15 分钟、最长 1 小时；每次使用都回查签发它的 key，key 吊销则 token 失效；权限最多是该 key 的 read/write，永远不带 review。只有声明了 `UserToken` 安全方案的路由接受它（OpenAPI 里可见，测试钉住清单）；这些路由把 `user_id` 固定为 token 的用户，按 id 访问别人的或共享的 memory 一律 404。
 - **Admin**：不做登录和账号（用户 2026-11-10 决定）：Admin 是内部使用的监控台，可能在本地运行、连接远程 backend。待 P6 定：远程部署时 `/admin/v1` 至少要一个静态 bearer（如 `STEWARD_ADMIN_TOKEN`），否则能连上端口的人就能读到所有 namespace 的记忆。
 - **审核者**：带 `review` scope 的 API key（P3a 起的做法，不再是过渡方案）。
-- 限流：按 key 做令牌桶。
+- 限流：按 key 做令牌桶。实现（P5b）：每个 key 一个桶，容量为每分钟请求数、按每秒 rpm/60 补充；user token 消耗签发它的 key 的额度；默认 `STEWARD_RATE_LIMIT_PER_MINUTE`（600），命名空间可用 `limits.requests_per_minute` 覆盖（每分钟最多重读一次）；超限返回 429 + `Retry-After`；未通过鉴权的请求不计数。桶在进程内，多进程部署时每个进程各自放行全额（v1 不引入共享存储）。
 
 ### REST 端点（`/v1`）
 
@@ -489,7 +489,7 @@ flowchart TB
 
 - 错误统一为 RFC 9457 Problem Details：`{type, title, status, detail, code}`。
 - 列表使用 cursor 分页：`?cursor=&limit=`。
-- 写接口支持 `Idempotency-Key` 请求头，避免重试时重复写入。
+- 写接口支持 `Idempotency-Key` 请求头，避免重试时重复写入。实现（P5b，语义按 IETF 草案）：key 归属于调用方（命名空间 + API key + token 的用户），保留 24 小时；同 key 同请求重放已存的响应（带 `Idempotent-Replayed: true`），同 key 不同请求 422 `idempotency_key_reused`，第一次还在处理时 409 `idempotency_in_progress`；5xx、408、429 释放 key（可以真正重试），其他 4xx 是这次请求的答案，照样重放。key 须为 1–200 个可见 ASCII 字符，否则 400。鉴权和限流在每个请求里只做一次（结果缓存在请求里，幂等中间件、路由和 MCP 共用），被限流的请求在预留 key 之前就被拒绝；为算哈希缓冲的请求体不超过上传上限 + 1 MB，否则 413。
 - 所有对象都返回 `source_refs`，可以追溯出处。
 - **Webhooks**（可选）：`candidate.created`、`kb_entry.verified`、`kb_entry.deprecated`、`document.ready`。使用 HMAC 签名，让宿主 app 实时知道审核结果。
 
@@ -918,8 +918,10 @@ llm-steward/
      - 许可证 Apache-2.0（根目录 `LICENSE`，pyproject `license`）；v1 不做 TS SDK。
    - P5a user token 与按用户隔离（2026-11-10）：
      - `POST /v1/tokens/user`（API key + write）；token 的细节见第 7 节鉴权。`/v1/profile` 的 `user_id` 改为可选（user token 下默认是自己）。
-     - 用户 token 可用的路由：memories 的增、查、改、删、历史，profile，retrieve 与反馈，candidates 列表与 accept/reject，suggestions；其余（episodes、KB、collections、promote、tokens、按用户删除）一律 403。
+     - 用户 token 可用的路由：memories 的增、查、改、删、历史，profile，retrieve 与反馈，candidates 列表与 accept/reject；其余（episodes、suggestions、KB、collections、promote、tokens、按用户删除）一律 403。
+     - 提交后的安全审查（2026-11-10）发现的自批路径，已修：`/v1/suggestions` 原本也开放给 user token，但中风险建议会生成问"同一个用户"的卡片，用户就能自己提议、自己批准进团队 KB；改为只接受 API key。同理，user token 接受卡片时带修改后的 `draft`，只能 `scope: personal`（存成自己的记忆）；改写团队知识返回 403。宿主后端（API key）代用户转交修改不受影响。
      - 按用户删除做成治理操作 `EraseUser`（规则 6 的例外，不写 change_log）。
+   - P5b 限流、幂等、任务状态（2026-11-10）：细节见第 7 节。迁移 0009 新增 `idempotency_keys`；worker 每小时清理过期的 key。`GET /v1/jobs/{id}`（read，只看本命名空间，不返回 payload）。`/metrics` 推到 P6，和 Admin 的统计一起做。
 7. **P6 Admin 前端**
    - [ ] 布局、namespace 切换器、生成的客户端（不做登录；远程访问的保护方式在 P6 计划时定）
    - [ ] 按顺序实现：Memories → Knowledge Base → Review Queue → Providers → Dashboard → Playground → Users → Activity → Jobs → Settings

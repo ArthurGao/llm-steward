@@ -8,8 +8,9 @@ A user token is refused by every route except those whose `require` names a reas
 end users in (`end_user=`); a test pins that list. Those routes pin `user_id` to the token's user.
 """
 
-from collections.abc import Awaitable, Callable
-from typing import Annotated
+import math
+from collections.abc import Awaitable, Callable, MutableMapping
+from typing import Annotated, Any
 
 from fastapi import Depends, HTTPException, Request
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
@@ -33,6 +34,7 @@ _user_bearer = HTTPBearer(
     description="A user token from POST /v1/tokens/user: only that end user's own data",
 )
 _CHALLENGE = {"WWW-Authenticate": "Bearer"}
+_PRINCIPAL = "steward_principal"  # key in the ASGI scope's state
 
 
 def get_services(request: Request) -> Services:
@@ -44,27 +46,43 @@ ServicesDep = Annotated[Services, Depends(get_services)]
 
 
 async def authenticate(
+    request: Request,
     services: ServicesDep,
     credentials: Annotated[HTTPAuthorizationCredentials | None, Depends(_bearer)],
 ) -> Principal:
-    return await _principal(services, credentials)
+    token = credentials.credentials if credentials else None
+    return await resolve_principal(services, token, request.scope)
 
 
 async def authenticate_end_user(
+    request: Request,
     services: ServicesDep,
     credentials: Annotated[HTTPAuthorizationCredentials | None, Depends(_user_bearer)],
 ) -> Principal:
-    return await _principal(services, credentials)
+    token = credentials.credentials if credentials else None
+    return await resolve_principal(services, token, request.scope)
 
 
-async def _principal(
-    services: Services, credentials: HTTPAuthorizationCredentials | None
+async def resolve_principal(
+    services: Services, token: str | None, scope: MutableMapping[str, Any]
 ) -> Principal:
-    if credentials is None:
+    """The request's caller, authenticated and charged to its key's rate limit exactly once per
+    request (cached in the ASGI scope): the idempotency middleware, the route dependencies and
+    MCP all come through here. 401 for no or bad credentials, 429 over the limit."""
+    state = scope.setdefault("state", {})
+    cached: Principal | None = state.get(_PRINCIPAL)
+    if cached is not None:
+        return cached
+    if not token:
         raise HTTPException(401, "missing API key or user token", headers=_CHALLENGE)
-    principal = await services.namespaces.authenticate(credentials.credentials)
+    principal = await services.namespaces.authenticate(token)
     if principal is None:
         raise HTTPException(401, "invalid, expired or revoked credentials", headers=_CHALLENGE)
+    wait = await services.rate_limiter.check(principal.key_id, principal.namespace_id)
+    if wait is not None:  # counted only once the caller is known: a bad key spends nobody's
+        headers = {"Retry-After": str(max(1, math.ceil(wait)))}
+        raise HTTPException(429, "rate limit exceeded for this API key", headers=headers)
+    state[_PRINCIPAL] = principal
     return principal
 
 

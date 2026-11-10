@@ -10,6 +10,7 @@ from fastapi import FastAPI
 
 from llm_steward.api import errors, system
 from llm_steward.api import v1 as api_v1
+from llm_steward.api.idempotency import IdempotencyMiddleware
 from llm_steward.config import Settings
 from llm_steward.llm.client import LLM
 from llm_steward.providers.base import MemoryProvider, Reranker
@@ -64,6 +65,8 @@ def create_app(
 
     app = FastAPI(title="llm-steward", version="0.1.0", lifespan=lifespan)
     errors.install(app)
+    # an upload's limit, plus room for the multipart framing
+    app.add_middleware(IdempotencyMiddleware, max_body=(settings.kb_max_upload_mb + 1) * 2**20)
     app.include_router(system.router)
     app.include_router(api_v1.router)
     return app

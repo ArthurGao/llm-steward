@@ -6,6 +6,7 @@ serve a needed LLM role fails here, at startup (KB llm-app-architecture §1.5).
 """
 
 import logging
+import uuid
 from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
@@ -30,11 +31,13 @@ from llm_steward.providers.registry import (
 from llm_steward.services.document_service import DocumentService
 from llm_steward.services.episode_service import EpisodeService
 from llm_steward.services.extraction_service import ExtractionService, compensates
-from llm_steward.services.governance_service import GovernanceService
+from llm_steward.services.governance_service import GovernanceService, namespace_config
+from llm_steward.services.idempotency_service import IdempotencyService
 from llm_steward.services.job_queue import ClaimedJob, JobQueue
 from llm_steward.services.kb_service import KbService
 from llm_steward.services.memory_service import MemoryService
 from llm_steward.services.namespace_service import NamespaceService
+from llm_steward.services.rate_limit import RateLimiter
 from llm_steward.services.reconcile_service import ReconcileService, schedule_reconcile
 from llm_steward.services.retrieval_service import RetrievalService
 from llm_steward.services.sync_service import SyncService
@@ -47,6 +50,7 @@ log = logging.getLogger(__name__)
 IDLE_FLUSH_EVERY_S = 60.0
 EXPIRE_EVERY_S = 24 * 3600.0  # candidates expire after days (governance CANDIDATE_TTL)
 HITS_EVERY_S = 30.0  # hit counts lag retrievals by at most this (design §6 step 9)
+PURGE_IDEMPOTENCY_EVERY_S = 3600.0  # keys are kept a day; an hour late is harmless
 
 
 @dataclass(frozen=True)
@@ -64,6 +68,9 @@ class Services:
     reconcile: ReconcileService
     retrieval: RetrievalService
     worker: Worker
+    jobs: JobQueue
+    idempotency: IdempotencyService
+    rate_limiter: RateLimiter
 
 
 def build_llm(settings: Settings, providers: Providers) -> LLM | None:
@@ -96,6 +103,12 @@ def build_services(
         sessions, governance, providers.memory, llm, on_extracted=kb.queue_suggestions
     )
     reconcile = ReconcileService(sessions, providers.memory)
+    idempotency = IdempotencyService(sessions)
+
+    async def namespace_rpm(namespace_id: uuid.UUID) -> int | None:
+        async with sessions() as s:
+            return (await namespace_config(s, namespace_id)).limits.requests_per_minute
+
     retrieval = RetrievalService(
         sessions,
         providers,
@@ -116,14 +129,16 @@ def build_services(
     async def dispatch(job: ClaimedJob) -> Any:
         return await handlers[job.type](job)
 
+    jobs = JobQueue(sessions)
     worker = Worker(
-        JobQueue(sessions),
+        jobs,
         dispatch,
         ticks=(
             # late-bound: `episodes` is built below, with the worker's run_job
             Tick("flush idle episode buffers", IDLE_FLUSH_EVERY_S, lambda: episodes.flush_idle()),
             Tick("expire unanswered candidates", EXPIRE_EVERY_S, governance.expire_candidates),
             Tick("count retrieval hits", HITS_EVERY_S, retrieval.count_hits),
+            Tick("forget old idempotency keys", PURGE_IDEMPOTENCY_EVERY_S, idempotency.purge),
             Tick(
                 "schedule reconcile",
                 settings.reconcile_interval_hours * 3600.0,
@@ -161,6 +176,9 @@ def build_services(
         reconcile=reconcile,
         retrieval=retrieval,
         worker=worker,
+        jobs=jobs,
+        idempotency=idempotency,
+        rate_limiter=RateLimiter(settings.rate_limit_per_minute, namespace_rpm),
     )
 
 

@@ -3,6 +3,7 @@ from fastapi import APIRouter
 from llm_steward.api.v1 import (
     candidates,
     episodes,
+    jobs,
     kb,
     memories,
     profile,
@@ -20,3 +21,4 @@ router.include_router(kb.router)
 router.include_router(candidates.router)
 router.include_router(suggestions.router)
 router.include_router(tokens.router)
+router.include_router(jobs.router)

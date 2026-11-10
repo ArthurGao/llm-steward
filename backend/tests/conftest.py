@@ -153,6 +153,7 @@ def test_settings(database_url: str, **overrides: object) -> "Settings":
         "kb_provider": "native",
         "run_worker": False,
         "token_secret": TEST_TOKEN_SECRET,
+        "rate_limit_per_minute": None,  # off unless a test turns it on
         **overrides,
     }
     settings = Settings(_env_file=None, **values)  # type: ignore[call-arg, arg-type]
@@ -175,6 +176,16 @@ class AppClient:
         from llm_steward.storage.db import session_factory
 
         return session_factory(self.services.engine)
+
+    def count(self, model: Any) -> int:
+        """Rows in a table (every namespace)."""
+        from sqlalchemy import func, select
+
+        async def read() -> int:
+            async with self.sessions() as s:
+                return int(await s.scalar(select(func.count()).select_from(model)) or 0)
+
+        return self.call(read)
 
     def call(self, fn: Callable[..., Awaitable[T]], *args: object, **kwargs: object) -> T:
         portal = self.http.portal

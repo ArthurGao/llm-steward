@@ -32,6 +32,7 @@ _HTTP_CODES = {
     403: "forbidden",
     404: "not_found",
     405: "method_not_allowed",
+    429: "rate_limited",
 }
 
 

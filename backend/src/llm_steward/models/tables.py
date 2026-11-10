@@ -325,3 +325,22 @@ class Job(IdMixin, TimestampMixin, Base):
     run_after: Mapped[datetime]
     locked_until: Mapped[datetime | None]
     error: Mapped[str | None] = mapped_column(Text)
+
+
+class IdempotencyKey(IdMixin, CreatedMixin, Base):
+    """A write sent with an `Idempotency-Key` header (design §7): a retry with the same key and
+    the same request replays the stored response instead of writing again. Kept 24 hours.
+    `status_code` is NULL while the first request is still running."""
+
+    __tablename__ = "idempotency_keys"
+    __table_args__ = (
+        UniqueConstraint("namespace_id", "principal", "key"),
+        Index("ix_idempotency_keys_created", "created_at"),  # the daily purge
+    )
+    namespace_id: Mapped[uuid.UUID] = _namespace_fk()
+    principal: Mapped[str] = mapped_column(String(300))  # the API key, and the token's user
+    key: Mapped[str] = mapped_column(String(200))
+    request_hash: Mapped[str] = mapped_column(String(64))
+    status_code: Mapped[int | None]
+    content_type: Mapped[str | None] = mapped_column(String(200))
+    body: Mapped[bytes | None] = mapped_column(LargeBinary)
