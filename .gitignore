@@ -55,3 +55,12 @@ data/
 # Logs
 *.log
 logs/
+
+# Agent scratch: brainstorm companion, SDD ledgers, Impeccable decision mocks and captures
+.superpowers/
+.impeccable/mocks/
+.impeccable/review/
+.impeccable/build/
+
+# Frontend local (routeTree.gen.ts is generated but committed, as TanStack Router advises: typecheck needs it)
+.vercel/

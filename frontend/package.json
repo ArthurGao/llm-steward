@@ -1,0 +1,16 @@
+{
+  "name": "llm-steward-frontend",
+  "private": true,
+  "packageManager": "pnpm@10.34.7",
+  "engines": {
+    "node": "22.x"
+  },
+  "scripts": {
+    "dev": "pnpm -C apps/admin dev",
+    "typecheck": "pnpm -r typecheck",
+    "lint": "pnpm -r lint",
+    "test": "pnpm -r test",
+    "build": "pnpm -r build",
+    "e2e": "pnpm -C apps/admin e2e"
+  }
+}

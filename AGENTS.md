@@ -23,7 +23,8 @@ deploy/      pinned WeKnora / RAGFlow compose fragments and init scripts
 docs/        design — read before writing code
 ```
 
-`backend/` and `deploy/` exist since P0; `frontend/` gets its pnpm workspace in P6 and `sdk/` in P5.
+`backend/` and `deploy/` exist since P0, `sdk/` since P5; `frontend/` holds the Admin (a mock-data version was built
+ahead on 2026-11-09 on branch `feat/admin-frontend`, brought into main in P6).
 The only contract between backend and frontend is the backend's
 OpenAPI spec (frontend generates its client from it with `@hey-api/openapi-ts`).
 
@@ -133,7 +134,14 @@ docker compose --profile standard up -d --build    # llm-steward + WeKnora, shar
 SDK (run from `sdk/python/`): `uv sync --all-extras && uv run pytest` (includes the OpenAPI drift check);
 after an API change, `uv run python scripts/generate.py` regenerates `openapi.json` and the models.
 
-Later stages add `pnpm -C frontend test` and `generate-client` (P6).
+Frontend (run from `frontend/`; Node 22, pnpm 10):
+
+```
+pnpm install
+pnpm dev                           # Admin on http://127.0.0.1:8610, in-browser mock API (MSW)
+pnpm typecheck && pnpm lint && pnpm test && pnpm build
+pnpm e2e                           # Playwright against the production build on 8611
+```
 
 ## Workflow
 

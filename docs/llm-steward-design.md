@@ -745,7 +745,7 @@ llm-steward/
 └── sdk/python/                    # llm-steward-client（同步 + 异步）
 ```
 
-生产部署时前端构建产物由 FastAPI 直接提供；WeKnora 或 RAGFlow 作为独立容器部署，只在内网暴露给 llm-steward。
+生产部署时前端构建产物可以由 FastAPI 直接提供，也可以作为独立的静态站点单独部署（例如 Vercel 项目 `llm-steward-admin`，`VITE_API_BASE_URL` 指向 API；2026-11-09 起演示版即如此）；WeKnora 或 RAGFlow 作为独立容器部署，只在内网暴露给 llm-steward。
 
 ## 11. 实施计划（给 Claude Code）
 
@@ -955,6 +955,9 @@ llm-steward/
    - P5d 提交后的安全审查（71c1cb7）：MCP 工具参数原来没有 REST 的长度和范围限制（如 `top_k` 可以传 100000）。已修：限制集中在 `schemas/bounds.py`，REST 的请求模型和 MCP 工具签名共用。
    - P5e Python SDK（2026-11-10）：细节见第 7 节"Python SDK"。CI 新增 `sdk` 任务。后端测试里有 SDK 的端到端测试（README 流程、异步、重试的写入只生效一次、嵌入模式）。
 7. **P6 Admin 前端**
+   - 提前做的 mock 版（2026-11-09，按 owner 要求，在分支 `feat/admin-frontend` 上，排在 P3–P5 之前）：`frontend/apps/admin` 的全部页面、布局、演示登录、namespace 切换器，数据来自浏览器内的 MSW mock（`src/mocks/`，实现与治理层相同的规则），部署在 Vercel 项目 `llm-steward-admin` 作开源演示。设计方向是 "Standards Track"（`DESIGN.md`）。
+   - P6 计划（2026-11-11）：P6.0 把该分支的 `frontend/`、CI 任务、`DESIGN.md` 带进 main（不合并整个分支：它还提交了 `PRODUCT.md`、`.impeccable/`、`docs/superpowers/`，这些在 main 里是另一个会话的工作文件）；P6a 后端 `/admin/v1`，按前端 `src/api/endpoints.ts` 的契约实现，访问用静态 `STEWARD_ADMIN_TOKEN`（不登录、不建账号，没设置就关闭）；P6b 前端去掉演示登录和角色，用 `@hey-api/openapi-ts` 生成的客户端，live 模式带 admin token 连真后端，mock 演示保留；P6c 两条 Playwright 验收流程对真后端（native，fake LLM）。
+   - P6.0（2026-11-11）：带进 main 后原样通过 typecheck、lint、73 个单元测试、build、7 个 Playwright 测试。`routeTree.gen.ts` 改为提交（TanStack Router 的建议；不提交的话，全新检出时 typecheck 在 build 之前跑会失败）。
    - [ ] 布局、namespace 切换器、生成的客户端（不做登录；远程访问的保护方式在 P6 计划时定）
    - [ ] 按顺序实现：Memories → Knowledge Base → Review Queue → Providers → Dashboard → Playground → Users → Activity → Jobs → Settings
    - 验收：Playwright 覆盖"审核一条 high 风险 candidate 并看到它同步到 WeKnora"和"在 Playground 发现缺口并加入 KB"两条主流程

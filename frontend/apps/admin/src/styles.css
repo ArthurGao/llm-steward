@@ -1,0 +1,98 @@
+@import '@fontsource/red-hat-text/400.css';
+@import '@fontsource/red-hat-text/500.css';
+@import '@fontsource/red-hat-text/700.css';
+@import '@fontsource/red-hat-mono/400.css';
+@import '@fontsource/red-hat-mono/500.css';
+@import 'tailwindcss';
+
+/* Standards Track: paper, ink, hairlines, one status ladder. */
+@theme {
+  --font-sans: 'Red Hat Text', ui-sans-serif, system-ui, sans-serif;
+  --font-mono: 'Red Hat Mono', ui-monospace, Menlo, monospace;
+
+  --color-paper: #ffffff;
+  --color-wash: #f6f6f4;
+  --color-select: #eef3fc;
+  --color-ink: #141414;
+  --color-ink-2: #4f4f4f;
+  --color-ink-3: #666666;
+  --color-rule: #dcdcdc;
+  --color-link: #0b57d0;
+
+  /* Contract amber #b26a00 is 4.0:1 on white; darkened to #955800 (5.6:1) so 13px status text passes AA. */
+  --color-awaiting: #955800;
+  --color-awaiting-wash: #fdf3e2;
+  --color-verified: #1e7f4f;
+  --color-verified-wash: #e7f3ec;
+  --color-deprecated: #6b6b6b;
+  --color-rejected: #b3261e;
+  --color-rejected-wash: #fcebea;
+
+  --color-del: #8c1d18;
+  --color-del-wash: #fdecea;
+  --color-ins: #14532d;
+  --color-ins-wash: #e3f2e8;
+
+}
+
+@layer base {
+  html {
+    color-scheme: light;
+    -webkit-text-size-adjust: 100%;
+  }
+  body {
+    @apply bg-paper text-ink font-sans antialiased;
+    font-size: 14px;
+    line-height: 1.5;
+  }
+  h1,
+  h2,
+  h3 {
+    text-wrap: balance;
+  }
+  p,
+  li,
+  dd {
+    text-wrap: pretty;
+  }
+  ::selection {
+    background: #cfe0fb;
+    color: var(--color-ink);
+  }
+  :focus-visible {
+    outline: 2px solid var(--color-link);
+    outline-offset: 2px;
+  }
+  a {
+    color: var(--color-link);
+    text-underline-offset: 3px;
+  }
+  * {
+    scrollbar-width: thin;
+    scrollbar-color: #c4c4c4 transparent;
+  }
+  input::placeholder,
+  textarea::placeholder {
+    color: var(--color-ink-3);
+  }
+  code,
+  kbd,
+  .num {
+    font-variant-numeric: tabular-nums;
+  }
+}
+
+@keyframes stack-in {
+  from {
+    transform: translateY(10px);
+    opacity: 0.4;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 1ms !important;
+    transition-duration: 1ms !important;
+  }
+}
