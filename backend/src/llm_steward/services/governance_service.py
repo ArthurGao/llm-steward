@@ -95,10 +95,13 @@ class Actor:
     type: ActorType
     id: str | None = None
     can_review: bool = False
+    # May only propose knowledge (an agent over MCP, design rule 5): every knowledge write becomes
+    # a candidate for a reviewer, and no candidate can be decided; never a reviewer.
+    propose_only: bool = False
 
     @property
     def is_reviewer(self) -> bool:
-        return self.type == ActorType.ADMIN or self.can_review
+        return (self.type == ActorType.ADMIN or self.can_review) and not self.propose_only
 
 
 SYSTEM = Actor(ActorType.SYSTEM)  # llm-steward's own writes (maintenance jobs)
@@ -952,7 +955,10 @@ class GovernanceService:
         checked = await self._screen(s, op.namespace_id, op.title, op.content, tuple(op.tags))
         risk = max_risk(op.risk_level, checked.level, collection.default_risk)
         draft = _draft(op, checked)
-        route = "auto" if actor.is_reviewer else _route(collection, risk)
+        if actor.propose_only:  # whatever the risk, the routes or the actor's review right
+            route: Route = "review"
+        else:
+            route = "auto" if actor.is_reviewer else _route(collection, risk)
         if route == "user" and op.requested_for_user is None:
             route = "auto"  # nobody to ask: medium goes live (design §5)
         if route == "auto" and op.author_type == AuthorType.AI:
@@ -985,7 +991,11 @@ class GovernanceService:
         )
         checked, title, content = await self._screen_edit(s, entry, op.title, op.content)
         risk = max_risk(op.risk_level, checked.level, collection.default_risk)
-        waits = entry.status == KbStatus.VERIFIED or _route(collection, risk) == "review"
+        waits = (
+            entry.status == KbStatus.VERIFIED
+            or _route(collection, risk) == "review"
+            or actor.propose_only
+        )
         if actor.is_reviewer or not waits:
             reason = _reason(op.reason, checked)
             return await self._edit(s, entry, title, content, reason, actor, risk=risk)
@@ -1020,7 +1030,7 @@ class GovernanceService:
         risk = max_risk(op.risk_level, checked.level, collection.default_risk)
         if actor.is_reviewer:
             state = KbStatus.VERIFIED
-        elif _route(collection, risk) == "review":
+        elif _route(collection, risk) == "review" or actor.propose_only:
             state = KbStatus.DRAFT
         else:
             state = KbStatus.ACTIVE
@@ -1496,6 +1506,8 @@ def _check_decider(candidate: Candidate, actor: Actor, to: CandidateStatus) -> N
     llm-steward's own (SYSTEM)."""
     if to == CandidateStatus.EXPIRED and actor.type == ActorType.SYSTEM:
         return
+    if actor.propose_only:
+        raise Forbidden("this caller may only propose, not decide")
     if candidate.stage == CandidateStage.AWAITING_REVIEW:
         _require_reviewer(actor, "decide a candidate in the review queue")
     elif not actor.is_reviewer:

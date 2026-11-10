@@ -530,6 +530,13 @@ st.candidates.accept(s.id, scope="team", draft=edited)
 
 MCP 的 agent **不能直接写入或审批 KB**，只能提议。这是防止 prompt injection 污染共享知识库的底线。
 
+实现（P5d，官方 `mcp==2.3.0`，`MCPServer`）：
+- HTTP：`/mcp` 挂在 FastAPI 里（streamable HTTP，无状态、JSON 响应，任何 API 进程都能应答）。调用方在 MCP 应用之前由同一个鉴权步骤解析（API key 或 user token，计入限流，401/429 同 `/v1`），工具从请求里取到这个调用方。SDK 自带的 DNS rebinding 检查（只认 localhost 的 Host）关掉了：每个请求都要 bearer 凭证，重绑 DNS 的网页拿不到。挂载的子应用不会跑自己的 lifespan，由 FastAPI 的 lifespan 进入 `session_manager.run()`。
+- stdio：`steward mcp --stdio` 启动时用 `STEWARD_API_KEY` 鉴权（没有本地免鉴权），`--user-id` 把每次调用固定到一个终端用户（和 user token 一样只有 read/write）；outbox worker 同进程运行。
+- `remember` 只存 agent 给出的那条事实（不做抽取）；`recall`、`search_kb` 返回上下文文本；`forget` 软删除；`get_profile` 返回 profile 和置顶记忆。
+- 只能提议：工具一律以 `Actor(propose_only=True)` 执行（同时去掉审核权）。治理层对这种 actor：提交、修订、上传文档一律变成审核队列里的 candidate（不管风险、集合路由还是 key 的审核权），任何 candidate 都不能由它决定（包括问它自己的卡片）。以后新加的 MCP 工具自动受约束，不靠每个调用点记得传参数。另有测试钉住 `mcp` 包不能出现任何知识写入或决定的操作名。
+- 限流：stateless 模式下每个 POST（`initialize`、`tools/list`、每次 `tools/call`）都走一次鉴权并计入限流，一个 agent 第一次调用工具前大约用掉 3 个单位；按每分钟 600 的默认值不构成问题。
+
 ## 8. 扩展与自定义
 
 "通用"靠好的默认值，"可定制"分四层：大多数场景改**配置**就够了；换后端用 **provider adapter**；改治理行为用 **prompt 模板**；水平扩展用 **hook 和插件**。
@@ -930,6 +937,7 @@ llm-steward/
      - 请求只记录：URL 必须是 https（本地开发可放开 http）且有主机；文件名带类型时当场检查类型；不做任何网络访问。文档行带 `source_uri`，排一个 `kb.doc_fetch` 任务（迁移 0011）；无论是否需要审核都先拉取，审核者能看到内容。
      - worker 经 `outbound.py` 拉取（跟随最多 3 次已检查的重定向，大小上限同上传，命名空间 `documents.url_allowlist` 限定主机），然后用治理操作 `AttachDocumentFile` 交回字节：存成和上传一样的文件，文档已生效就排 ingest。审核在拉取之前或之后通过都行：两者都锁文档行，后发生的那个排 ingest。
      - 名字没有类型时按响应的 Content-Type 命名；类型不支持、404 等 4xx、超大、地址被拒、集合里已有相同内容，文档直接 `failed`（`FailDocumentFetch`，固定错误文字，不含 URL 和对方的响应）；5xx、408、429、网络错误退避重试，用到任务自己的最后一次尝试时文档 `failed`、任务也标记 failed（`steward jobs failed` 可见）。webhook 和文档拉取共用 `outbound.retryable` 判断哪些答复值得重试；被拒的原因带结构化的 `reason`，不靠匹配错误文字。
+   - P5d MCP server（2026-11-10）：细节见第 7 节"MCP server"。治理层新增 `Actor.propose_only`（规则 5 落在 actor 上，见第 7 节）。验收：进程内 MCP 客户端走 streamable HTTP 完成 remember → recall，其他用户的记忆召回不到；带审核权的 key 用 `suggest_kb` 也只产生 awaiting_review 的 candidate；`/mcp` 不带 key 返回 401。
 7. **P6 Admin 前端**
    - [ ] 布局、namespace 切换器、生成的客户端（不做登录；远程访问的保护方式在 P6 计划时定）
    - [ ] 按顺序实现：Memories → Knowledge Base → Review Queue → Providers → Dashboard → Playground → Users → Activity → Jobs → Settings

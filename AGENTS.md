@@ -119,6 +119,7 @@ uv run steward ns apply -f ns.yaml # create/update a namespace and its config (v
 uv run steward jobs failed         # jobs out of attempts; `steward jobs retry <id>… | --all-failed`
 uv run steward serve               # http://127.0.0.1:8600 (+ outbox worker unless STEWARD_RUN_WORKER=false)
 uv run steward worker              # the outbox worker on its own
+STEWARD_API_KEY=stw_… uv run steward mcp --stdio [--user-id u]   # MCP for a local agent (HTTP: /mcp)
 ```
 
 Stack (run from the repo root):

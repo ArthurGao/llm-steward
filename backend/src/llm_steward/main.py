@@ -7,12 +7,15 @@ from typing import Any
 
 import httpx2
 from fastapi import FastAPI
+from mcp.server.transport_security import TransportSecuritySettings
 
 from llm_steward.api import errors, system
 from llm_steward.api import v1 as api_v1
 from llm_steward.api.idempotency import IdempotencyMiddleware
+from llm_steward.api.mcp_http import McpAuth
 from llm_steward.config import Settings
 from llm_steward.llm.client import LLM
+from llm_steward.mcp.server import build_server as build_mcp_server
 from llm_steward.providers.base import MemoryProvider, Reranker
 from llm_steward.providers.native.embedding import Embedder
 from llm_steward.services.container import runtime
@@ -32,6 +35,16 @@ def create_app(
     """Build the app. `http`, `embedder`, `memory_provider`, `llm` and `reranker` are injectable
     for tests."""
     settings = settings or Settings()
+    # MCP over streamable HTTP (design §7): stateless JSON, so any API process can answer any
+    # call. Its DNS-rebinding check (Host must be localhost) is off: every request needs a bearer
+    # credential, which a page rebinding DNS does not have, and llm-steward runs behind real hosts.
+    mcp_server = build_mcp_server(lambda: app.state.services)
+    mcp_app = mcp_server.streamable_http_app(
+        streamable_http_path="/",
+        json_response=True,
+        stateless_http=True,
+        transport_security=TransportSecuritySettings(enable_dns_rebinding_protection=False),
+    )
 
     @asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:
@@ -55,7 +68,8 @@ def create_app(
             if settings.run_worker:
                 background.append(asyncio.create_task(services.worker.run_forever(stop)))
             try:
-                yield
+                async with mcp_server.session_manager.run():  # a mounted app's lifespan never runs
+                    yield
             finally:
                 stop.set()
                 for task in background:
@@ -69,6 +83,7 @@ def create_app(
     app.add_middleware(IdempotencyMiddleware, max_body=(settings.kb_max_upload_mb + 1) * 2**20)
     app.include_router(system.router)
     app.include_router(api_v1.router)
+    app.mount("/mcp", McpAuth(mcp_app))
     return app
 
 

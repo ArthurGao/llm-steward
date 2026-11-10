@@ -14,7 +14,7 @@ import hashlib
 import hmac
 import secrets
 import uuid
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime, timedelta
 from typing import Any, Literal, overload
 
@@ -34,6 +34,10 @@ KEY_PREFIX = "stw"
 DEFAULT_SCOPES = (ApiScope.READ, ApiScope.WRITE)
 # `last_used_at` is informational; writing it on every request would turn reads into writes.
 LAST_USED_RESOLUTION = timedelta(minutes=1)
+
+# Where a request's resolved caller is kept in the ASGI scope's state (REST routes, the
+# idempotency middleware and the MCP tools all read it there).
+PRINCIPAL_STATE_KEY = "steward_principal"
 
 TOKEN_ISSUER = "llm-steward"
 TOKEN_AUDIENCE = "llm-steward:user"
@@ -73,6 +77,11 @@ class Principal:
         return Actor(
             ActorType.HOST_APP, f"api_key:{self.key_id}", can_review=ApiScope.REVIEW in self.scopes
         )
+
+    def for_user(self, user_id: str) -> "Principal":
+        """This key's caller acting for one end user only: a user token's principal (no more
+        than `read` and `write`, never `review`)."""
+        return replace(self, user_id=user_id, scopes=self.scopes & USER_TOKEN_SCOPES)
 
     def pin_user(self, requested: str | None) -> str | None:
         """The user a request may concern. An API key's server is trusted with any user id
@@ -247,8 +256,7 @@ class NamespaceService:
             if key is None or key.revoked_at is not None or key.namespace_id != namespace_id:
                 return None
             _touch(key)
-            scopes = frozenset(key.scopes) & USER_TOKEN_SCOPES
-            return Principal(key.namespace_id, key.id, scopes, user_id=user_id)
+            return Principal(key.namespace_id, key.id, frozenset(key.scopes)).for_user(user_id)
 
 
 def _touch(key: ApiKey) -> None:

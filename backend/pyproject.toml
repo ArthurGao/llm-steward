@@ -19,6 +19,7 @@ dependencies = [
     "openai>=1.60",
     "pyyaml>=6.0",
     "pyjwt>=2.10",
+    "mcp==2.3.0",
 ]
 
 [project.optional-dependencies]

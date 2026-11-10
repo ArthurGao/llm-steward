@@ -14,10 +14,12 @@ from typing import Annotated, Any
 
 from fastapi import Depends, HTTPException, Request
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
+from fastapi.security.utils import get_authorization_scheme_param
+from starlette.datastructures import Headers
 
 from llm_steward.models.enums import ApiScope
 from llm_steward.services.container import Services
-from llm_steward.services.namespace_service import Principal
+from llm_steward.services.namespace_service import PRINCIPAL_STATE_KEY, Principal
 
 # Deliberately open: liveness for Docker/monitoring, and the API description itself.
 UNAUTHENTICATED_PATHS = frozenset(
@@ -34,7 +36,6 @@ _user_bearer = HTTPBearer(
     description="A user token from POST /v1/tokens/user: only that end user's own data",
 )
 _CHALLENGE = {"WWW-Authenticate": "Bearer"}
-_PRINCIPAL = "steward_principal"  # key in the ASGI scope's state
 
 
 def get_services(request: Request) -> Services:
@@ -63,6 +64,15 @@ async def authenticate_end_user(
     return await resolve_principal(services, token, request.scope)
 
 
+async def principal_from_scope(services: Services, scope: MutableMapping[str, Any]) -> Principal:
+    """`resolve_principal` for ASGI middleware: the bearer credential read from the scope's
+    headers the way the routes read it."""
+    auth_scheme, token = get_authorization_scheme_param(Headers(scope=scope).get("authorization"))
+    return await resolve_principal(
+        services, token if auth_scheme.lower() == "bearer" else None, scope
+    )
+
+
 async def resolve_principal(
     services: Services, token: str | None, scope: MutableMapping[str, Any]
 ) -> Principal:
@@ -70,7 +80,7 @@ async def resolve_principal(
     request (cached in the ASGI scope): the idempotency middleware, the route dependencies and
     MCP all come through here. 401 for no or bad credentials, 429 over the limit."""
     state = scope.setdefault("state", {})
-    cached: Principal | None = state.get(_PRINCIPAL)
+    cached: Principal | None = state.get(PRINCIPAL_STATE_KEY)
     if cached is not None:
         return cached
     if not token:
@@ -82,7 +92,7 @@ async def resolve_principal(
     if wait is not None:  # counted only once the caller is known: a bad key spends nobody's
         headers = {"Retry-After": str(max(1, math.ceil(wait)))}
         raise HTTPException(429, "rate limit exceeded for this API key", headers=headers)
-    state[_PRINCIPAL] = principal
+    state[PRINCIPAL_STATE_KEY] = principal
     return principal
 
 

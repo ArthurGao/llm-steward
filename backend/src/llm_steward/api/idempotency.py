@@ -11,13 +11,12 @@ import re
 import uuid
 
 from fastapi import HTTPException
-from fastapi.security.utils import get_authorization_scheme_param
 from starlette.datastructures import Headers
 from starlette.responses import Response
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
-from llm_steward.api.deps import resolve_principal
-from llm_steward.api.errors import problem
+from llm_steward.api.deps import principal_from_scope
+from llm_steward.api.errors import http_problem, problem
 from llm_steward.errors import StewardError
 from llm_steward.services.container import Services
 from llm_steward.services.idempotency_service import StoredResponse, principal_ref, request_hash
@@ -61,18 +60,13 @@ class IdempotencyMiddleware:
             await problem(400, "invalid_idempotency_key", detail)(scope, receive, send)
             return
         services: Services = scope["app"].state.services
-        auth_scheme, token = get_authorization_scheme_param(headers.get("authorization"))
         try:
-            principal = await resolve_principal(
-                services, token if auth_scheme.lower() == "bearer" else None, scope
-            )
+            principal = await principal_from_scope(services, scope)
         except HTTPException as exc:
             if exc.status_code == 401:  # the route answers it, exactly as without the header
                 await self.app(scope, receive, send)
                 return
-            code = "rate_limited" if exc.status_code == 429 else "http_error"
-            response = problem(exc.status_code, code, str(exc.detail), headers=exc.headers)
-            await response(scope, receive, send)
+            await http_problem(exc)(scope, receive, send)
             return
         try:
             body = await _read_body(receive, self.max_body)

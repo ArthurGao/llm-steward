@@ -34,6 +34,7 @@ from llm_steward.services.governance_service import (
     DecideCandidate,
     GovernanceService,
     ReviseKbEntry,
+    SubmitKbDocument,
     SubmitKbEntry,
     TransitionKbEntry,
     UpdateCollection,
@@ -154,6 +155,37 @@ async def test_a_reviewer_submitting_creates_verified_knowledge(kb: KbStack) -> 
     entry = await kb.submit(RiskLevel.HIGH, REVIEWER)
     assert isinstance(entry, KbEntry) and entry.status == KbStatus.VERIFIED
     assert entry.verified_by == REVIEWER.id
+
+
+async def test_a_proposer_only_ever_proposes(kb: KbStack) -> None:
+    """An actor who may only propose (an agent over MCP, rule 5): low risk, a human author, a
+    reviewer's own key, an end user to ask — still a candidate in the review queue, and it can
+    decide nothing, not even the candidate it made."""
+    from dataclasses import replace
+
+    for actor, user in ((REVIEWER, None), (HOST, "alice"), (HOST, None)):
+        proposer = replace(actor, propose_only=True)
+        assert not proposer.is_reviewer
+        proposed = await kb.submit(RiskLevel.LOW, proposer, user=user)
+        assert isinstance(proposed, Candidate)
+        assert proposed.stage == CandidateStage.AWAITING_REVIEW
+        with pytest.raises(Forbidden):
+            await kb.decide(proposed, proposer, CandidateStatus.ACCEPTED)
+    assert await kb.count(KbEntry) == 0 and await kb.jobs() == []
+    live = await kb.submit(RiskLevel.LOW)  # the host's own knowledge
+    revision = ReviseKbEntry(kb.ns, live.id, content="Refunds take a day")
+    waiting = await kb.gov.apply(revision, replace(REVIEWER, propose_only=True))
+    assert isinstance(waiting, Candidate) and waiting.stage == CandidateStage.AWAITING_REVIEW
+    collection = await kb.collection(default_risk=RiskLevel.LOW)
+    upload = SubmitKbDocument(
+        kb.ns, collection.id, "Policy", "policy.md", "text/markdown", b"# Policy", "digest"
+    )
+    document, card = await kb.gov.apply(upload, replace(REVIEWER, propose_only=True))
+    assert document.state == KbStatus.DRAFT and card is not None  # not live, not verified
+    asked = await kb.submit(RiskLevel.MEDIUM, user="alice")  # a card for alice
+    alice = Actor(ActorType.END_USER, "alice", propose_only=True)  # alice's agent, over MCP
+    with pytest.raises(Forbidden):
+        await kb.decide(asked, alice, CandidateStatus.ACCEPTED)
 
 
 async def test_the_collection_default_risk_is_a_floor(kb: KbStack) -> None:

@@ -1,10 +1,11 @@
 """`steward` command line.
 
-Namespaces, their config and API keys are managed here, never over HTTP. Further commands
-(resync, mcp) arrive with their stage.
+Namespaces, their config and API keys are managed here, never over HTTP; `mcp --stdio` serves
+MCP to a local agent. Further commands (resync) arrive with their stage.
 """
 
 import asyncio
+import os
 import signal
 import uuid
 from collections.abc import Awaitable, Callable
@@ -179,6 +180,51 @@ def jobs_retry(
     typer.echo(f"requeued {count} job(s)")
     if job_ids and count < len(job_ids):
         typer.echo("note: only failed jobs are requeued; the others were left alone", err=True)
+
+
+@app.command()
+def mcp(
+    stdio: Annotated[bool, typer.Option("--stdio", help="Serve MCP on stdin/stdout")] = False,
+    user_id: Annotated[
+        str | None, typer.Option(help="Pin every call to this end user (like a user token)")
+    ] = None,
+) -> None:
+    """MCP over stdio for a local agent (e.g. Claude Code). Authenticated like HTTP: the API key
+    in STEWARD_API_KEY, checked at start; there is no local bypass. Over HTTP, use `/mcp` on
+    `steward serve` instead. The outbox worker runs alongside unless STEWARD_RUN_WORKER=false."""
+    if not stdio:
+        typer.echo("error: only --stdio is served here; HTTP is /mcp on `steward serve`", err=True)
+        raise typer.Exit(1)
+    key = os.environ.get("STEWARD_API_KEY", "")
+    if not key:
+        typer.echo("error: set STEWARD_API_KEY to an API key of the namespace", err=True)
+        raise typer.Exit(1)
+    settings = Settings()
+
+    async def run() -> None:
+        async with runtime(settings) as services:
+            principal = await services.namespaces.authenticate(key)
+            if principal is None or principal.user_id is not None:
+                typer.echo("error: STEWARD_API_KEY is not a valid API key", err=True)
+                raise typer.Exit(1)
+            if user_id is not None:
+                principal = principal.for_user(user_id)  # like a user token
+            stop = asyncio.Event()
+            worker = (
+                asyncio.create_task(services.worker.run_forever(stop))
+                if settings.run_worker
+                else None
+            )
+            from llm_steward.mcp.server import build_server  # the MCP SDK, only for this command
+
+            try:
+                await build_server(lambda: services, principal=principal).run_stdio_async()
+            finally:
+                stop.set()
+                if worker is not None:
+                    await worker
+
+    asyncio.run(run())
 
 
 if __name__ == "__main__":

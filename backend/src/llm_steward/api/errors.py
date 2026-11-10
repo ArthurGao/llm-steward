@@ -36,6 +36,12 @@ _HTTP_CODES = {
 }
 
 
+def http_problem(exc: HTTPException) -> JSONResponse:
+    """An HTTPException as Problem Details (routes, and middleware that answers by itself)."""
+    code = _HTTP_CODES.get(exc.status_code, "http_error")
+    return problem(exc.status_code, code, str(exc.detail), headers=exc.headers)
+
+
 def install(app: FastAPI) -> None:
     @app.exception_handler(StewardError)
     async def _domain(_: Request, exc: StewardError) -> JSONResponse:
@@ -43,8 +49,7 @@ def install(app: FastAPI) -> None:
 
     @app.exception_handler(HTTPException)
     async def _http(_: Request, exc: HTTPException) -> JSONResponse:
-        code = _HTTP_CODES.get(exc.status_code, "http_error")
-        return problem(exc.status_code, code, str(exc.detail), headers=exc.headers)
+        return http_problem(exc)
 
     @app.exception_handler(RequestValidationError)
     async def _validation(_: Request, exc: RequestValidationError) -> JSONResponse:
