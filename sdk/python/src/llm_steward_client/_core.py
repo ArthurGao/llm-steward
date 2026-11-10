@@ -90,11 +90,13 @@ def execute[T](
     sleep: Callable[[float], None] | None = None,
 ) -> T:
     sleep = sleep or time.sleep  # looked up per call (tests replace it)
-    key = _key(call)
+    # Encoded once and resent as is: a multipart body re-encoded per attempt would get a new
+    # boundary, and the server would see a different request under the same Idempotency-Key.
+    request = http.build_request(**call.request_kwargs(_key(call), headers))
     for attempt in range(max_retries + 1):
         last = attempt == max_retries
         try:
-            response = http.request(**call.request_kwargs(key, headers))
+            response = http.send(request)
         except httpx.TransportError as exc:
             if last:
                 raise StewardConnectionError(0, "connection_error", str(exc)) from exc
@@ -116,11 +118,11 @@ async def aexecute[T](
     sleep: Callable[[float], Awaitable[None]] | None = None,
 ) -> T:
     sleep = sleep or asyncio.sleep
-    key = _key(call)
+    request = http.build_request(**call.request_kwargs(_key(call), headers))
     for attempt in range(max_retries + 1):
         last = attempt == max_retries
         try:
-            response = await http.request(**call.request_kwargs(key, headers))
+            response = await http.send(request)
         except httpx.TransportError as exc:
             if last:
                 raise StewardConnectionError(0, "connection_error", str(exc)) from exc

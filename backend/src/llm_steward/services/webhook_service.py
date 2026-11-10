@@ -82,6 +82,10 @@ class WebhookService:
         self._sessions = sessions
         self._outbound = out
 
+    async def _exists(self, candidate_id: str) -> bool:
+        async with self._sessions() as s:
+            return await s.get(Candidate, uuid.UUID(candidate_id)) is not None
+
     async def handle(self, job: ClaimedJob) -> None:
         p = job.payload
         async with self._sessions() as s:
@@ -89,6 +93,8 @@ class WebhookService:
         hook = next((h for h in config.webhooks if h.url == p["url"]), None)
         if hook is None or p["event"] not in hook.events:
             return  # unsubscribed since: dropped, not failed
+        if p["event"] == "candidate.created" and not await self._exists(p["data"]["candidate_id"]):
+            return  # the card is gone (answered, expired, or its user erased): nothing to show
         secret = os.environ.get(hook.secret_env)
         if not secret:
             raise PermanentFailure(f"webhook secret {hook.secret_env} is not set")

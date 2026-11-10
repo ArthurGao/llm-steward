@@ -245,3 +245,15 @@ def test_an_id_that_is_not_a_uuid_never_becomes_a_path(waits: list[float], bad: 
         with pytest.raises(ValueError):
             call()
     assert net.sent == []
+
+
+def test_a_retried_upload_sends_the_same_bytes(waits: list[float]) -> None:
+    """Codex P5 review: a multipart body re-encoded on retry gets a new boundary, so the server's
+    idempotency hash differs and the retry is refused. One encoding, sent on every attempt."""
+    net = Network(problem(503, "provider_unavailable"), problem(422, "unprocessable"))
+    st = client(net)
+    with pytest.raises(UnprocessableError):  # the answer does not matter, the two requests do
+        st.kb.documents.upload(SOME_ID, file=("policy.md", b"# Policy", "text/markdown"))
+    first, second = net.sent
+    assert first.headers["Content-Type"] == second.headers["Content-Type"]
+    assert first.read() == second.read()

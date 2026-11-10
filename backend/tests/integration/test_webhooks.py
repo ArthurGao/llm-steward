@@ -189,3 +189,46 @@ def test_a_removed_webhook_is_not_called_for_queued_events(
     t.c.drain()
     [job] = t.c.jobs(JobType.WEBHOOK_DELIVER)
     assert job.status == JobStatus.DONE and receiver.got == []
+
+
+def test_an_erased_user_is_never_announced(hooked: tuple[Tenant, Receiver]) -> None:
+    """Codex P5 review: a card event still queued when its user is erased must not go out (it
+    names the user and a card that no longer exists)."""
+    t, receiver = hooked
+    collection = t.collection()
+    body = {
+        "collection_id": collection,
+        "title": "Gift wrap",
+        "content": "c",
+        "risk_level": "medium",
+    }
+    r = t.post("/v1/kb/entries", {**body, "user_id": "u1"})
+    assert r.status_code == 202, r.text
+    kept = t.post("/v1/kb/entries", {**body, "title": "Other", "user_id": "u2"})
+    assert kept.status_code == 202
+    assert len(t.c.jobs(JobType.WEBHOOK_DELIVER)) == 2
+    erased = t.c.http.delete("/v1/memories", params={"user_id": "u1"}, headers=t.host)
+    assert erased.status_code == 200
+    t.c.drain()
+    sent = [e["data"]["user_id"] for e in receiver.events()]
+    assert sent == ["u2"]  # u1's event is gone with u1
+
+
+def test_an_event_for_a_card_that_is_gone_is_dropped(hooked: tuple[Tenant, Receiver]) -> None:
+    """Second line: even if a queued event survives, delivery checks the card still exists."""
+    t, receiver = hooked
+    body = {"collection_id": t.collection(), "title": "T", "content": "c", "risk_level": "high"}
+    candidate = t.post("/v1/kb/entries", body).json()["candidate"]
+
+    async def remove() -> None:
+        from sqlalchemy import delete
+
+        from llm_steward.models import Candidate
+
+        async with t.c.sessions() as s, s.begin():
+            await s.execute(delete(Candidate).where(Candidate.id == uuid.UUID(candidate["id"])))
+
+    t.c.call(remove)
+    t.c.drain()
+    [job] = t.c.jobs(JobType.WEBHOOK_DELIVER)
+    assert job.status == JobStatus.DONE and receiver.got == []

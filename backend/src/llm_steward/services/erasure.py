@@ -16,10 +16,11 @@ from llm_steward.models import (
     Episode,
     ExternalRef,
     IdempotencyKey,
+    Job,
     Memory,
     RetrievalLog,
 )
-from llm_steward.models.enums import CandidateStatus, JobType, ObjectType, SyncStatus
+from llm_steward.models.enums import CandidateStatus, JobStatus, JobType, ObjectType, SyncStatus
 from llm_steward.services.job_queue import enqueue
 
 
@@ -64,7 +65,20 @@ async def erase_user(s: AsyncSession, namespace_id: uuid.UUID, user_id: str) -> 
             ),
         )
     )
-    cards = await s.execute(delete(Candidate).where(*open_cards).returning(Candidate.id))
+    deleted = await s.scalars(delete(Candidate).where(*open_cards).returning(Candidate.id))
+    cards = [str(i) for i in deleted]
+    # webhook events not yet delivered that name the user or one of their cards (Codex P5)
+    await s.execute(
+        delete(Job).where(
+            Job.namespace_id == ns,
+            Job.type == JobType.WEBHOOK_DELIVER,
+            Job.status != JobStatus.DONE,
+            or_(
+                Job.payload[("data", "user_id")].as_string() == user,
+                Job.payload[("data", "candidate_id")].as_string().in_(cards),
+            ),
+        )
+    )
     # what stays must not point at what goes
     await s.execute(
         update(Memory)
@@ -102,6 +116,6 @@ async def erase_user(s: AsyncSession, namespace_id: uuid.UUID, user_id: str) -> 
     return Erased(
         memories=len(memories.all()),
         episodes=len(episodes.all()),
-        candidates=len(cards.all()),
+        candidates=len(cards),
         retrieval_logs=len(logs.all()),
     )

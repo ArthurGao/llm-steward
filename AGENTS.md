@@ -41,12 +41,13 @@ If a change must contradict the design, update the design in the same change and
 
 ## Current stage
 
-**P5 — access & security — next** (P0–P4 closed out; P4 closed out 2026-11-09). The owner's own RAG engine **lite-rag**
+**P6 — Admin front end — next** (P0–P5 closed out; P5 closed out 2026-11-11). The owner's own RAG engine **lite-rag**
 (`~/Code/AI/lite-rag`) was built first and plugged in as `LiteRagProvider` (S9, 2026-11-09). P3 slices: P3a
 governance core, P3b LLM steps, P3c `WeKnoraProvider` and P3d documents are done; P4 (joint retrieval: scoring,
 MMR, budget, rerank, documents' passages, retrieval log, feedback, hit counts; recall@8 baseline 0.960 on the
-synthetic eval, `uv run pytest -m eval`) is done. Each stage's close-out and deferred follow-ups are recorded in
-design §11. Track the checklist in design §11 (ticked items are done and verified). P5 starts with plan mode. `docparse` (RAGFlow) is P7, the frontend workspace P6.
+synthetic eval, `uv run pytest -m eval`) is done; P5 (config as code, user tokens, erasure, rate limit, idempotency,
+webhooks, SSRF guard, URL import, MCP, Python SDK) is done. Each stage's close-out and deferred follow-ups are recorded in
+design §11. Track the checklist in design §11 (ticked items are done and verified). `docparse` (RAGFlow) is P7, the frontend workspace P6.
 
 Decided (2026-11-08): default backends mem0 (in-process Python library) + WeKnora v0.9.0; native and mem0
 embeddings are local fastembed MiniLM (multilingual, 384-d); API keys arrive in P1 (user tokens / admin JWT

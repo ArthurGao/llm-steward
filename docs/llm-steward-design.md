@@ -921,9 +921,17 @@ llm-steward/
      - 最终检查：`uv run pytest` 504 passed（SQLite + PG）；ruff、format、mypy、lint-imports 通过；`-m contract` 12 passed（真实 WeKnora、mem0、lite-rag）；`-m model` 4 passed；`-m eval` 两种数据库都过门槛（recall@8 0.960，开 rerank 0.980）。
    - 验收：用 Fake provider 注入 2 秒延迟，响应仍在超时预算内返回并标记 degraded；在小型标注集（20–30 条 query）上 recall@8 达标（阈值在建立基线后确定）。**已自动化**：见上面 P4f。
 6. **P5 接入与安全**
-   - [ ] API key、user token、限流、幂等、Problem Details、webhooks（Admin JWT 取消，见第 7 节鉴权）
-   - [ ] MCP server（HTTP 和 stdio）、Python SDK（含嵌入模式）
+   - [x] API key、user token、限流、幂等、Problem Details、webhooks（Admin JWT 取消，见第 7 节鉴权）
+   - [x] MCP server（HTTP 和 stdio）、Python SDK（含嵌入模式）
    - 验收：在 Claude Code 中接入 MCP，能完成 remember → recall；不带 key 的请求返回 401；user token 无法读取其他用户的数据；MCP 无法直接写入 KB
+     - 已自动化：MCP remember → recall 走真实的 streamable HTTP（进程内客户端，`test_mcp.py`）；`/v1` 与 `/mcp` 不带 key 401；user token 的隔离矩阵（`test_user_tokens.py`）；MCP 只能提议（`test_mcp.py`、`test_kb_governance.py`）。
+     - 未做：在真实的 Claude Code 里手动接入。这一步要改用户本机的 Claude Code MCP 配置，等用户确认后再做（命令见下）。`steward serve`（native），`steward ns create` + `key create`，然后 `claude mcp add -s local --transport http steward http://127.0.0.1:8600/mcp --header "Authorization: Bearer stw_…"`，在会话里 remember → recall，结束后 `claude mcp remove steward`。
+   - P5 收尾（2026-11-11）：
+     - /simplify（整个阶段，跨切片）：命名空间配置的读取移到 `namespace_config.read_config`，webhook 的事件和派发移到 `webhook_service`（治理层不再背这两样，1548 → 1420 行）；按用户删除的批量 SQL 移到 `services/erasure.py`；webhook 和 URL 导入共用一个注入的 `Outbound`（测试也只在这一处换网络）；`TryLater` 和 `PermanentFailure` 都在 `job_queue`；幂等中间件复用 `outbound.retryable` 和 `domain_problem`；测试共用 `key`、`user_token`、`settle`、`fake_network`、`bearer`、`provider_has`。
+     - 不改：webhook 和文档拉取的"成败阶梯"不合并（两者确有不同：webhook 的回答超长是重试，文档超长是失败）。
+     - Codex（只读，`git diff 5ea0174`）两条 medium，都成立、都已修（先写失败的测试）：按用户删除时还在队列里的 `candidate.created` 事件会把该用户 id 和已删的卡片发出去——删除时一并删掉这些待投递的事件，投递时也先确认卡片还在；SDK 重试 multipart 上传时每次重新编码、boundary 变了，服务端按同一个 Idempotency-Key 认为是不同请求而 422——改为编码一次、每次重发同一个请求。
+     - 各切片提交后的后台安全审查共发现 6 处，均已修：user token 的自批（d3c520c）、幂等存储了 token 和检索内容（235e0c1）、NAT64 等内嵌 IPv4 的 IPv6（1bc9397）、MCP 参数无上限（297787c）、SDK 路径 id 未校验（c7cba6b），以及上面 Codex 的两条。
+     - 最终检查：后端 `uv run pytest` 777 passed（SQLite + PG），ruff、format、mypy、lint-imports 通过；SDK 23 passed，ruff、format、mypy 通过。
    - P5.0 准备（2026-11-10）：
      - 命名空间配置改成 Pydantic 模型（`namespace_config.py`），写入时校验、未知键拒绝；`steward ns apply -f` / `ns show`。库里已存的旧配置读出时不合法，返回 `namespace_config_invalid` 并提示用 `ns apply` 修正，不再在检索深处报 500。
      - `UpdateKbEntry`（仅内部和测试用，REST / MCP 都不构造它，有测试钉住）改为经过筛查：个人信息按策略处理，条目的风险等级随新文字只升不降；生效中的条目改成 high 风险文字必须是 reviewer，否则拒绝（这条路径没有审核队列可等）。两条编辑路径共用同一个筛查函数；直接生效的 `ReviseKbEntry`（reviewer 或自动路由）也把筛查后的风险记到条目上（之前不记）。
