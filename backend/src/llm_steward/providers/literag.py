@@ -23,6 +23,7 @@ from urllib.parse import quote
 
 import httpx2
 
+from llm_steward.config import LiteRagSearchMode
 from llm_steward.errors import ProviderUnavailable, Unprocessable
 from llm_steward.providers.base import (
     ENTRY_UPSERT,
@@ -147,15 +148,25 @@ class LiteRagProvider:
 
 
 class HttpTransport:
-    """lite-rag's HTTP API (`literag serve`), with an API key whose namespaces cover the prefix."""
+    """lite-rag's HTTP API (`literag serve`), with an API key whose namespaces cover the prefix.
+    `mode` and `rerank` go with every search: llm-steward's choice, not lite-rag's default."""
 
     def __init__(
-        self, http: httpx2.AsyncClient, base_url: str, api_key: str | None, timeout_s: float
+        self,
+        http: httpx2.AsyncClient,
+        base_url: str,
+        api_key: str | None,
+        timeout_s: float,
+        *,
+        mode: LiteRagSearchMode = "hybrid",
+        rerank: bool = False,
     ) -> None:
         self._http = http  # shared, owned by the container
         self._base_url = base_url.rstrip("/")
         self._api_key = api_key
         self._timeout_s = timeout_s
+        self._mode = mode
+        self._rerank = rerank
 
     async def _call(
         self,
@@ -212,7 +223,14 @@ class HttpTransport:
     async def search(
         self, namespace: str, kbs: list[str], query: str, top_k: int, where: dict[str, Any] | None
     ) -> list[LiteHit]:
-        body = {"kbs": kbs, "query": query, "top_k": top_k, "where": where}
+        body = {
+            "kbs": kbs,
+            "query": query,
+            "top_k": top_k,
+            "where": where,
+            "mode": self._mode,
+            "rerank": self._rerank,
+        }
         response = await self._call("POST", "/v1/search", namespace, body)
         hits = response.json()["hits"]
         return [LiteHit(h["kb"], h["doc_id"], h["score"], h["text"]) for h in hits]
@@ -228,10 +246,20 @@ class InProcessTransport:
     """lite-rag as a library in this process (extra `literag`). Its calls block, so they run in
     worker threads — at most `concurrency` at once (the runtime's store pool is sized to match,
     and the default thread pool is shared with the native embedder and mem0). One engine per
-    namespace, kept: an engine remembers which kbs it has checked."""
+    namespace, kept: an engine remembers which kbs it has checked. `mode` and `rerank` go with every
+    search, as over HTTP."""
 
-    def __init__(self, runtime: "RagRuntime", concurrency: int) -> None:
+    def __init__(
+        self,
+        runtime: "RagRuntime",
+        concurrency: int,
+        *,
+        mode: LiteRagSearchMode = "hybrid",
+        rerank: bool = False,
+    ) -> None:
         self._runtime = runtime
+        self._mode = mode
+        self._rerank = rerank
         self._engines: dict[str, RagEngine] = {}  # one per namespace in use
         self._slots = asyncio.Semaphore(concurrency)
 
@@ -274,7 +302,11 @@ class InProcessTransport:
     ) -> list[LiteHit]:
         engine = self._engine(namespace)
         hits = await self._run(  # lite-rag skips a kb with nothing synced yet
-            "search", lambda: engine.search_kbs(kbs, query, top_k=top_k, where=where), missing=[]
+            "search",
+            lambda: engine.search_kbs(
+                kbs, query, top_k=top_k, where=where, mode=self._mode, rerank=self._rerank
+            ),
+            missing=[],
         )
         return [LiteHit(h.kb, h.doc_id, h.score, h.text) for h in hits]
 

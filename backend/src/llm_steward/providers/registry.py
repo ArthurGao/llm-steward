@@ -149,10 +149,22 @@ def build_literag(settings: Settings, http: httpx2.AsyncClient) -> KnowledgeProv
         runtime = RagRuntime.from_settings(
             load_settings(settings.literag_config), max_connections=LITERAG_CONCURRENCY
         )
-        transport = InProcessTransport(runtime, LITERAG_CONCURRENCY)
+        transport = InProcessTransport(
+            runtime,
+            LITERAG_CONCURRENCY,
+            mode=settings.literag_search_mode,
+            rerank=settings.literag_rerank,
+        )
     else:
         timeout = settings.provider_timeout_ms / 1000
-        transport = HttpTransport(http, settings.literag_url, settings.literag_api_key, timeout)
+        transport = HttpTransport(
+            http,
+            settings.literag_url,
+            settings.literag_api_key,
+            timeout,
+            mode=settings.literag_search_mode,
+            rerank=settings.literag_rerank,
+        )
     return LiteRagProvider(transport, settings.literag_namespace_prefix)
 
 

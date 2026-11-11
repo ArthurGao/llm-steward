@@ -7,11 +7,20 @@ import time
 import uuid
 from typing import Any
 
+import httpx2
 import pytest
 
+from llm_steward.config import Settings
 from llm_steward.errors import ProviderUnavailable, Unprocessable
 from llm_steward.providers.base import ENTRY_UPSERT, METADATA_FILTER, KbCollectionRef, KbEntryDoc
-from llm_steward.providers.literag import InProcessTransport, LiteHit, LiteRagProvider
+from llm_steward.providers.literag import (
+    HttpTransport,
+    InProcessTransport,
+    LiteHit,
+    LiteRagProvider,
+)
+from llm_steward.providers.registry import build_literag
+from tests.fakes.http import Router, mock_http
 
 NS = uuid.UUID("00000000-0000-7000-8000-000000000001")
 REFUNDS = uuid.UUID("00000000-0000-7000-8000-0000000000a1")
@@ -148,6 +157,7 @@ class _FakeEngine:
 
         [kb] = kbs
         rt = self._runtime
+        rt.searched.append(kwargs)
         with rt.lock:
             rt.running += 1
             rt.peak = max(rt.peak, rt.running)
@@ -166,6 +176,7 @@ class _FakeEngine:
 class _FakeRuntime:
     def __init__(self) -> None:
         self.engines: list[str] = []
+        self.searched: list[dict[str, Any]] = []  # each search_kbs call's keyword arguments
         self.lock = threading.Lock()
         self.running = self.peak = 0
 
@@ -193,3 +204,60 @@ async def test_in_process_errors_become_ours(caplog: pytest.LogCaptureFixture) -
     assert "secret" not in str(caught.value)  # lite-rag's message goes to the log only
     logged = " ".join(r.getMessage() for r in caplog.records)
     assert "cannot connect" in logged and "secret" not in logged  # and without credentials
+
+
+# --- the retrieval mode is llm-steward's choice, not lite-rag's default ------------------------
+
+
+async def test_in_process_search_says_which_mode_and_whether_to_rerank() -> None:
+    runtime = _FakeRuntime()
+    transport = InProcessTransport(runtime, concurrency=1, mode="vector", rerank=True)  # type: ignore[arg-type]
+    await transport.search("ns", ["kb"], "q", 5, {"version": 1})
+    assert runtime.searched == [
+        {"top_k": 5, "where": {"version": 1}, "mode": "vector", "rerank": True}
+    ]
+
+
+def _search_router() -> Router:
+    return Router({("POST", "/v1/search"): lambda r: httpx2.Response(200, json={"hits": []})})
+
+
+async def test_http_search_says_which_mode_and_whether_to_rerank() -> None:
+    router = _search_router()
+    transport = HttpTransport(
+        mock_http(router), "http://literag.test", None, timeout_s=1, mode="bm25", rerank=False
+    )
+    await transport.search("steward/a", ["c-1"], "q", 5, None)
+    body = router.body("POST", "/v1/search")
+    assert (body["mode"], body["rerank"]) == ("bm25", False)
+
+
+async def test_the_settings_choose_the_mode_and_default_to_what_lite_rag_did() -> None:
+    # hybrid without rerank: what llm-steward got from lite-rag's own defaults before it said so
+    defaults = Settings(database_url="sqlite+aiosqlite://")
+    assert (defaults.literag_search_mode, defaults.literag_rerank) == ("hybrid", False)
+
+    router = _search_router()
+    settings = Settings(
+        database_url="sqlite+aiosqlite://", literag_search_mode="vector", literag_rerank=True
+    )
+    provider = build_literag(settings, mock_http(router))
+    await provider.search("q", [f"{NS}/{REFUNDS}"], top_k=3)
+    body = router.body("POST", "/v1/search")
+    assert (body["mode"], body["rerank"]) == ("vector", True)
+
+
+async def test_in_process_the_settings_choose_the_mode_too(monkeypatch: pytest.MonkeyPatch) -> None:
+    from lite_rag.engine import RagRuntime
+
+    runtime = _FakeRuntime()
+    monkeypatch.setattr(RagRuntime, "from_settings", staticmethod(lambda *a, **k: runtime))
+    settings = Settings(
+        database_url="sqlite+aiosqlite://",
+        literag_mode="inprocess",
+        literag_search_mode="bm25",
+        literag_rerank=True,
+    )
+    provider = build_literag(settings, mock_http(_search_router()))
+    await provider.search("q", [f"{NS}/{REFUNDS}"], top_k=3)
+    assert [(c["mode"], c["rerank"]) for c in runtime.searched] == [("bm25", True)]

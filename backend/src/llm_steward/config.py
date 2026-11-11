@@ -7,6 +7,9 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 MemoryProviderName = Literal["mem0", "native", "litemem"]
 KnowledgeProviderName = Literal["weknora", "ragflow", "native", "literag"]
+# lite-rag's retrieval modes in the pinned version (S10). Its S11 adds "graph": add it here when
+# the pin moves past S11 (the graph also needs lite-rag kbs built with it).
+LiteRagSearchMode = Literal["vector", "bm25", "hybrid"]
 
 DEFAULT_DB_SCHEMA = "steward"
 
@@ -41,6 +44,11 @@ class Settings(BaseSettings):
     literag_api_key: str | None = None  # a lite-rag key whose namespaces cover `<prefix>/*`
     literag_namespace_prefix: str = Field(default="steward", pattern=r"^[a-z0-9][a-z0-9_.-]{0,62}$")
     literag_config: str | None = None
+    # How lite-rag searches for llm-steward, sent with every search so that changing lite-rag's own
+    # defaults never changes what llm-steward retrieves. The defaults are what lite-rag's own
+    # defaults gave before. Rerank stays off: P4 scores and reranks the merged hits itself.
+    literag_search_mode: LiteRagSearchMode = "hybrid"
+    literag_rerank: bool = False
     # lite-mem (the owner's own memory engine): its HTTP service by default, or in-process (extra
     # `litemem`, configured by its own LITEMEM_* variables or `litemem_config`, an env file). Never
     # run lite-mem's `maintain` on these namespaces: llm-steward owns validity and review.
