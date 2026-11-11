@@ -294,3 +294,77 @@ def _card(ns: uuid.UUID, collection: str) -> Any:
         stage=CandidateStage.AWAITING_USER,
         requested_for_user="alice",
     )
+
+
+def _reject(c: AppClient, h: dict[str, str], card: dict[str, Any], **body: Any) -> Any:
+    return c.http.post(
+        f"/v1/candidates/{card['id']}/reject", json={"user_id": "u1", **body}, headers=h
+    )
+
+
+def _memories(c: AppClient, h: dict[str, str]) -> list[dict[str, Any]]:
+    return c.http.get("/v1/memories?user_id=u1", headers=h).json()["items"]  # type: ignore[no-any-return]
+
+
+def test_no_thanks_and_stop_suggesting_ends_the_users_cards_until_undone(app: AppClient) -> None:
+    """Design §5 "do not ask me again", per user (facts carry no finer category yet: extracted
+    memories are all `semantic`): a procedural memory of theirs, visible and deletable to undo."""
+    h = app.new_key("acme")
+    _episode(app, h, "Refunds take 5 business days.")
+    app.drain()
+    [card] = _cards(app, h)
+    assert _reject(app, h, card, stop_suggestions=True).status_code == 200
+
+    [rule] = [m for m in _memories(app, h) if m["memory_type"] == "procedural"]
+    assert "suggest" in rule["content"]
+    _episode(app, h, "Refunds need a receipt.", session="s2")
+    app.drain()
+    assert _cards(app, h, session="s2") == []  # no more cards for this user
+
+    assert app.http.delete(f"/v1/memories/{rule['id']}", headers=h).status_code == 200
+    _episode(app, h, "Refunds go back to the card.", session="s3")
+    app.drain()
+    assert len(_cards(app, h, session="s3")) == 1  # undone: asked again
+
+
+def test_stopping_twice_keeps_one_rule(app: AppClient) -> None:
+    h = app.new_key("acme")
+    _episode(app, h, "Refunds take 5 days. Refunds need a receipt.")
+    app.drain()
+    first, second = _cards(app, h)
+    assert _reject(app, h, first, stop_suggestions=True).status_code == 200
+    assert _reject(app, h, second, stop_suggestions=True).status_code == 200
+    rules = [m for m in _memories(app, h) if m["memory_type"] == "procedural"]
+    assert len(rules) == 1
+
+
+def test_a_stopped_users_facts_are_not_even_scored(app: AppClient) -> None:
+    """No LLM call is paid for facts that can never become a card."""
+    h = app.new_key("acme")
+    _episode(app, h, "Refunds take 5 business days.")
+    app.drain()
+    [card] = _cards(app, h)
+    _reject(app, h, card, stop_suggestions=True)
+    llm = app.services.kb._llm
+    scored = [c for c in llm.calls if c[0] == "kb.worthiness"]
+    _episode(app, h, "Refunds need a receipt.", session="s2")
+    app.drain()
+    assert [c for c in llm.calls if c[0] == "kb.worthiness"] == scored
+
+
+def test_a_card_asked_of_no_user_has_no_suggestions_to_stop(app: AppClient) -> None:
+    h, ns = app.new_tenant("acme")
+    reviewer = app.key("acme", ApiScope.READ, ApiScope.WRITE, ApiScope.REVIEW)
+    body = {"collection_id": _collection(app, ns), "title": "Refunds", "content": "5 days"}
+    queued = app.http.post("/v1/kb/entries", json={**body, "risk_level": "high"}, headers=h)
+    card = queued.json()["candidate"]
+    assert card["requested_for_user"] is None  # the review queue's, not a user's
+    r = app.http.post(
+        f"/v1/candidates/{card['id']}/reject",
+        json={"stop_suggestions": True, "note": "no"},
+        headers=reviewer,
+    )
+    assert r.status_code == 422, r.text
+    assert app.http.get("/v1/candidates", headers=reviewer).json()["items"][0]["status"] == (
+        "pending"
+    )  # refused before anything was decided

@@ -609,6 +609,13 @@ class Decision(BaseModel):
     draft: EntryPatch | None = None
     note: Annotated[Note | None, Field(title="Note")] = None
     scope: Annotated[Literal["personal", "team"] | None, Field(title="Scope")] = "team"
+    stop_suggestions: Annotated[
+        bool | None,
+        Field(
+            description="With a rejection: no more automatic suggestions for this card's user (kept as a procedural memory of theirs; deleting it undoes it).",
+            title="Stop Suggestions",
+        ),
+    ] = False
     user_id: Annotated[
         UserId1 | None,
         Field(

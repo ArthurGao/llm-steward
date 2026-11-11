@@ -66,7 +66,14 @@ async def decide(
     it became."""
     draft = body.draft.model_dump(exclude_none=True) if body.draft else None
     candidate, entry = await services.kb.decide(
-        namespace_id, candidate_id, to, actor, draft=draft, scope=body.scope, note=body.note
+        namespace_id,
+        candidate_id,
+        to,
+        actor,
+        draft=draft,
+        scope=body.scope,
+        note=body.note,
+        stop_suggestions=body.stop_suggestions,
     )
     out = DecisionOut.model_validate(candidate)
     out.entry = EntryOut.model_validate(entry) if entry else None

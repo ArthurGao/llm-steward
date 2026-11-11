@@ -1,0 +1,21 @@
+/* Plain defaults for @llm-steward/widget. Every class is prefixed `lsw-`; nothing global. Override
+   freely, or leave this file out and style the classes yourself. */
+.lsw-card, .lsw-panel { font: inherit; color: inherit; border: 1px solid #c8c8c8; border-radius: 8px; padding: 12px 14px; max-width: 32rem; }
+.lsw-card-lead, .lsw-panel-title { margin: 0 0 8px; font-weight: 600; font-size: 1em; }
+.lsw-card-draft { margin: 0 0 10px; padding: 8px 10px; border-left: 3px solid #8a8a8a; background: rgba(0, 0, 0, 0.03); display: grid; gap: 4px; }
+.lsw-card-edit, .lsw-field { display: grid; gap: 4px; margin-bottom: 8px; }
+.lsw-label, .lsw-scope-legend { font-size: 0.875em; font-weight: 600; }
+.lsw-input { font: inherit; padding: 6px 8px; border: 1px solid #b0b0b0; border-radius: 6px; }
+.lsw-scope { border: 0; padding: 0; margin: 0 0 10px; display: grid; gap: 4px; }
+.lsw-check { display: flex; gap: 6px; align-items: center; font-size: 0.925em; }
+.lsw-card-actions, .lsw-item-actions { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+.lsw-button { font: inherit; padding: 5px 12px; border: 1px solid #9a9a9a; border-radius: 6px; background: transparent; cursor: pointer; }
+.lsw-button:disabled { opacity: 0.5; cursor: default; }
+.lsw-button-primary { background: #1f1f1f; color: #fff; border-color: #1f1f1f; }
+.lsw-button-quiet { border-color: transparent; text-decoration: underline; }
+.lsw-button-danger { border-color: #b3261e; color: #b3261e; }
+.lsw-list { list-style: none; margin: 0 0 8px; padding: 0; }
+.lsw-item { display: flex; justify-content: space-between; gap: 12px; padding: 6px 0; border-bottom: 1px solid #e2e2e2; }
+.lsw-hint { margin: 4px 0; font-size: 0.875em; opacity: 0.75; }
+.lsw-error { margin: 8px 0 0; color: #b3261e; }
+.lsw-card-outcome { margin: 0; }

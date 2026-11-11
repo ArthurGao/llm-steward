@@ -592,6 +592,12 @@ export type Decision = {
      */
     scope?: 'personal' | 'team';
     /**
+     * Stop Suggestions
+     *
+     * With a rejection: no more automatic suggestions for this card's user (kept as a procedural memory of theirs; deleting it undoes it).
+     */
+    stop_suggestions?: boolean;
+    /**
      * User Id
      *
      * The end user answering their card. Without it, the key's own role decides (the review queue needs a key with the review scope).

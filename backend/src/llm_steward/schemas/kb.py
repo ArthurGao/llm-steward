@@ -144,6 +144,11 @@ class Decision(BaseModel):
     scope: Literal["personal", "team"] = "team"
     draft: EntryPatch | None = None
     note: str | None = Field(default=None, max_length=2000)
+    stop_suggestions: bool = Field(
+        default=False,
+        description="With a rejection: no more automatic suggestions for this card's user "
+        "(kept as a procedural memory of theirs; deleting it undoes it).",
+    )
 
 
 class PromoteIn(BaseModel):

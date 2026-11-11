@@ -1171,6 +1171,12 @@
             "title": "Scope",
             "type": "string"
           },
+          "stop_suggestions": {
+            "default": false,
+            "description": "With a rejection: no more automatic suggestions for this card's user (kept as a procedural memory of theirs; deleting it undoes it).",
+            "title": "Stop Suggestions",
+            "type": "boolean"
+          },
           "user_id": {
             "anyOf": [
               {

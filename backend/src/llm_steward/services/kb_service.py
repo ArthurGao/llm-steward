@@ -43,8 +43,10 @@ from llm_steward.services.governance_service import (
     SYSTEM,
     Actor,
     CreateCollection,
+    CreateMemory,
     DecideCandidate,
     GovernanceService,
+    Operation,
     PatchMemory,
     ReviseKbEntry,
     SubmitKbEntry,
@@ -58,6 +60,10 @@ log = logging.getLogger(__name__)
 
 SCORED = "kb_scored"  # memory meta flag: scored for the KB once, never again
 DRAFTS_AT_ONCE = 4  # concurrent kb.draft calls in one suggest job
+# A user's "stop suggesting" (design §5, per user: extracted facts carry no finer category yet):
+# a procedural memory under this profile key (one active per user), deleting it undoes it.
+PROCEDURAL = "procedural"
+STOP_KEY = "stop_suggestions"
 
 
 @dataclass(frozen=True)
@@ -294,12 +300,16 @@ class KbService:
                 )
                 if m.status == MemoryStatus.ACTIVE and not m.meta.get(SCORED)
             ]
+            stopped = await _stopped(s, namespace_id, {m.user_id for m in memories if m.user_id})
         if not memories:
             return 0
         await self._governance.apply_all(
             [PatchMemory(namespace_id, m.id, meta={**m.meta, SCORED: True}) for m in memories],
             SYSTEM,
         )
+        memories = [m for m in memories if m.user_id not in stopped]  # never scored: no card
+        if not memories:
+            return 0
         scores, scored_by = await score_memories(llm, [(str(m.id), m.content) for m in memories])
         worthy = set(
             worthy_ids(scores, {str(m.id) for m in memories}, threshold=config.suggest_threshold)
@@ -477,9 +487,16 @@ class KbService:
         draft: dict[str, Any] | None = None,
         scope: Literal["personal", "team"] = "team",
         note: str | None = None,
+        stop_suggestions: bool = False,
     ) -> tuple[Candidate, KbEntry | None]:
         """The decided candidate, and the knowledge it became (if it became any). An edited draft
-        gets the KB LLM's risk label too (governance re-runs the rules)."""
+        gets the KB LLM's risk label too (governance re-runs the rules). `stop_suggestions` (a
+        rejection only): no more automatic cards for the card's user (design §5)."""
+        rule = None
+        if stop_suggestions:
+            if to != CandidateStatus.REJECTED:
+                raise Unprocessable("stop_suggestions goes with a rejection")
+            rule = await self._stop_rule(namespace_id, candidate_id)
         floor: RiskLevel | None = None
         if draft and to == CandidateStatus.ACCEPTED:
             floor, _ = await self._label(
@@ -494,11 +511,46 @@ class KbService:
             scope=scope,
             risk_level=floor,
         )
-        candidate: Candidate = await self._governance.apply(op, actor)
+        ops: list[Operation] = [op] if rule is None else [op, rule]  # one transaction
+        candidate: Candidate = (await self._governance.apply_all(ops, actor))[0]
         if candidate.status != CandidateStatus.ACCEPTED or candidate.target_id is None:
             return candidate, None
         async with self._sessions() as s:  # accepting points target_id at the knowledge
             return candidate, await s.get(KbEntry, candidate.target_id)
+
+    async def _stop_rule(self, namespace_id: uuid.UUID, candidate_id: uuid.UUID) -> CreateMemory:
+        """The card's user's "stop suggesting", as a procedural memory they can see and delete
+        (asked twice, the newer supersedes the older). A card asked of no user has nothing to
+        stop."""
+        async with self._sessions() as s:
+            card = await load_owned(
+                s, Candidate, namespace_id, candidate_id, "candidate", lock=False
+            )
+            user = card.requested_for_user
+            if user is None:
+                raise Unprocessable("this card was not asked of a user: no suggestions to stop")
+        return CreateMemory(  # the profile key keeps one active rule per user, even under a race
+            namespace_id,
+            "Does not want the assistant to suggest sharing what they say with the team",
+            user_id=user,
+            memory_type=PROCEDURAL,
+            key=STOP_KEY,
+        )
+
+
+async def _stopped(s: AsyncSession, namespace_id: uuid.UUID, users: set[str]) -> set[str]:
+    """Which of these users asked for no more suggestions (an active rule)."""
+    if not users:
+        return set()
+    found = await s.scalars(
+        select(Memory.user_id).where(
+            Memory.namespace_id == namespace_id,
+            Memory.user_id.in_(users),
+            Memory.key == STOP_KEY,
+            Memory.status == MemoryStatus.ACTIVE,
+        )
+    )
+    return {user for user in found if user is not None}
 
 
 def _open_cards(namespace_id: uuid.UUID, user_id: str, session_id: str | None) -> tuple[Any, ...]:
