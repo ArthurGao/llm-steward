@@ -5,6 +5,8 @@ Native providers on a fresh SQLite file, the outbox worker running, a fake embed
 until killed. Run from backend/:
 
     uv run python -m tests.e2e.admin_server --port 8602 --token <32+ chars> --origin http://127.0.0.1:8612
+
+With `--kb literag` the KB engine is a running lite-rag service instead of native.
 """
 
 import argparse
@@ -81,6 +83,9 @@ def settings_from_args() -> tuple[Settings, int]:
     parser.add_argument("--port", type=int, default=8602)
     parser.add_argument("--token", required=True)
     parser.add_argument("--origin", action="append", default=[])
+    # literag: the KB engine is a running lite-rag service (STEWARD_LITERAG_URL, and its key in
+    # STEWARD_LITERAG_API_KEY, both read from the environment), with its real embeddings
+    parser.add_argument("--kb", choices=("native", "literag"), default="native")
     args = parser.parse_args()
 
     data = Path(tempfile.mkdtemp(prefix="steward-e2e-"))
@@ -89,7 +94,7 @@ def settings_from_args() -> tuple[Settings, int]:
         database_url=f"sqlite+aiosqlite:///{data / 'steward.db'}",
         data_dir=str(data),
         memory_provider="native",
-        kb_provider="native",
+        kb_provider=args.kb,
         admin_token=args.token,
         cors_origins=args.origin,
         rate_limit_per_minute=None,

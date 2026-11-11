@@ -15,7 +15,8 @@ export default defineConfig({
   use: { ...devices['Desktop Chrome'], baseURL: admin, viewport: { width: 1440, height: 900 }, trace: 'retain-on-failure' },
   webServer: [
     {
-      command: `uv run python -m tests.e2e.admin_server --port 8602 --token ${ADMIN_TOKEN} --origin ${admin}`,
+      // E2E_KB=literag: the KB engine is a running lite-rag service (see admin_server.py)
+      command: `uv run python -m tests.e2e.admin_server --port 8602 --token ${ADMIN_TOKEN} --origin ${admin} --kb ${process.env.E2E_KB ?? 'native'}`,
       cwd: '../../../backend',
       url: `${BACKEND}/health`,
       reuseExistingServer: false, // fresh data every run
