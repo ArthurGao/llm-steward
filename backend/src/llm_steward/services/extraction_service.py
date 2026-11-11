@@ -127,7 +127,7 @@ class ExtractionService:
             else Actor(ActorType.PROVIDER, self._provider.name)
         )
         held = {e.replaces for e in added if e.replaces} | {e.external_id for e in retired}
-        mirrors = await self._mirrors(namespace_id, held)
+        mirrors = await self._mirrors(scope, held)
         ops = self._mirroring(scope, last.id, added, retired, mirrors)
         results = await self._governance.apply_all(ops, actor)
         created: list[Memory] = [
@@ -146,9 +146,12 @@ class ExtractionService:
         """One batch of governance ops for an engine's events: each new fact is recorded; a fact
         that replaces one (an engine that resolves conflicts) supersedes its mirror with `by=` the
         new memory, and a retired one supersedes its mirror with no successor. An id with no
-        active mirror is skipped: llm-steward never had it, or already invalidated it."""
+        active mirror in this scope is skipped: llm-steward never had it, already invalidated it,
+        or it is someone else's. Each mirror is invalidated once (a replacement wins over a
+        retirement): a second invalidation would fail the batch, and every replay of it."""
         ns = scope.namespace_id
         ops: list[Operation] = []
+        done: set[uuid.UUID] = set()
         for e in added:
             new = uuid7()
             ops.append(
@@ -158,23 +161,24 @@ class ExtractionService:
                     source_episode_id=episode_id, id=new,
                 )
             )  # fmt: skip
-            if e.replaces in mirrors:
+            if e.replaces in mirrors and mirrors[e.replaces] not in done:
+                done.add(mirrors[e.replaces])
                 ops.append(SupersedeMemory(ns, mirrors[e.replaces], new, "UPDATE: by the engine"))
-            elif e.replaces is not None:
+            elif e.replaces is not None and e.replaces not in mirrors:
                 log.warning("engine replaced %s, which has no active mirror", e.replaces)
         for e in retired:
-            if e.external_id in mirrors:
+            if e.external_id in mirrors and mirrors[e.external_id] not in done:
+                done.add(mirrors[e.external_id])
                 ops.append(
                     SupersedeMemory(ns, mirrors[e.external_id], None, "DELETE: by the engine")
                 )
-            else:
+            elif e.external_id not in mirrors:
                 log.warning("engine retired %s, which has no active mirror", e.external_id)
         return ops
 
-    async def _mirrors(
-        self, namespace_id: uuid.UUID, external_ids: set[str]
-    ) -> dict[str, uuid.UUID]:
-        """The active memories that mirror these engine ids."""
+    async def _mirrors(self, scope: Scope, external_ids: set[str]) -> dict[str, uuid.UUID]:
+        """The active memories of exactly this scope (as `_related`) mirroring these engine ids."""
+        namespace_id = scope.namespace_id
         if not external_ids:
             return {}
         async with self._sessions() as s:
@@ -186,8 +190,8 @@ class ExtractionService:
                     ExternalRef.object_type == ObjectType.MEMORY,
                     ExternalRef.provider == self._provider.name,
                     ExternalRef.external_id.in_(external_ids),
-                    Memory.namespace_id == namespace_id,
                     Memory.status == MemoryStatus.ACTIVE,
+                    *exact(Memory, scope, session=False),
                 )
             )
             return {str(external_id): memory_id for external_id, memory_id in rows.all()}

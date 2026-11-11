@@ -2,6 +2,7 @@
 llm-steward mirrors those decisions as its own governance operations — in the same transaction as
 the new memory — so the history stays complete without running its own compensation."""
 
+import uuid
 from collections.abc import Iterator
 from typing import Any
 
@@ -125,3 +126,76 @@ def test_the_engine_retiring_what_was_already_invalidated_changes_nothing(
     assert _episode(c, h, "我不再喜欢咖啡")["memories"] == []
     history = c.http.get(f"/v1/memories/{coffee['id']}/history", headers=h).json()
     assert [ch["actor_type"] for ch in history["changes"]].count("ai") == 1  # its creation only
+
+
+class ScriptedEngine(ResolvingEngine):
+    """Answers the next inferred add with events written by the test."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.next: list[MemoryEvent] | None = None
+
+    async def add(
+        self,
+        messages: list[Message],
+        scope: Scope,
+        *,
+        infer: bool = True,
+        metadata: dict[str, Any] | None = None,
+        idempotency_key: str | None = None,
+    ) -> list[MemoryEvent]:
+        if infer and self.next is not None:
+            events, self.next = self.next, None
+            return events
+        return await super().add(messages, scope, infer=infer, metadata=metadata,
+                                 idempotency_key=idempotency_key)  # fmt: skip
+
+
+def _external_id(c: AppClient, memory_id: str) -> str:
+    async def ref() -> str:
+        from sqlalchemy import select
+
+        from llm_steward.models import ExternalRef
+
+        async with c.services.engine.connect() as conn:
+            row = await conn.scalar(
+                select(ExternalRef.external_id).where(ExternalRef.object_id == uuid.UUID(memory_id))
+            )
+            return str(row)
+
+    return c.call(ref)  # type: ignore[no-any-return]
+
+
+def test_the_engine_cannot_invalidate_another_users_memory(migrated_url: str) -> None:
+    """Security review of S9: the mirror lookup was by namespace only, so an engine naming another
+    user's memory would supersede it."""
+    engine = ScriptedEngine()
+    with running_app(migrated_url, memory_provider=engine, llm=FakeLLM()) as c:
+        h = c.new_key("acme")
+        body = {"messages": [{"role": "user", "content": "我住北京"}], "user_id": "u2",
+                "mode": "sync"}  # fmt: skip
+        [theirs] = c.http.post("/v1/episodes", json=body, headers=h).json()["memories"]
+        engine.next = [
+            MemoryEvent("ADD", "new-1", "我搬到上海了", DECIDED_BY, _external_id(c, theirs["id"])),
+            MemoryEvent("DELETE", _external_id(c, theirs["id"]), None, DECIDED_BY),
+        ]
+        [mine] = _episode(c, h, "我搬到上海了")["memories"]  # u1's episode
+        assert mine["user_id"] == "u1"
+        assert c.http.get(f"/v1/memories/{theirs['id']}", headers=h).json()["status"] == "active"
+
+
+def test_one_memory_named_twice_in_a_batch_is_invalidated_once(migrated_url: str) -> None:
+    """Security review of S9: a second supersede of the same memory failed the batch, and the
+    engine's replay of the same events would fail every retry."""
+    engine = ScriptedEngine()
+    with running_app(migrated_url, memory_provider=engine, llm=FakeLLM()) as c:
+        h = c.new_key("acme")
+        [beijing] = _episode(c, h, "我住北京")["memories"]
+        old = _external_id(c, beijing["id"])
+        engine.next = [
+            MemoryEvent("ADD", "new-1", "我搬到上海了", DECIDED_BY, old),
+            MemoryEvent("DELETE", old, None, DECIDED_BY),
+        ]
+        [shanghai] = _episode(c, h, "我搬到上海了")["memories"]
+        history = c.http.get(f"/v1/memories/{beijing['id']}/history", headers=h).json()
+        assert [m["id"] for m in history["chain"]] == [beijing["id"], shanghai["id"]]  # the ADD won
