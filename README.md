@@ -179,6 +179,9 @@ The full API is at http://127.0.0.1:8600/docs.
    review policy decides; by default low risk goes live as `active`, medium risk asks the end user
    on a confirmation card, high risk waits in the review queue. Text a model drafted always gets a
    person's look first. An end user's yes never makes anything `verified`: only a reviewer verifies.
+   A reviewer who rejects says why (`note`, required on every route); an end user can just say no.
+   Through a user token, an edited card is kept only for that user; your server (an API key) may
+   pass the user's edit on to the team, and the edit is screened again.
 3. **Sync.** Only `active` and `verified` knowledge leaves the governance database, pushed by an
    outbox worker with retries; retired knowledge is removed from the engine.
 4. **Retrieve.** Results from every engine are fused, weighted by trust, importance and age, and
@@ -186,8 +189,45 @@ The full API is at http://127.0.0.1:8600/docs.
 5. **Maintain.** Expired cards lapse, knowledge rated unhelpful is flagged for review, retrieval
    misses show up as gaps in the Admin.
 
+End users stay in charge of what they are asked: "stop suggesting things to me" on a card becomes
+a rule they can see among their memories and delete to undo. It is llm-steward's own state (the
+reserved `steward.` key space, which no client can write), so it is never recalled as a fact
+about them and never sent to the memory engine.
+
 Nothing governed is deleted: a new version or a retirement keeps the history. The exception is
 erasing one user's memories (`DELETE /v1/memories?user_id=`), for GDPR-style requests.
+
+## Configure a namespace
+
+Configuration is code: one YAML file per namespace, validated before it is stored, replacing the
+whole config (`steward ns show demo` prints the current one).
+
+```yaml
+slug: demo
+name: Demo support
+kb:
+  suggest_threshold: 0.7            # how sure the model must be before a card is suggested
+  high_risk_keywords: [refund policy, legal, medical]   # always the review queue
+retrieval:
+  top_k: 8
+  token_budget: 2000                # estimated tokens of the returned items
+  rerank: false                     # a local cross-encoder (STEWARD_RERANK_MODEL) re-scores the best 30
+  min_relevance: null               # with rerank only: drop what it rates below this (0-1); none left = a gap
+  context_language: auto            # format=context headings: the query's language, or en / zh
+memory:
+  types: [{name: episodic, half_life_days: 30}]
+limits:
+  requests_per_minute: 600          # per API key, in this process
+webhooks:
+  - url: https://app.example.com/hooks/steward
+    events: [candidate.created, kb_entry.verified]
+    secret_env: STEWARD_WEBHOOK_SECRET   # the secret itself stays in the environment
+```
+
+```sh
+docker compose cp demo.yaml steward-standard:/tmp/demo.yaml
+docker compose exec steward-standard steward ns apply -f /tmp/demo.yaml
+```
 
 ## Operations
 
