@@ -106,6 +106,8 @@ def test_feedback_is_recorded_and_counted_on_knowledge(app_client: AppClient) ->
         assert r.status_code == 204, r.text
     counted = app_client.get(KbEntry, entry)  # at once: feedback is rare, no queue
     assert (counted.helpful_count, counted.unhelpful_count) == (1, 1)
+    shown = app_client.http.get(f"/v1/kb/entries/{entry}", headers=h).json()  # what the Admin reads
+    assert (shown["helpful_count"], shown["unhelpful_count"], shown["hit_count"]) == (1, 1, 0)
 
     async def rows() -> list[RetrievalFeedback]:
         async with session_factory(app_client.services.engine)() as s:

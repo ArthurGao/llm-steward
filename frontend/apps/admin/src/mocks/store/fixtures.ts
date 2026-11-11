@@ -407,12 +407,6 @@ pii:
       { name: 'promote_memory', body: 'Rewrite this personal memory as a general statement that is true for every customer, or answer NONE.\n\n{{ memory }}' },
       { name: 'context_render', body: '## About the user\n{% for m in memories %}- {{ m.text }}\n{% endfor %}\n## Knowledge base\n{% for e in entries %}- [{{ e.key }} v{{ e.version }}] {{ e.text }}\n{% endfor %}' },
     ],
-    members: [
-      { email: 'owner@demo', role: 'owner', added_at: ago(120 * D) },
-      { email: 'reviewer@demo', role: 'reviewer', added_at: ago(110 * D) },
-      { email: 'lead@demo', role: 'reviewer', added_at: ago(45 * D) },
-      { email: 'viewer@demo', role: 'viewer', added_at: ago(20 * D) },
-    ],
     embedding: { model: 'fastembed paraphrase-multilingual-MiniLM-L12-v2', dimensions: 384, space_id: 'emb_minilm_384', rebuild_progress: null },
   }
 }
@@ -474,10 +468,10 @@ function syncRefsFor(memories: Memory[], entries: KbEntry[], documents: KbDocume
   const refs: SyncRef[] = []
   for (const e of entries) {
     if (e.sync_status === 'deleted' && e.status === 'draft') continue
-    refs.push({ id: `ref_${e.id}`, object_type: 'kb_entry', object_id: e.id, label: `${e.key} ${e.title}`, provider: 'weknora', sync_status: e.sync_status, synced_version: e.sync_status === 'synced' ? e.version : null, last_error: e.sync_status === 'failed' ? 'weknora: 504 Gateway Timeout after 30s' : null, updated_at: e.updated_at })
+    refs.push({ id: `ref_${e.id}`, object_type: 'kb_entry', object_id: e.id, label: `${e.key} ${e.title}`, provider: 'weknora', sync_status: e.sync_status ?? 'pending', synced_version: e.sync_status === 'synced' ? e.version : null, last_error: e.sync_status === 'failed' ? 'weknora: 504 Gateway Timeout after 30s' : null, updated_at: e.updated_at })
   }
   for (const d of documents) {
-    refs.push({ id: `ref_${d.id}`, object_type: 'kb_document', object_id: d.id, label: d.filename, provider: 'weknora', sync_status: d.sync_status, synced_version: d.sync_status === 'synced' ? 1 : null, last_error: d.error, updated_at: d.created_at })
+    refs.push({ id: `ref_${d.id}`, object_type: 'kb_document', object_id: d.id, label: d.filename, provider: 'weknora', sync_status: d.sync_status ?? 'pending', synced_version: d.sync_status === 'synced' ? 1 : null, last_error: d.error, updated_at: d.created_at })
   }
   for (const m of memories.slice(0, 6)) {
     refs.push({ id: `ref_${m.id}`, object_type: 'memory', object_id: m.id, label: m.content, provider: 'mem0', sync_status: 'synced', synced_version: 1, last_error: null, updated_at: m.updated_at })

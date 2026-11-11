@@ -2,7 +2,6 @@
 // maps StoreError to RFC 9457 Problem Details, so pages see what the real API will send.
 import { delay, HttpResponse, type HttpResponseResolver } from 'msw'
 import { http } from 'msw/http'
-import type { Role } from '@/api/types'
 import { oneOf } from '@/lib/search'
 import { StoreError, type Actor, type Store } from './store'
 
@@ -19,17 +18,11 @@ const changeOp = oneOf(['create', 'update', 'transition', 'delete', 'erase'] as 
 const jobStatus = oneOf(['pending', 'running', 'done', 'failed'] as const)
 
 const BASE = '*/admin/v1'
-const ROLES: readonly Role[] = ['viewer', 'reviewer', 'owner']
-export const DEMO_PASSWORD = 'demo'
+// The demo has no sign-in: every request acts as the one admin.
+const ADMIN: Actor = { type: 'admin', id: 'admin@demo' }
 
 function problem(status: number, title: string) {
   return HttpResponse.json({ title, status }, { status, headers: { 'Content-Type': 'application/problem+json' } })
-}
-
-function actorOf(req: Request): Actor | null {
-  const token = req.headers.get('Authorization')?.match(/^Bearer demo\.(\w+)$/)?.[1]
-  const role = ROLES.find((r) => r === token)
-  return role ? { type: 'admin', id: `${role}@demo`, role } : null
 }
 
 type Ctx = { req: Request; actor: Actor; params: Record<string, string>; url: URL }
@@ -39,8 +32,7 @@ function route(handler: Handler): HttpResponseResolver {
   return async ({ request, params }) => {
     // A small, fixed latency so loading states are visible but tests stay fast.
     if (import.meta.env.MODE !== 'test') await delay(120)
-    const actor = actorOf(request)
-    if (!actor) return problem(401, 'Sign in to continue')
+    const actor = ADMIN
     try {
       const body = await handler({ req: request, actor, params: params as Record<string, string>, url: new URL(request.url) })
       return body === undefined ? new HttpResponse(null, { status: 204 }) : HttpResponse.json(body as never)
@@ -66,11 +58,6 @@ async function body<T>(req: Request): Promise<T> {
 export function createHandlers(store: Store) {
   const ns = (p: Record<string, string>) => p.ns ?? ''
   return [
-    http.post(`${BASE}/auth/login`, async ({ request }) => {
-      const b = await body<{ email?: string; password?: string; role?: Role }>(request)
-      if (!b.email || b.password !== DEMO_PASSWORD || !ROLES.includes(b.role as Role)) return problem(401, 'Wrong email or password')
-      return HttpResponse.json({ email: b.email, role: b.role })
-    }),
     http.get(`${BASE}/namespaces`, route(() => ({ items: store.listNamespaces() }))),
     http.get(`${BASE}/ns/:ns/stats`, route(({ params }) => store.stats(ns(params)))),
 
@@ -131,16 +118,16 @@ export function createHandlers(store: Store) {
     })),
 
     http.get(`${BASE}/ns/:ns/jobs`, route(({ params, url }) => store.listJobs(ns(params), { ...query(url), status: jobStatus(url.searchParams.get('status')) }))),
-    http.post(`${BASE}/ns/:ns/jobs/:id/retry`, route(({ params, actor }) => store.retryJob(ns(params), params.id ?? '', actor))),
-    http.post(`${BASE}/ns/:ns/jobs/:id/cancel`, route(({ params, actor }) => store.cancelJob(ns(params), params.id ?? '', actor))),
+    http.post(`${BASE}/ns/:ns/jobs/:id/retry`, route(({ params }) => store.retryJob(ns(params), params.id ?? ''))),
+    http.post(`${BASE}/ns/:ns/jobs/:id/cancel`, route(({ params }) => store.cancelJob(ns(params), params.id ?? ''))),
 
     http.get(`${BASE}/ns/:ns/providers`, route(({ params }) => ({ items: store.providers(ns(params)) }))),
     http.get(`${BASE}/ns/:ns/sync`, route(({ params }) => ({ items: store.listSyncRefs(ns(params)) }))),
-    http.post(`${BASE}/ns/:ns/sync/:id/retry`, route(({ params, actor }) => store.retrySync(ns(params), params.id ?? '', actor))),
+    http.post(`${BASE}/ns/:ns/sync/:id/retry`, route(({ params }) => store.retrySync(ns(params), params.id ?? ''))),
 
     http.get(`${BASE}/ns/:ns/settings`, route(({ params }) => store.settings(ns(params)))),
     http.get(`${BASE}/ns/:ns/keys`, route(({ params }) => ({ items: store.listKeys(ns(params)) }))),
-    http.post(`${BASE}/ns/:ns/keys`, route(async ({ params, req, actor }) => store.createKey(ns(params), await body(req), actor))),
-    http.delete(`${BASE}/ns/:ns/keys/:id`, route(({ params, actor }) => store.revokeKey(ns(params), params.id ?? '', actor))),
+    http.post(`${BASE}/ns/:ns/keys`, route(async ({ params, req }) => store.createKey(ns(params), await body(req)))),
+    http.delete(`${BASE}/ns/:ns/keys/:id`, route(({ params }) => store.revokeKey(ns(params), params.id ?? ''))),
   ]
 }

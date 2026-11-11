@@ -11,7 +11,7 @@ test('a user shows profile values and pinned memories', async () => {
 })
 
 test('an owner erases a user after typing their id; their memories are gone', async () => {
-  const { router } = renderApp('/acme-support/users?selected=u_8f2a', 'owner')
+  const { router } = renderApp('/acme-support/users?selected=u_8f2a')
   await userEvent.click(await screen.findByRole('button', { name: 'Erase user data…' }))
   const erase = screen.getByRole('button', { name: 'Erase permanently' })
   expect(erase).toBeDisabled()
@@ -26,10 +26,6 @@ test('an owner erases a user after typing their id; their memories are gone', as
   expect(screen.getByRole('button', { name: 'Clear filters' })).toBeInTheDocument()
 })
 
-test('a reviewer cannot erase', async () => {
-  renderApp('/acme-support/users?selected=u_8f2a')
-  expect(await screen.findByRole('button', { name: 'Erase user data…' })).toHaveAttribute('aria-disabled', 'true')
-})
 
 test('the users list pages with a cursor', async () => {
   renderApp('/acme-support/users?cursor=5')

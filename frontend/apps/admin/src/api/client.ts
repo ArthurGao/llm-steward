@@ -1,5 +1,3 @@
-import { getSession } from '@/auth/session'
-
 export interface Problem {
   title: string
   status?: number
@@ -18,15 +16,12 @@ export class ApiError extends Error {
   }
 }
 
-const BASE = `${import.meta.env.VITE_API_BASE_URL ?? ''}/admin/v1`
+// The mock API's transport (MSW answers in the browser); the live API uses the generated client.
+const BASE = '/admin/v1'
 
 export async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
   const headers = new Headers(init.headers)
   if (init.body !== undefined && !headers.has('Content-Type')) headers.set('Content-Type', 'application/json')
-  const session = getSession()
-  // Demo token; P5 replaces this with the Admin JWT.
-  if (session) headers.set('Authorization', `Bearer demo.${session.role}`)
-
   const res = await fetch(`${BASE}${path}`, { ...init, headers })
   if (!res.ok) {
     const problem: Problem = await res.json().catch(() => ({ title: res.statusText || `HTTP ${res.status}` }))

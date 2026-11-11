@@ -26,14 +26,12 @@ import type {
   RetrievalLog,
   RetrievalRequest,
   RetrievalResult,
-  Role,
   Stats,
   SyncRef,
   UserDetail,
   UserSummary,
   Written,
 } from '@/api/types'
-import { can, type Action } from '@/auth/can'
 import { buildFixtures, NOW, type NsData } from './fixtures'
 import { runRetrieval, tokens } from './retrieval'
 
@@ -42,7 +40,6 @@ export { FIX, NOW } from './fixtures'
 export interface Actor {
   type: ActorType
   id: string
-  role?: Role
 }
 
 export class StoreError extends Error {
@@ -137,12 +134,6 @@ export class Store {
     return d
   }
 
-  private require(actor: Actor, action: Action): void {
-    if (actor.type === 'admin' && !can(actor.role ?? 'viewer', action)) {
-      throw new StoreError(403, `The ${actor.role ?? 'viewer'} role cannot do this`)
-    }
-  }
-
   private nextId(d: NsData, prefix: string): string {
     d.seq += 1
     return `${prefix}_${d.seq.toString(36)}`
@@ -158,7 +149,7 @@ export class Store {
     d.jobs.unshift({ id: this.nextId(d, 'job'), kind, status: 'pending', attempts: 0, max_attempts: 5, object_type: objectType, object_id: objectId, last_error: null, run_after: NOW, created_at: NOW, updated_at: NOW })
   }
 
-  private markSync(d: NsData, entry: KbEntry, status: KbEntry['sync_status']): void {
+  private markSync(d: NsData, entry: KbEntry, status: SyncRef['sync_status']): void {
     entry.sync_status = status
     const ref = d.syncRefs.find((r) => r.object_id === entry.id)
     if (ref) Object.assign(ref, { sync_status: status, updated_at: NOW, last_error: null })
@@ -218,7 +209,7 @@ export class Store {
     const gaps = new Map<string, { count: number; top: number }>()
     for (const l of d.retrievalLogs.filter((x) => x.gap)) {
       const g = gaps.get(l.query) ?? { count: 0, top: 0 }
-      gaps.set(l.query, { count: g.count + 1, top: Math.max(g.top, l.top_score) })
+      gaps.set(l.query, { count: g.count + 1, top: Math.max(g.top, l.top_score ?? 0) })
     }
     return {
       memories: count(['active', 'superseded', 'deleted'] as const, d.memories.map((m) => m.status)),
@@ -280,7 +271,6 @@ export class Store {
   }
 
   patchMemory(slug: string, id: string, patch: MemoryPatch, actor: Actor): Memory {
-    this.require(actor, 'editMemory')
     const d = this.ns(slug)
     const m = this.getMemory(slug, id)
     if (m.status !== 'active') throw new StoreError(409, 'Only an active memory can be changed')
@@ -291,7 +281,6 @@ export class Store {
   }
 
   deleteMemory(slug: string, id: string, actor: Actor): Memory {
-    this.require(actor, 'editMemory')
     const d = this.ns(slug)
     const m = this.getMemory(slug, id)
     if (m.status === 'deleted') throw new StoreError(409, 'Memory already deleted')
@@ -304,7 +293,6 @@ export class Store {
   }
 
   promoteMemory(slug: string, id: string, actor: Actor): Candidate {
-    this.require(actor, 'editMemory')
     const d = this.ns(slug)
     const m = this.getMemory(slug, id)
     if (m.status !== 'active') throw new StoreError(409, 'Only an active memory can be promoted')
@@ -361,7 +349,6 @@ export class Store {
   }
 
   eraseUser(slug: string, userId: string, actor: Actor): Erasure {
-    this.require(actor, 'eraseUser')
     const d = this.ns(slug)
     const doomed = new Set(d.memories.filter((m) => m.user_id === userId).map((m) => m.id))
     const episodes = d.episodes.filter((e) => e.user_id === userId).length
@@ -434,7 +421,6 @@ export class Store {
   }
 
   patchEntry(slug: string, id: string, patch: EntryPatch, actor: Actor): Written {
-    this.require(actor, 'editKb')
     const d = this.ns(slug)
     const e = this.getEntry(slug, id)
     if (e.status === 'deprecated' || e.status === 'rejected') throw new StoreError(409, `A ${e.status} entry cannot be edited`)
@@ -461,7 +447,6 @@ export class Store {
   }
 
   deprecateEntry(slug: string, id: string, reason: string, actor: Actor): KbEntry {
-    this.require(actor, 'editKb')
     const d = this.ns(slug)
     const e = this.getEntry(slug, id)
     if (e.status !== 'active' && e.status !== 'verified') throw new StoreError(409, `A ${e.status} entry cannot be deprecated`)
@@ -540,7 +525,6 @@ export class Store {
   }
 
   decide(slug: string, id: string, verdict: 'accept' | 'reject', decision: Decision, actor: Actor): DecisionResult {
-    this.require(actor, 'review')
     const d = this.ns(slug)
     const c = this.getCandidate(slug, id)
     if (c.status !== 'pending') throw new StoreError(409, `Candidate ${c.key} was already ${c.status}`)
@@ -586,7 +570,6 @@ export class Store {
   }
 
   addGapToKb(slug: string, logId: string, draft: { title: string; content: string; collection_id?: string }, actor: Actor): Written {
-    this.require(actor, 'editKb')
     const d = this.ns(slug)
     const log = d.retrievalLogs.find((l) => l.id === logId)
     if (!log) throw new StoreError(404, `Retrieval ${logId} not found`)
@@ -596,7 +579,7 @@ export class Store {
       target_id: null,
       collection_id: draft.collection_id ?? d.collections[0]?.id ?? null,
       draft: { title: draft.title.trim(), content: draft.content.trim() },
-      reason: `Gap found in the Playground: “${log.query}” (top score ${log.top_score.toFixed(2)})`,
+      reason: `Gap found in the Playground: “${log.query}” (top score ${(log.top_score ?? 0).toFixed(2)})`,
       risk_level: 'medium',
       origin: 'api',
       similar: null,
@@ -630,26 +613,23 @@ export class Store {
     return j
   }
 
-  retryJob(slug: string, id: string, actor: Actor): Job {
-    this.require(actor, 'manageJobs')
+  retryJob(slug: string, id: string): Job {
     const j = this.job(slug, id)
     if (j.status !== 'failed') throw new StoreError(409, 'Only a failed job can be retried')
     return Object.assign(j, { status: 'pending', last_error: null, run_after: NOW, updated_at: NOW })
   }
 
-  cancelJob(slug: string, id: string, actor: Actor): Job {
-    this.require(actor, 'manageJobs')
+  cancelJob(slug: string, id: string): Job {
     const j = this.job(slug, id)
     if (j.status !== 'pending') throw new StoreError(409, 'Only a pending job can be cancelled')
-    return Object.assign(j, { status: 'failed', last_error: `Cancelled by ${actor.id}`, updated_at: NOW })
+    return Object.assign(j, { status: 'failed', last_error: 'Cancelled in Admin', updated_at: NOW })
   }
 
   listSyncRefs(slug: string): SyncRef[] {
     return this.ns(slug).syncRefs
   }
 
-  retrySync(slug: string, refId: string, actor: Actor): SyncRef {
-    this.require(actor, 'manageJobs')
+  retrySync(slug: string, refId: string): SyncRef {
     const d = this.ns(slug)
     const ref = d.syncRefs.find((r) => r.id === refId)
     if (!ref) throw new StoreError(404, `Sync ${refId} not found`)
@@ -680,8 +660,7 @@ export class Store {
     return this.ns(slug).keys
   }
 
-  createKey(slug: string, body: { name: string; scopes: ApiKey['scopes'] }, actor: Actor): ApiKeyCreated {
-    this.require(actor, 'manageKeys')
+  createKey(slug: string, body: { name: string; scopes: ApiKey['scopes'] }): ApiKeyCreated {
     const d = this.ns(slug)
     if (!body.name.trim()) throw new StoreError(422, 'A key needs a name')
     if (body.scopes.length === 0) throw new StoreError(422, 'Pick at least one scope')
@@ -699,8 +678,7 @@ export class Store {
     return { ...key, secret: `stw_${prefix}_${rand(24, alnum)}` }
   }
 
-  revokeKey(slug: string, id: string, actor: Actor): ApiKey {
-    this.require(actor, 'manageKeys')
+  revokeKey(slug: string, id: string): ApiKey {
     const k = this.ns(slug).keys.find((x) => x.id === id)
     if (!k) throw new StoreError(404, `Key ${id} not found`)
     if (k.revoked_at) throw new StoreError(409, 'Key already revoked')

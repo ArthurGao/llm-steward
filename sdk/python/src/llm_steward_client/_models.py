@@ -729,6 +729,8 @@ class EntryOut(BaseModel):
     content: Annotated[str, Field(title="Content")]
     created_at: Annotated[AwareDatetime, Field(title="Created At")]
     created_by: Annotated[str | None, Field(title="Created By")]
+    helpful_count: Annotated[int | None, Field(title="Helpful Count")] = 0
+    hit_count: Annotated[int | None, Field(title="Hit Count")] = 0
     id: Annotated[UUID, Field(title="Id")]
     origin: Annotated[
         Literal["manual", "import", "promoted_memory", "user_suggestion", "extraction"],
@@ -740,8 +742,10 @@ class EntryOut(BaseModel):
         Literal["draft", "active", "verified", "deprecated", "rejected"],
         Field(title="KbStatus"),
     ]
+    superseded_by: Annotated[UUID | None, Field(title="Superseded By")] = None
     tags: Annotated[list[str], Field(title="Tags")]
     title: Annotated[str, Field(title="Title")]
+    unhelpful_count: Annotated[int | None, Field(title="Unhelpful Count")] = 0
     updated_at: Annotated[AwareDatetime, Field(title="Updated At")]
     valid_from: Annotated[AwareDatetime, Field(title="Valid From")]
     valid_to: Annotated[AwareDatetime | None, Field(title="Valid To")]

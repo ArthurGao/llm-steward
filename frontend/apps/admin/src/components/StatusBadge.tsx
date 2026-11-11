@@ -59,7 +59,9 @@ export function statusLabel(status: string): string {
 }
 
 /** A status as text with a small square mark: filled once settled, hollow while open. */
-export function StatusBadge({ status, className }: { status: string; className?: string }) {
+/** A status the backend does not report (null) shows as "—". */
+export function StatusBadge({ status, className }: { status: string | null; className?: string }) {
+  if (status === null) return <span className={cn('text-[13px] text-ink-3', className)}>—</span>
   const [label, tone] = STATUS[status] ?? [status, 'neutral' as Tone]
   return (
     <span data-tone={tone} className={cn('inline-flex items-center gap-1.5 whitespace-nowrap text-[13px] font-medium', TONE[tone], className)}>

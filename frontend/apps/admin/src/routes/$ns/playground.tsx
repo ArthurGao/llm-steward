@@ -4,7 +4,6 @@ import { useEffect, useRef, useState, type FormEvent } from 'react'
 import { api } from '@/api/endpoints'
 import { str } from '@/lib/search'
 import type { RetrievalHit, RetrievalResult } from '@/api/types'
-import { useDenied } from '@/auth/can'
 import { ErrorNote, Mono, PageTitle } from '@/components/misc'
 import { Button } from '@/components/ui/button'
 import { Field, Input, Select, Textarea } from '@/components/ui/field'
@@ -89,12 +88,14 @@ function Playground() {
   )
 }
 
-function Stage({ title, hits, note }: { title: string; hits: RetrievalHit[]; note: string }) {
+function Stage({ title, hits, note }: { title: string; hits: RetrievalHit[] | null; note: string }) {
   return (
     <section className="min-w-0 border-rule lg:border-r lg:pr-5 lg:last:border-r-0">
       <h3 className="font-bold">{title}</h3>
       <p className="text-[12.5px] text-ink-2">{note}</p>
-      {hits.length === 0 ? (
+      {hits === null ? (
+        <p className="mt-2 text-ink-3">Not reported by this backend</p>
+      ) : hits.length === 0 ? (
         <p className="mt-2 text-ink-3">No hits</p>
       ) : (
         <ol className="mt-2">
@@ -138,7 +139,6 @@ function Result({ ns, result }: { ns: string; result: RetrievalResult }) {
 }
 
 function Gap({ ns, result }: { ns: string; result: RetrievalResult }) {
-  const denied = useDenied('editKb')
   const qc = useQueryClient()
   const collections = useQuery({ queryKey: [ns, 'collections'], queryFn: () => api.kb.collections(ns) })
   const [open, setOpen] = useState(false)
@@ -180,7 +180,7 @@ function Gap({ ns, result }: { ns: string; result: RetrievalResult }) {
         </div>
       ) : (
         <div className="mt-3">
-          <Button disabledReason={denied} onClick={() => setOpen(true)}>Add the missing answer to the KB</Button>
+          <Button onClick={() => setOpen(true)}>Add the missing answer to the KB</Button>
         </div>
       )}
     </section>

@@ -1,5 +1,5 @@
 import { expect, test } from '@playwright/test'
-import { signIn, watchErrors } from './helpers'
+import { openDemo, watchErrors } from './helpers'
 
 const PAGES: [path: string, heading: string][] = [
   ['dashboard', 'Dashboard'],
@@ -14,16 +14,17 @@ const PAGES: [path: string, heading: string][] = [
   ['settings', 'Settings'],
 ]
 
-test('the sign-in page renders', async ({ page }) => {
+test('/ opens the demo dashboard without a sign-in', async ({ page }) => {
   const errors = watchErrors(page)
   await page.goto('/')
-  await expect(page.getByRole('heading', { name: 'Sign in to llm-steward' })).toBeVisible()
+  await expect(page).toHaveURL(/\/acme-support\/dashboard$/)
+  await expect(page.getByRole('heading', { level: 1, name: 'Dashboard' })).toBeVisible()
   expect(errors).toEqual([])
 })
 
 test('every page renders its heading, the demo marker and no console errors', async ({ page }) => {
   const errors = watchErrors(page)
-  await signIn(page)
+  await openDemo(page)
   for (const [path, heading] of PAGES) {
     await page.goto(`/acme-support/${path}`)
     await expect(page.getByRole('heading', { level: 1, name: heading })).toBeVisible()

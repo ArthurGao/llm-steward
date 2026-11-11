@@ -35,7 +35,7 @@ test('the dashboard counts link to their lists', async () => {
 })
 
 test('an owner retries a failed job', async () => {
-  renderApp('/acme-support/jobs', 'owner')
+  renderApp('/acme-support/jobs')
   const row = (await screen.findByText('job_0912')).closest('tr')!
   await userEvent.click(within(row).getByRole('button', { name: 'Retry' }))
   expect(await within(row).findByText('Pending')).toBeInTheDocument()
@@ -50,7 +50,7 @@ test('the activity log filters by actor type and shows a diff', async () => {
 })
 
 test('the providers page shows the degraded engine and retries its failed sync', async () => {
-  renderApp('/acme-support/providers', 'owner')
+  renderApp('/acme-support/providers')
   expect(await screen.findByText('Degraded')).toBeInTheDocument()
   const row = (await screen.findByText('KB-0177 Refund method')).closest('tr')!
   await userEvent.click(within(row).getByRole('button', { name: 'Retry' }))
@@ -59,7 +59,7 @@ test('the providers page shows the degraded engine and retries its failed sync',
 })
 
 test('creating an API key shows the secret once', async () => {
-  renderApp('/acme-support/settings?tab=keys', 'owner')
+  renderApp('/acme-support/settings?tab=keys')
   await userEvent.type(await screen.findByLabelText('Key name'), 'staging bot')
   await userEvent.click(screen.getByRole('button', { name: 'Create key' }))
   const secret = await screen.findByLabelText('New key secret')

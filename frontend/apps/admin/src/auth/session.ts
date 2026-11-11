@@ -1,11 +1,15 @@
 import { useSyncExternalStore } from 'react'
-import type { Session } from '@/api/types'
 
-const KEY = 'steward.session'
+// The Admin has no login and no accounts (decided 2026-11-10). Mock mode (the demo) needs no
+// session. Live mode talks to a backend with its static admin token (STEWARD_ADMIN_TOKEN); the
+// backend URL and the token are kept for this browser tab only (sessionStorage), never longer.
+export const MODE: 'mock' | 'live' = import.meta.env.VITE_API_MODE === 'live' ? 'live' : 'mock'
+
+export type Session = { mode: 'mock' } | { mode: 'live'; baseUrl: string; token: string }
+
+const KEY = 'steward.connection'
+const MOCK: Session = { mode: 'mock' }
 const listeners = new Set<() => void>()
-
-// Demo auth only: the session lives in sessionStorage, which can be unavailable
-// (private mode, blocked storage), so every access is guarded.
 let memoryFallback: Session | null = null
 let cached: { raw: string | null; value: Session | null } = { raw: null, value: null }
 
@@ -13,13 +17,14 @@ function read(): string | null {
   try {
     return window.sessionStorage.getItem(KEY)
   } catch {
-    return null
+    return null // storage blocked (private mode): the in-memory fallback keeps this tab working
   }
 }
 
-export function getSession(): Session | null {
+/** The stored backend connection, whatever the mode (the live API reads it per request). */
+export function getConnection(): Extract<Session, { mode: 'live' }> | null {
   const raw = read()
-  if (raw === null) return memoryFallback
+  if (raw === null) return memoryFallback?.mode === 'live' ? memoryFallback : null
   if (raw !== cached.raw) {
     try {
       cached = { raw, value: JSON.parse(raw) as Session }
@@ -27,14 +32,19 @@ export function getSession(): Session | null {
       cached = { raw, value: null }
     }
   }
-  return cached.value
+  return cached.value?.mode === 'live' ? cached.value : null
+}
+
+export function getSession(): Session | null {
+  return MODE === 'mock' ? MOCK : getConnection()
 }
 
 function emit() {
   for (const l of listeners) l()
 }
 
-export function setSession(session: Session): void {
+export function connect(baseUrl: string, token: string): void {
+  const session: Session = { mode: 'live', baseUrl: baseUrl.replace(/\/+$/, ''), token }
   memoryFallback = session
   try {
     window.sessionStorage.setItem(KEY, JSON.stringify(session))
@@ -44,7 +54,7 @@ export function setSession(session: Session): void {
   emit()
 }
 
-export function clearSession(): void {
+export function disconnect(): void {
   memoryFallback = null
   try {
     window.sessionStorage.removeItem(KEY)

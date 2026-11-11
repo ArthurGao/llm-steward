@@ -3,7 +3,7 @@ import { createFileRoute, useNavigate } from '@tanstack/react-router'
 import { useState, type FormEvent } from 'react'
 import { api } from '@/api/endpoints'
 import type { ApiKey, ApiKeyCreated, NamespaceSettings } from '@/api/types'
-import { NOT_IN_DEMO, useDenied } from '@/auth/can'
+import { NOT_IN_DEMO } from '@/auth/can'
 import { DataTable, type Column } from '@/components/DataTable'
 import { HeaderBlock } from '@/components/HeaderBlock'
 import { ErrorNote, Loading, Mono, PageTitle } from '@/components/misc'
@@ -13,7 +13,7 @@ import { Field, Input } from '@/components/ui/field'
 import { TabPanel, Tabs } from '@/components/ui/tabs'
 import { age, day } from '@/lib/format'
 
-const TABS = ['namespace', 'prompts', 'keys', 'embedding', 'members'] as const
+const TABS = ['namespace', 'prompts', 'keys', 'embedding'] as const
 type Tab = (typeof TABS)[number]
 
 export const Route = createFileRoute('/$ns/settings')({
@@ -38,7 +38,6 @@ function Settings() {
           { value: 'prompts', label: 'Prompts' },
           { value: 'keys', label: 'API keys' },
           { value: 'embedding', label: 'Embedding' },
-          { value: 'members', label: 'Members' },
         ]}
       >
         <div className="px-5 py-5 sm:px-7">
@@ -49,7 +48,6 @@ function Settings() {
               <TabPanel value="prompts"><PromptsTab s={settings.data} /></TabPanel>
               <TabPanel value="keys"><KeysTab ns={ns} /></TabPanel>
               <TabPanel value="embedding"><EmbeddingTab s={settings.data} /></TabPanel>
-              <TabPanel value="members"><MembersTab s={settings.data} /></TabPanel>
             </>
           )}
         </div>
@@ -98,10 +96,9 @@ function PromptsTab({ s }: { s: NamespaceSettings }) {
   )
 }
 
-const SCOPES: ApiKey['scopes'] = ['read', 'write', 'review', 'admin']
+const SCOPES: ApiKey['scopes'] = ['read', 'write', 'review']
 
 function KeysTab({ ns }: { ns: string }) {
-  const denied = useDenied('manageKeys')
   const qc = useQueryClient()
   const keys = useQuery({ queryKey: [ns, 'keys'], queryFn: () => api.settings.keys(ns) })
   const [name, setName] = useState('')
@@ -119,7 +116,7 @@ function KeysTab({ ns }: { ns: string }) {
     { key: 'p', header: 'Key', cell: (k) => <Mono className="text-ink-2">stw_{k.prefix}_…</Mono> },
     { key: 's', header: 'Scopes', cell: (k) => <Mono>{k.scopes.join(' ')}</Mono> },
     { key: 'u', header: 'Last used', align: 'right', cell: (k) => <Mono className="text-ink-2">{k.last_used_at ? age(k.last_used_at) : 'never'}</Mono>, wide: true },
-    { key: 'a', header: '', align: 'right', cell: (k) => (k.revoked_at ? <span className="text-[13px] text-ink-3">revoked {day(k.revoked_at)}</span> : <Button size="sm" variant="danger" disabledReason={denied} onClick={() => revoke.mutate(k.id)}>Revoke</Button>) },
+    { key: 'a', header: '', align: 'right', cell: (k) => (k.revoked_at ? <span className="text-[13px] text-ink-3">revoked {day(k.revoked_at)}</span> : <Button size="sm" variant="danger" onClick={() => revoke.mutate(k.id)}>Revoke</Button>) },
   ]
   return (
     <section className="grid max-w-5xl gap-5">
@@ -134,7 +131,7 @@ function KeysTab({ ns }: { ns: string }) {
             </label>
           ))}
         </fieldset>
-        <Button type="submit" variant="primary" disabledReason={denied} disabled={!name.trim() || scopes.length === 0 || create.isPending}>Create key</Button>
+        <Button type="submit" variant="primary" disabled={!name.trim() || scopes.length === 0 || create.isPending}>Create key</Button>
       </form>
       {(create.error ?? revoke.error) && <ErrorNote error={create.error ?? revoke.error} />}
       {keys.isPending ? <Loading /> : <DataTable label="API keys" rows={keys.data?.items ?? []} columns={columns} rowKey={(k) => k.id} />}
@@ -152,29 +149,12 @@ function KeysTab({ ns }: { ns: string }) {
 
 function EmbeddingTab({ s }: { s: NamespaceSettings }) {
   const e = s.embedding
+  if (!e) return <section className="max-w-3xl text-ink-2">This namespace's providers do not report an embedding model.</section>
   return (
     <section className="max-w-3xl">
-      <HeaderBlock left={[['Model', e.model], ['Dimensions', String(e.dimensions)]]} right={[['Space', e.space_id], ['Rebuild', e.rebuild_progress === null ? 'idle' : `${e.rebuild_progress}%`]]} />
+      <HeaderBlock left={[['Model', e.model], ['Dimensions', e.dimensions === null ? '—' : String(e.dimensions)]]} right={[['Space', e.space_id ?? '—'], ['Rebuild', e.rebuild_progress === null ? 'idle' : `${e.rebuild_progress}%`]]} />
       <p className="mt-3 max-w-[68ch] text-ink-2">Switching the embedding space re-embeds every memory and entry in the background; retrieval keeps using the old space until the new one is complete.</p>
       <div className="mt-3"><Button disabledReason={NOT_IN_DEMO}>Switch embedding space…</Button></div>
-    </section>
-  )
-}
-
-function MembersTab({ s }: { s: NamespaceSettings }) {
-  return (
-    <section className="max-w-3xl">
-      <table aria-label="Members" className="w-full border-collapse text-left">
-        <thead>
-          <tr className="border-b border-ink text-[12.5px] text-ink-2"><th className="py-2 font-medium">Email</th><th className="py-2 font-medium">Role</th><th className="py-2 text-right font-medium">Added</th></tr>
-        </thead>
-        <tbody>
-          {s.members.map((m) => (
-            <tr key={m.email} className="border-b border-rule"><td className="py-2 font-mono text-[13px]">{m.email}</td><td className="py-2 capitalize">{m.role}</td><td className="py-2 text-right"><Mono className="text-ink-2">{day(m.added_at)}</Mono></td></tr>
-          ))}
-        </tbody>
-      </table>
-      <div className="mt-3"><Button disabledReason={NOT_IN_DEMO}>Invite member</Button></div>
     </section>
   )
 }

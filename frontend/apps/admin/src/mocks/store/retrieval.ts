@@ -97,7 +97,7 @@ export function runRetrieval(
     .map((h) => {
       const v = vScore.get(h.id) ?? 0
       const k = kScore.get(h.id) ?? 0
-      return { ...h, score: Math.round((0.6 * v + 0.4 * k) * h.trust * 1000) / 1000 }
+      return { ...h, score: Math.round((0.6 * v + 0.4 * k) * (h.trust ?? 1) * 1000) / 1000 }
     })
     .sort((a, b) => b.score - a.score)
     .slice(0, req.top_k ?? 8)

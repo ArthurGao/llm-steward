@@ -2,14 +2,14 @@ import { screen, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { renderApp } from '@/test/render'
 
-test('without a session the app opens on the sign-in page', async () => {
-  renderApp('/', null)
-  expect(await screen.findByRole('heading', { name: 'Sign in to llm-steward' })).toBeInTheDocument()
+test('the demo needs no sign-in: / opens the dashboard of acme-support', async () => {
+  const { router } = renderApp('/')
+  expect(await screen.findByRole('heading', { level: 1, name: 'Dashboard' })).toBeInTheDocument()
+  expect(router.state.location.pathname).toBe('/acme-support/dashboard')
 })
 
-test('signing in as a reviewer lands on the dashboard of acme-support', async () => {
-  const { router } = renderApp('/login', null)
-  await userEvent.click(await screen.findByRole('button', { name: 'Sign in' }))
+test('the demo has no Connect page: it redirects to the dashboard', async () => {
+  const { router } = renderApp('/connect')
   expect(await screen.findByRole('heading', { level: 1, name: 'Dashboard' })).toBeInTheDocument()
   expect(router.state.location.pathname).toBe('/acme-support/dashboard')
 })

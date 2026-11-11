@@ -3,6 +3,7 @@ import { createFileRoute, Link } from '@tanstack/react-router'
 import { ArrowRight } from 'lucide-react'
 import { api } from '@/api/endpoints'
 import type { Stats } from '@/api/types'
+import { MODE } from '@/auth/session'
 import { HeaderBlock } from '@/components/HeaderBlock'
 import { ErrorNote, Loading, Mono, PageTitle } from '@/components/misc'
 import { statusLabel } from '@/components/StatusBadge'
@@ -105,7 +106,7 @@ function Dashboard() {
       <div className="px-5 py-5 sm:px-7">
         <HeaderBlock
           left={[['Namespace', ns], ['Memory engine', n?.memory_provider ?? '—'], ['Knowledge engine', n?.kb_provider ?? '—']]}
-          right={[['Documents', String(s.documents)], ['Retrieval p95', `${s.retrieval_p95_ms} ms`], ['Clock', 'demo, fixed']]}
+          right={[['Documents', String(s.documents)], ['Retrieval p95', s.retrieval_p95_ms === null ? '—' : `${s.retrieval_p95_ms} ms`], ...(MODE === 'mock' ? [['Clock', 'demo, fixed'] as [string, string]] : [])]}
         />
       </div>
       <div className="grid gap-x-12 gap-y-8 px-5 pb-10 sm:px-7 lg:grid-cols-2">

@@ -1,7 +1,9 @@
 import type { HTMLAttributes, ReactNode } from 'react'
+import { MODE } from '@/auth/session'
 import { cn } from '@/lib/cn'
 
 export function DemoMarker() {
+  if (MODE === 'live') return null // real data: nothing to mark
   return (
     <span title="Everything on this site is synthetic demo data that resets on reload" className="border border-dashed border-ink-3 px-2 py-0.5 text-[12px] text-ink-2">
       Demo data

@@ -128,7 +128,7 @@ function Retrievals({ ns }: { ns: string }) {
     { key: 'u', header: 'User', cell: (l) => <Mono className="text-ink-2">{l.user_id ?? '—'}</Mono>, wide: true },
     { key: 'top', header: 'Top', align: 'right', cell: (l) => <Mono className={l.gap ? 'text-rejected' : ''}>{score(l.top_score)}</Mono> },
     { key: 'n', header: 'Hits', align: 'right', cell: (l) => <Mono>{l.hit_count}</Mono>, wide: true },
-    { key: 'ms', header: 'Latency', align: 'right', cell: (l) => <Mono className={l.degraded ? 'text-awaiting' : ''}>{l.latency_ms} ms{l.degraded ? ' · degraded' : ''}</Mono> },
+    { key: 'ms', header: 'Latency', align: 'right', cell: (l) => <Mono className={l.degraded ? 'text-awaiting' : ''}>{l.latency_ms === null ? '—' : `${l.latency_ms} ms`}{l.degraded ? ' · degraded' : ''}</Mono> },
   ]
   if (logs.isPending) return <Loading />
   return <DataTable label="Retrievals" rows={logs.data?.items ?? []} columns={columns} rowKey={(l) => l.id} empty={<EmptyState title="No retrievals yet" />} />

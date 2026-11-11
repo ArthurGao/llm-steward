@@ -3,7 +3,6 @@ import { Link } from '@tanstack/react-router'
 import { useEffect, useState } from 'react'
 import { api } from '@/api/endpoints'
 import type { Candidate, DecisionResult } from '@/api/types'
-import { useDenied } from '@/auth/can'
 import { DiffView } from '@/components/DiffView'
 import { HeaderBlock, type HeaderRow } from '@/components/HeaderBlock'
 import { ErrorNote, Kbd, Loading } from '@/components/misc'
@@ -25,8 +24,9 @@ function ladder(c: Candidate): Rung[] {
   if (c.status === 'rejected') return [...rungs, { label: 'Rejected', state: 'stopped', note: c.decided_by ?? undefined }]
   if (c.status === 'expired') return [...rungs, { label: 'Expired', state: 'stopped' }]
   rungs.push({ label: 'Review', state: decided ? 'done' : c.stage === 'awaiting_review' ? 'now' : 'next', note: decided ? (c.decided_by ?? undefined) : undefined })
-  const verifiedByReviewer = decided && !!c.decided_by?.includes('@')
-  const settled = decided ? (verifiedByReviewer ? 'Verified' : 'Active') : c.stage === 'awaiting_review' ? 'Verified' : 'Active'
+  // The end user's own confirmation makes it active; a reviewer's decision verifies it (rule 5).
+  const confirmedByUser = decided && c.decided_by !== null && c.decided_by === c.requested_for_user
+  const settled = decided ? (confirmedByUser ? 'Active' : 'Verified') : c.stage === 'awaiting_review' ? 'Verified' : 'Active'
   rungs.push({ label: c.target_type === 'memory' ? 'Saved' : settled, state: decided ? 'done' : 'next' })
   if (c.target_type === 'kb_entry') rungs.push({ label: 'Synced', state: decided ? 'now' : 'next', note: decided ? 'pending' : undefined })
   return rungs
@@ -118,7 +118,6 @@ function typingInField(e: KeyboardEvent): boolean {
 }
 
 function Decide({ ns, candidate: c, onDecided }: { ns: string; candidate: Candidate; onDecided: (r: DecisionResult) => void }) {
-  const denied = useDenied('review')
   const qc = useQueryClient()
   const [mode, setMode] = useState<'idle' | 'edit' | 'reject'>('idle')
   const [text, setText] = useState(c.draft.content)
@@ -135,7 +134,6 @@ function Decide({ ns, candidate: c, onDecided }: { ns: string; candidate: Candid
   })
 
   useEffect(() => {
-    if (denied) return
     const onKey = (e: KeyboardEvent) => {
       if (typingInField(e) || e.metaKey || e.ctrlKey || e.altKey || decide.isPending) return
       if (e.key === 'a' && mode === 'idle') decide.mutate({ verdict: 'accept' })
@@ -146,7 +144,7 @@ function Decide({ ns, candidate: c, onDecided }: { ns: string; candidate: Candid
     }
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
-  }, [denied, mode, decide])
+  }, [mode, decide])
 
   const reject = () => {
     if (!note.trim()) {
@@ -181,13 +179,13 @@ function Decide({ ns, candidate: c, onDecided }: { ns: string; candidate: Candid
       )}
       {mode === 'idle' && (
         <div className="flex flex-wrap gap-2">
-          <Button variant="primary" disabledReason={denied} disabled={decide.isPending} onClick={() => decide.mutate({ verdict: 'accept' })}>
+          <Button variant="primary" disabled={decide.isPending} onClick={() => decide.mutate({ verdict: 'accept' })}>
             Approve<Kbd>A</Kbd>
           </Button>
-          <Button disabledReason={denied} onClick={() => setMode('edit')}>
+          <Button onClick={() => setMode('edit')}>
             Edit &amp; approve<Kbd>E</Kbd>
           </Button>
-          <Button disabledReason={denied} onClick={() => setMode('reject')}>
+          <Button onClick={() => setMode('reject')}>
             Reject…<Kbd>R</Kbd>
           </Button>
         </div>

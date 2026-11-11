@@ -1,9 +1,8 @@
 import { createStore, StoreError, FIX, NOW, type Actor } from './index'
 
 const NS = 'acme-support'
-const reviewer: Actor = { type: 'admin', id: 'reviewer@demo', role: 'reviewer' }
-const owner: Actor = { type: 'admin', id: 'owner@demo', role: 'owner' }
-const viewer: Actor = { type: 'admin', id: 'viewer@demo', role: 'viewer' }
+const reviewer: Actor = { type: 'admin', id: 'reviewer@demo' }
+const owner: Actor = { type: 'admin', id: 'owner@demo' }
 
 function expectStoreError(fn: () => unknown, status: number) {
   try {
@@ -57,10 +56,6 @@ test('deciding an already decided candidate is a conflict and creates nothing', 
   expect(s.getEntry(NS, FIX.refundEntry).version).toBe(4)
 })
 
-test('a viewer cannot decide', () => {
-  const s = createStore()
-  expectStoreError(() => s.decide(NS, FIX.refundCandidate, 'accept', {}, viewer), 403)
-})
 
 test('editing a verified entry yields a review candidate, not an edit', () => {
   const s = createStore()
@@ -81,8 +76,8 @@ test('deprecating keeps the row, closes its validity and removes it from the pro
 
 test('erasing a user deletes only their memories and episodes and redacts their history', () => {
   const s = createStore()
-  const mine = s.listMemories(NS, { user_id: 'u_8f2a', include_superseded: true }).total
-  const others = s.listMemories(NS, { include_superseded: true }).total - mine
+  const mine = s.listMemories(NS, { user_id: 'u_8f2a', include_superseded: true }).total!
+  const others = s.listMemories(NS, { include_superseded: true }).total! - mine
   const changed = s.listChanges(NS, { object_type: 'memory' }).filter((c) => c.after?.user_id === 'u_8f2a').map((c) => c.id)
   expect(mine).toBeGreaterThan(0)
   expect(changed.length).toBeGreaterThan(0)
@@ -102,10 +97,6 @@ test('erasing a user deletes only their memories and episodes and redacts their 
   expect(all[0]).toMatchObject({ op: 'erase', object_type: 'user', object_id: 'u_8f2a', actor_id: 'owner@demo' })
 })
 
-test('only an owner can erase a user', () => {
-  const s = createStore()
-  expectStoreError(() => s.eraseUser(NS, 'u_8f2a', reviewer), 403)
-})
 
 test('two fresh stores are identical', () => {
   const a = createStore()
@@ -125,22 +116,18 @@ test('promoting a memory creates a KB candidate awaiting review', () => {
 test('retrying a failed job puts it back to pending; a failed sync retries too', () => {
   const s = createStore()
   const failed = s.listJobs(NS, { status: 'failed' }).items[0]!
-  expect(s.retryJob(NS, failed.id, owner).status).toBe('pending')
+  expect(s.retryJob(NS, failed.id).status).toBe('pending')
   const ref = s.listSyncRefs(NS).find((r) => r.sync_status === 'failed')!
-  expect(s.retrySync(NS, ref.id, owner).sync_status).toBe('pending')
+  expect(s.retrySync(NS, ref.id).sync_status).toBe('pending')
 })
 
 test('a created API key shows its secret once', () => {
   const s = createStore()
-  const k = s.createKey(NS, { name: 'ci', scopes: ['read'] }, owner)
+  const k = s.createKey(NS, { name: 'ci', scopes: ['read'] })
   expect(k.secret).toMatch(/^stw_[a-z0-9]{6}_[A-Za-z0-9]{24}$/)
   expect(s.listKeys(NS).find((x) => x.id === k.id)).not.toHaveProperty('secret')
 })
 
-test('a reviewer cannot change memories; that is an owner action', () => {
-  const s = createStore()
-  expectStoreError(() => s.patchMemory(NS, FIX.promotableMemory, { pinned: true }, reviewer), 403)
-})
 
 test('deleting a superseded memory records its real prior status', () => {
   const s = createStore()

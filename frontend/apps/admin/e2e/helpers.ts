@@ -1,9 +1,8 @@
 import { expect, type Page } from '@playwright/test'
 
-export async function signIn(page: Page, role: 'viewer' | 'reviewer' | 'owner' = 'reviewer') {
-  await page.goto('/login')
-  await page.getByLabel('Role').selectOption(role)
-  await page.getByRole('button', { name: 'Sign in' }).click()
+/** The demo has no sign-in: / opens the dashboard of the demo namespace. */
+export async function openDemo(page: Page) {
+  await page.goto('/')
   await expect(page.getByRole('heading', { level: 1, name: 'Dashboard' })).toBeVisible()
 }
 

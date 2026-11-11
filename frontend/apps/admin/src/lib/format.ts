@@ -27,11 +27,12 @@ export function bytes(n: number): string {
   return `${n} B`
 }
 
-export function pct(x: number): string {
+export function pct(x: number | null): string {
+  if (x === null) return '—'
   const v = x * 100
   return `${v < 10 ? v.toFixed(1) : Math.round(v)}%`
 }
 
-export function score(x: number): string {
-  return x.toFixed(2)
+export function score(x: number | null): string {
+  return x === null ? '—' : x.toFixed(2)
 }

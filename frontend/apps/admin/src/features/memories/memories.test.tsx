@@ -21,16 +21,11 @@ test('a memory shows the chain of facts it replaced', async () => {
 })
 
 test('promoting a memory sends a KB candidate to review', async () => {
-  renderApp(`/acme-support/memories?selected=${FIX.promotableMemory}`, 'owner')
+  renderApp(`/acme-support/memories?selected=${FIX.promotableMemory}`)
   await userEvent.click(await screen.findByRole('button', { name: 'Promote to KB' }))
   expect(await screen.findByRole('status')).toHaveTextContent(/Promoted as C-\w+, waiting for review/)
 })
 
-test('a viewer cannot pin or delete', async () => {
-  renderApp(`/acme-support/memories?selected=${FIX.promotableMemory}`, 'viewer')
-  expect(await screen.findByRole('button', { name: 'Pin' })).toHaveAttribute('aria-disabled', 'true')
-  expect(screen.getByRole('button', { name: 'Delete…' })).toHaveAttribute('aria-disabled', 'true')
-})
 
 test('a link to the second page of memories opens on that page (reload-safe cursor)', async () => {
   renderApp('/acme-support/memories?cursor=25')

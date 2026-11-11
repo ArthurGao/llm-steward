@@ -3,7 +3,7 @@ import { createFileRoute } from '@tanstack/react-router'
 import { useState } from 'react'
 import { api } from '@/api/endpoints'
 import type { ProviderStatus, SyncRef } from '@/api/types'
-import { NOT_IN_DEMO, useDenied } from '@/auth/can'
+import { NOT_IN_DEMO } from '@/auth/can'
 import { DataTable, type Column } from '@/components/DataTable'
 import { HeaderBlock } from '@/components/HeaderBlock'
 import { EmptyState, Loading, Mono, PageTitle } from '@/components/misc'
@@ -23,7 +23,7 @@ function Engine({ p }: { p: ProviderStatus }) {
       <div className="mt-3 max-w-[920px]">
         <HeaderBlock
           left={[['Engine', `${p.engine} ${p.version}`], ['Capabilities', p.capabilities.join(', ')], ['Last reconciled', p.last_reconciled_at ? `${age(p.last_reconciled_at)} ago` : 'never']]}
-          right={[['p95 latency', `${p.latency_p95_ms} ms`], ['Error rate', pct(p.error_rate)], ['Queue', `${p.queue.pending} pending · ${p.queue.failed} failed`], ['Drift', String(p.reconcile_drift)]]}
+          right={[['p95 latency', p.latency_p95_ms === null ? '—' : `${p.latency_p95_ms} ms`], ['Error rate', pct(p.error_rate)], ['Queue', `${p.queue.pending} pending · ${p.queue.failed} failed`], ['Drift', p.reconcile_drift === null ? '—' : String(p.reconcile_drift)]]}
         />
       </div>
       {p.health !== 'healthy' && (
@@ -36,11 +36,10 @@ function Engine({ p }: { p: ProviderStatus }) {
 }
 
 function RetrySync({ ns, r }: { ns: string; r: SyncRef }) {
-  const denied = useDenied('manageJobs')
   const qc = useQueryClient()
   const retry = useMutation({ mutationFn: () => api.providers.retrySync(ns, r.id), onSuccess: () => qc.invalidateQueries({ queryKey: [ns] }) })
   if (r.sync_status !== 'failed') return null
-  return <Button size="sm" disabledReason={denied} disabled={retry.isPending} onClick={() => retry.mutate()}>Retry</Button>
+  return <Button size="sm" disabled={retry.isPending} onClick={() => retry.mutate()}>Retry</Button>
 }
 
 function Providers() {

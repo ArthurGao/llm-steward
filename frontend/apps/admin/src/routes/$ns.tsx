@@ -3,8 +3,8 @@ import { getSession } from '@/auth/session'
 import { TopBar } from '@/components/shell/TopBar'
 
 export const Route = createFileRoute('/$ns')({
-  beforeLoad: ({ location }) => {
-    if (!getSession()) throw redirect({ to: '/login', search: { from: location.href } as never })
+  beforeLoad: () => {
+    if (!getSession()) throw redirect({ to: '/connect' })
   },
   component: Layout,
 })

@@ -4,7 +4,6 @@ import { useState } from 'react'
 import { api } from '@/api/endpoints'
 import { str } from '@/lib/search'
 import type { Erasure, UserSummary } from '@/api/types'
-import { useDenied } from '@/auth/can'
 import { DataTable, type Column } from '@/components/DataTable'
 import { Pager } from '@/components/Pager'
 import { HeaderBlock } from '@/components/HeaderBlock'
@@ -89,7 +88,6 @@ function Users() {
 
 function UserDocument({ ns, userId, onErased }: { ns: string; userId: string; onErased: (r: Erasure) => void }) {
   const user = useQuery({ queryKey: [ns, 'user', userId], queryFn: () => api.users.get(ns, userId) })
-  const denied = useDenied('eraseUser')
   const qc = useQueryClient()
   const [open, setOpen] = useState(false)
   const [typed, setTyped] = useState('')
@@ -134,7 +132,7 @@ function UserDocument({ ns, userId, onErased }: { ns: string; userId: string; on
         <Link to="/$ns/memories" params={{ ns }} search={{ user: userId }} className={buttonClass()}>
           All memories of {userId}
         </Link>
-        <Button variant="danger" disabledReason={denied} onClick={() => { setTyped(''); setOpen(true) }}>Erase user data…</Button>
+        <Button variant="danger" onClick={() => { setTyped(''); setOpen(true) }}>Erase user data…</Button>
       </div>
       <Dialog open={open} onOpenChange={setOpen} title={`Erase all data of ${userId}?`} description="Deletes their memories and conversations from llm-steward and the memory engine. This is the one hard delete; it cannot be undone. The activity log keeps who erased what, without content.">
         <div className="grid gap-3">

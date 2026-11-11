@@ -204,7 +204,7 @@ STEWARD_LLM_MODEL=anthropic/claude-haiku-5-5
 | --- | --- | --- |
 | `namespaces` | 接入项目 | `slug`、`name`、`config`（JSON，含选用的 provider，第 8 节） |
 | `api_keys` | 机器调用的凭证 | `namespace_id`、`prefix`、`key_hash`、`scopes`（read / write / review / admin）、`last_used_at`、`revoked_at` |
-| `admin_users` | Admin 登录用户（2026-11-10 决定 Admin 不做登录，表暂未使用，P6 再定去留） | `email`、`password_hash`、`role`（owner / reviewer / viewer）、可访问的 namespace |
+| `admin_users` | Admin 登录用户（2026-11-10 决定 Admin 不做登录，表暂未使用；P6 用静态 admin token，此表在 P6 收尾时决定删除与否） | `email`、`password_hash`、`role`（owner / reviewer / viewer）、可访问的 namespace |
 | `episodes` | 原始输入（对话、导入、手工操作），溯源的依据 | `kind`、`user_id`/`agent_id`/`session_id`、`content`（JSON messages）、`processed_at` |
 | `memories` | memory 的镜像 + 治理元数据（内容由 memory provider 产生和检索） | 见下方 DDL |
 | `kb_collections` | KB 分组，对应 provider 里的一个知识库 | `name`、`review_policy`、`default_risk` |
@@ -962,6 +962,7 @@ llm-steward/
    - [ ] 按顺序实现：Memories → Knowledge Base → Review Queue → Providers → Dashboard → Playground → Users → Activity → Jobs → Settings
    - 验收：Playwright 覆盖"审核一条 high 风险 candidate 并看到它同步到 WeKnora"和"在 Playground 发现缺口并加入 KB"两条主流程
    - P6a 后端 `/admin/v1`（2026-11-11）：见第 7 节"Admin 路由"。测试 `test_admin_api.py`（两种数据库）。迁移 0012 给 `retrieval_logs` 加 `hit_count`（从已有的 results 回填），KB 缺口在 SQL 里筛（`hit_count = 0`），翻页不会变短。新增 `STEWARD_CORS_ORIGINS`（Admin 在本地跑、连远程后端时需要；默认不允许跨域）。`/v1/retrieve` 和试验台共用 `RetrieveIn.to_request`，`/v1` 和 Admin 的审核共用 `decide`。按天计数在 Python 里做：PostgreSQL 的 `date(timestamptz)` 按服务器时区，SQLite 不按，在 SQL 里分组得写方言相关的代码。SDK 的 `openapi.json` 和模型随之重新生成（规格漂移检查按设计报了错）。P4 的超时验收测试在整套测试并发时偶尔超时一次，单独重跑 3/3 通过：时序测试，机器负载敏感，记下以便观察。
+   - P6b 前端接真后端（2026-11-11）：去掉演示登录、角色和成员页（不做账号；`useDenied` 一并删掉，权限只在后端）。`VITE_API_MODE=live` 时首页进 Connect 页：填后端地址和 admin token，先调 `/admin/v1/namespaces` 验证，失败不保留；连接只存在这个标签页的 sessionStorage。页面仍只调用 `api`：`mockApi`（MSW，演示）和 `liveApi`（`src/api/live.ts`，`@hey-api/openapi-ts` 0.99.0 从 `sdk/python/openapi.json` 生成的客户端，加适配到页面的视图类型）二选一，live 构建里不含 mock。后端没有的数据不编：KB 条目的同步状态、文档切块数、provider 的 p95/错误率/漂移、列表总数、检索的中间阶段（只有最终排序）、缺口的最高分都是 null，显示 "—" 或 "Not reported by this backend"；后端的 keyset 游标只能向前，分页器在没有总数时显示 First page / Next。候选的筛查原因从 `reason`（`; ` 分隔，`pii: <种类>`）解析，UPDATE 候选的对比对象取目标条目。`EntryOut` 新增 `superseded_by`、`hit_count`、`helpful_count`、`unhelpful_count`。测试：`src/api/live.test.ts`（MSW 在网络边界模拟后端，9 个，7 个变异都能抓到），`Pager.test.tsx`；删掉的测试只测已删除的功能（演示登录、viewer/reviewer 不能操作的 6 个单元测试和 `e2e/roles.spec.ts`）。留到 P6 收尾再看：筛查原因和对象短号（`KB-xxxxxx`）现在由前端从 `reason` 字符串和 id 推出，后端直接给结构化字段会更稳。
 8. **P7 RAGFlow 与收尾**
    - [ ] `RAGFlowProvider` + 合约测试；`steward resync`（更换 provider 并全量重新同步）
    - [ ] `@llm-steward/widget`、后台维护任务、LoCoMo 评测、README 与接入指南

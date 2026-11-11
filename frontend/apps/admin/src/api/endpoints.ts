@@ -1,6 +1,9 @@
-// One function per /admin/v1 route the Admin uses. The MSW handlers in
-// src/mocks/handlers.ts implement the same table.
+// One function per /admin/v1 route the Admin uses. `mockApi` calls the in-browser mock (the MSW
+// handlers in src/mocks/handlers.ts implement the same table); `liveApi` (./live.ts) calls a real
+// backend through the generated client. Pages import `api` and do not know which one runs.
+import { MODE } from '@/auth/session'
 import { request } from './client'
+import { liveApi } from './live'
 import type {
   ApiKey,
   ApiKeyCreated,
@@ -26,8 +29,6 @@ import type {
   RetrievalLog,
   RetrievalRequest,
   RetrievalResult,
-  Role,
-  Session,
   Stats,
   SyncRef,
   UserDetail,
@@ -47,8 +48,7 @@ export function qs(q: Query = {}): string {
 const json = (body: unknown): RequestInit => ({ method: 'POST', body: JSON.stringify(body) })
 const ns = (slug: string) => `/ns/${encodeURIComponent(slug)}`
 
-export const api = {
-  login: (email: string, password: string, role: Role) => request<Session>('/auth/login', json({ email, password, role })),
+export const mockApi = {
   namespaces: () => request<{ items: Namespace[] }>('/namespaces'),
   stats: (slug: string) => request<Stats>(`${ns(slug)}/stats`),
 
@@ -113,3 +113,5 @@ export const api = {
     revokeKey: (slug: string, id: string) => request<ApiKey>(`${ns(slug)}/keys/${id}`, { method: 'DELETE' }),
   },
 }
+
+export const api: typeof mockApi = MODE === 'live' ? liveApi : mockApi

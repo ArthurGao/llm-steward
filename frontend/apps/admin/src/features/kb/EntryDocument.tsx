@@ -3,7 +3,6 @@ import { Link } from '@tanstack/react-router'
 import { useState } from 'react'
 import { api } from '@/api/endpoints'
 import type { EntryHistory, EntryVersion, KbEntry } from '@/api/types'
-import { useDenied } from '@/auth/can'
 import { DiffView } from '@/components/DiffView'
 import { useDocumentStack } from '@/components/DocumentStack'
 import { HeaderBlock } from '@/components/HeaderBlock'
@@ -128,7 +127,6 @@ function VersionDocument({ entry, versions, index }: { entry: KbEntry; versions:
 }
 
 function EntryActions({ ns, entry }: { ns: string; entry: KbEntry }) {
-  const denied = useDenied('editKb')
   const qc = useQueryClient()
   const [editing, setEditing] = useState(false)
   const [text, setText] = useState(entry.content)
@@ -166,8 +164,8 @@ function EntryActions({ ns, entry }: { ns: string; entry: KbEntry }) {
         </div>
       ) : (
         <div className="flex flex-wrap gap-2">
-          <Button disabledReason={denied ?? frozen} onClick={() => { setText(entry.content); setEditing(true) }}>Edit</Button>
-          <Button variant="danger" disabledReason={denied ?? (effective ? null : 'Only active or verified knowledge can be deprecated')} onClick={() => setDeprecating(true)}>
+          <Button disabledReason={frozen} onClick={() => { setText(entry.content); setEditing(true) }}>Edit</Button>
+          <Button variant="danger" disabledReason={effective ? null : 'Only active or verified knowledge can be deprecated'} onClick={() => setDeprecating(true)}>
             Deprecate…
           </Button>
         </div>

@@ -4,7 +4,6 @@ import { useState } from 'react'
 import { api } from '@/api/endpoints'
 import { str } from '@/lib/search'
 import type { Memory } from '@/api/types'
-import { useDenied } from '@/auth/can'
 import { DataTable, type Column } from '@/components/DataTable'
 import { HeaderBlock } from '@/components/HeaderBlock'
 import { EmptyState, ErrorNote, Loading, Mono, PageTitle } from '@/components/misc'
@@ -160,7 +159,6 @@ function MemoryDocument({ ns, id }: { ns: string; id: string }) {
 }
 
 function MemoryActions({ ns, memory: m }: { ns: string; memory: Memory }) {
-  const denied = useDenied('editMemory')
   const qc = useQueryClient()
   const navigate = useNavigate()
   const [confirmDelete, setConfirmDelete] = useState(false)
@@ -181,9 +179,9 @@ function MemoryActions({ ns, memory: m }: { ns: string; memory: Memory }) {
       )}
       {error && <ErrorNote error={error} />}
       <div className="flex flex-wrap gap-2">
-        <Button disabledReason={denied ?? inactive} disabled={pin.isPending} onClick={() => pin.mutate()}>{m.pinned ? 'Unpin' : 'Pin'}</Button>
-        <Button disabledReason={denied ?? inactive} disabled={promote.isPending || !!promote.data} onClick={() => promote.mutate()}>Promote to KB</Button>
-        <Button variant="danger" disabledReason={denied ?? inactive} onClick={() => setConfirmDelete(true)}>Delete…</Button>
+        <Button disabledReason={inactive} disabled={pin.isPending} onClick={() => pin.mutate()}>{m.pinned ? 'Unpin' : 'Pin'}</Button>
+        <Button disabledReason={inactive} disabled={promote.isPending || !!promote.data} onClick={() => promote.mutate()}>Promote to KB</Button>
+        <Button variant="danger" disabledReason={inactive} onClick={() => setConfirmDelete(true)}>Delete…</Button>
         {m.user_id && (
           <Button variant="ghost" onClick={() => void navigate({ to: '/$ns/users', params: { ns }, search: { selected: m.user_id ?? undefined } })}>
             All of {m.user_id}

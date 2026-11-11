@@ -1576,6 +1576,16 @@
             ],
             "title": "Created By"
           },
+          "helpful_count": {
+            "default": 0,
+            "title": "Helpful Count",
+            "type": "integer"
+          },
+          "hit_count": {
+            "default": 0,
+            "title": "Hit Count",
+            "type": "integer"
+          },
           "id": {
             "format": "uuid",
             "title": "Id",
@@ -1598,6 +1608,18 @@
           "status": {
             "$ref": "#/components/schemas/KbStatus"
           },
+          "superseded_by": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Superseded By"
+          },
           "tags": {
             "items": {
               "type": "string"
@@ -1608,6 +1630,11 @@
           "title": {
             "title": "Title",
             "type": "string"
+          },
+          "unhelpful_count": {
+            "default": 0,
+            "title": "Unhelpful Count",
+            "type": "integer"
           },
           "updated_at": {
             "format": "date-time",

@@ -11,7 +11,7 @@
 import { Route as rootRouteImport } from './routes/__root'
 import { Route as IndexRouteImport } from './routes/index'
 import { Route as NsRouteImport } from './routes/$ns'
-import { Route as LoginRouteImport } from './routes/login'
+import { Route as ConnectRouteImport } from './routes/connect'
 import { Route as NsIndexRouteImport } from './routes/$ns/index'
 import { Route as NsActivityRouteImport } from './routes/$ns/activity'
 import { Route as NsDashboardRouteImport } from './routes/$ns/dashboard'
@@ -34,9 +34,9 @@ const NsRoute = NsRouteImport.update({
   path: '/$ns',
   getParentRoute: () => rootRouteImport,
 } as any)
-const LoginRoute = LoginRouteImport.update({
-  id: '/login',
-  path: '/login',
+const ConnectRoute = ConnectRouteImport.update({
+  id: '/connect',
+  path: '/connect',
   getParentRoute: () => rootRouteImport,
 } as any)
 const NsIndexRoute = NsIndexRouteImport.update({
@@ -98,7 +98,7 @@ const NsUsersRoute = NsUsersRouteImport.update({
 export interface FileRoutesByFullPath {
   '/': typeof IndexRoute
   '/$ns': typeof NsRouteWithChildren
-  '/login': typeof LoginRoute
+  '/connect': typeof ConnectRoute
   '/$ns/activity': typeof NsActivityRoute
   '/$ns/dashboard': typeof NsDashboardRoute
   '/$ns/jobs': typeof NsJobsRoute
@@ -113,7 +113,7 @@ export interface FileRoutesByFullPath {
 }
 export interface FileRoutesByTo {
   '/': typeof IndexRoute
-  '/login': typeof LoginRoute
+  '/connect': typeof ConnectRoute
   '/$ns/activity': typeof NsActivityRoute
   '/$ns/dashboard': typeof NsDashboardRoute
   '/$ns/jobs': typeof NsJobsRoute
@@ -130,7 +130,7 @@ export interface FileRoutesById {
   __root__: typeof rootRouteImport
   '/': typeof IndexRoute
   '/$ns': typeof NsRouteWithChildren
-  '/login': typeof LoginRoute
+  '/connect': typeof ConnectRoute
   '/$ns/activity': typeof NsActivityRoute
   '/$ns/dashboard': typeof NsDashboardRoute
   '/$ns/jobs': typeof NsJobsRoute
@@ -148,7 +148,7 @@ export interface FileRouteTypes {
   fullPaths:
     | '/'
     | '/$ns'
-    | '/login'
+    | '/connect'
     | '/$ns/activity'
     | '/$ns/dashboard'
     | '/$ns/jobs'
@@ -163,7 +163,7 @@ export interface FileRouteTypes {
   fileRoutesByTo: FileRoutesByTo
   to:
     | '/'
-    | '/login'
+    | '/connect'
     | '/$ns/activity'
     | '/$ns/dashboard'
     | '/$ns/jobs'
@@ -179,7 +179,7 @@ export interface FileRouteTypes {
     | '__root__'
     | '/'
     | '/$ns'
-    | '/login'
+    | '/connect'
     | '/$ns/activity'
     | '/$ns/dashboard'
     | '/$ns/jobs'
@@ -196,7 +196,7 @@ export interface FileRouteTypes {
 export interface RootRouteChildren {
   IndexRoute: typeof IndexRoute
   NsRoute: typeof NsRouteWithChildren
-  LoginRoute: typeof LoginRoute
+  ConnectRoute: typeof ConnectRoute
 }
 
 declare module '@tanstack/react-router' {
@@ -215,11 +215,11 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof NsRouteImport
       parentRoute: typeof rootRouteImport
     }
-    '/login': {
-      id: '/login'
-      path: '/login'
-      fullPath: '/login'
-      preLoaderRoute: typeof LoginRouteImport
+    '/connect': {
+      id: '/connect'
+      path: '/connect'
+      fullPath: '/connect'
+      preLoaderRoute: typeof ConnectRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/$ns/': {
@@ -335,7 +335,7 @@ const NsRouteWithChildren = NsRoute._addFileChildren(NsRouteChildren)
 const rootRouteChildren: RootRouteChildren = {
   IndexRoute: IndexRoute,
   NsRoute: NsRouteWithChildren,
-  LoginRoute: LoginRoute,
+  ConnectRoute: ConnectRoute,
 }
 export const routeTree = rootRouteImport
   ._addFileChildren(rootRouteChildren)

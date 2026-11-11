@@ -20,13 +20,16 @@ In production the Admin build is served by FastAPI; there is no separate fronten
 
 ## Rules
 
-1. **The OpenAPI spec is the only contract.** Call the API only through the generated client. If an endpoint you
+1. **The OpenAPI spec is the only contract.** Call the API only through the generated client (`src/api/live.ts`
+   adapts it to the view types; `src/api/endpoints.ts` picks live or mock). If an endpoint you
    need is missing, add it to the backend first (or record it as a blocker) — never mock it in production code.
 2. **No governance logic in the browser.** Status transitions, risk levels, scores and permissions come from the
    API. The UI shows them and sends user decisions; it never decides whether something is `verified`.
-3. **Two auth contexts.** Admin uses the JWT from `/admin/v1` (roles `viewer` / `reviewer` / `owner`; hide or
-   disable actions the role cannot do, but the backend is the enforcement). The widget uses a short-lived
-   **user token** minted by the host app's backend (`POST /v1/tokens/user`) — never an API key in the browser.
+3. **Two auth contexts.** The Admin has no login, accounts or roles (decided 2026-11-10): in live mode
+   (`VITE_API_MODE=live`) it connects with the backend's static `STEWARD_ADMIN_TOKEN`, kept in sessionStorage for
+   the tab only; mock mode (the demo) needs nothing. The backend is the only enforcement. The widget uses a
+   short-lived **user token** minted by the host app's backend (`POST /v1/tokens/user`) — never an API key in the
+   browser.
 4. **Every list** supports filter, search and cursor pagination; clicking an object opens the right-hand detail
    drawer with content, metadata, provenance links and change history.
 5. **No native `alert` / `confirm` / `prompt`.** Use the shadcn dialog components. Destructive actions (delete user

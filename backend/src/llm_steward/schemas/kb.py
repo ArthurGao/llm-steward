@@ -91,6 +91,10 @@ class EntryOut(BaseModel):
     source_refs: list[dict[str, Any]]
     created_at: datetime
     updated_at: datetime
+    superseded_by: uuid.UUID | None = None  # the entry that obsoletes this one
+    hit_count: int = 0  # times returned by retrieval (counted in batches, design §6 step 9)
+    helpful_count: int = 0  # feedback on those answers
+    unhelpful_count: int = 0
 
 
 class EntryPage(BaseModel):

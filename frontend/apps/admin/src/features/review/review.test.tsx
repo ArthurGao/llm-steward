@@ -41,11 +41,6 @@ test('a link to a candidate that does not exist shows Not found', async () => {
   expect(await queue()).toBeInTheDocument()
 })
 
-test('a viewer sees approval disabled with the reason', async () => {
-  renderApp(`/acme-support/review?selected=${FIX.refundCandidate}`, 'viewer')
-  const approve = await screen.findByRole('button', { name: /^Approve/ })
-  expect(approve).toHaveAttribute('aria-disabled', 'true')
-})
 
 test('following Obsoletes opens the current entry above the candidate, Escape returns', async () => {
   renderApp(`/acme-support/review?selected=${FIX.refundCandidate}`)

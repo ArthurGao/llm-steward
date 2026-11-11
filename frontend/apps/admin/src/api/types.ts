@@ -1,14 +1,8 @@
-// Hand-written draft of the /admin/v1 contract. Field names and enum values follow
-// backend/src/llm_steward/{schemas,models/enums.py}; P5 replaces this file with the
-// client generated from the backend's OpenAPI spec.
+// The view types the pages render. The live API (./live.ts) adapts the generated client's
+// shapes (src/client, from the backend's OpenAPI spec) to these; the mock store produces them
+// directly. A value the backend does not report is null and shown as "—", never invented.
 
 export type ISODate = string
-
-export type Role = 'viewer' | 'reviewer' | 'owner'
-export interface Session {
-  email: string
-  role: Role
-}
 
 export type MemoryStatus = 'active' | 'superseded' | 'deleted'
 export type MemoryOrigin = 'extraction' | 'direct' | 'import'
@@ -31,7 +25,7 @@ export type ChangeOp = 'create' | 'update' | 'transition' | 'delete' | 'erase'
 export interface Page<T> {
   items: T[]
   next_cursor: string | null
-  total: number
+  total: number | null
 }
 
 export interface Namespace {
@@ -136,7 +130,7 @@ export interface KbEntry {
   created_at: ISODate
   updated_at: ISODate
   superseded_by: string | null
-  sync_status: SyncStatus
+  sync_status: SyncStatus | null
   hits: number
   helpful_rate: number | null
   review_due_at: ISODate | null
@@ -172,8 +166,8 @@ export interface KbDocument {
   mime_type: string
   size_bytes: number
   status: DocStatus
-  chunk_count: number
-  sync_status: SyncStatus
+  chunk_count: number | null
+  sync_status: SyncStatus | null
   created_at: ISODate
   error: string | null
 }
@@ -294,11 +288,11 @@ export interface ProviderStatus {
   version: string
   capabilities: string[]
   health: 'healthy' | 'degraded' | 'down'
-  latency_p95_ms: number
-  error_rate: number
+  latency_p95_ms: number | null
+  error_rate: number | null
   queue: { pending: number; failed: number }
   last_reconciled_at: ISODate | null
-  reconcile_drift: number
+  reconcile_drift: number | null
 }
 
 export interface RetrievalRequest {
@@ -314,15 +308,16 @@ export interface RetrievalHit {
   key: string
   text: string
   score: number
-  trust: number
+  trust: number | null
 }
 
 export interface RetrievalResult {
   log_id: string
   query: string
-  stages: { vector: RetrievalHit[]; keyword: RetrievalHit[]; rrf: RetrievalHit[]; final: RetrievalHit[] }
+  // The backend reports only the final ranking; the intermediate stages are null there.
+  stages: { vector: RetrievalHit[] | null; keyword: RetrievalHit[] | null; rrf: RetrievalHit[] | null; final: RetrievalHit[] }
   context: string
-  degraded: ('memory' | 'kb')[]
+  degraded: ('memory' | 'kb' | 'rerank')[]
   latency_ms: number
   gap: boolean
 }
@@ -331,9 +326,9 @@ export interface RetrievalLog {
   id: string
   query: string
   user_id: string | null
-  top_score: number
+  top_score: number | null
   hit_count: number
-  latency_ms: number
+  latency_ms: number | null
   degraded: boolean
   gap: boolean
   created_at: ISODate
@@ -347,16 +342,16 @@ export interface Stats {
   awaiting_user: number
   writes_7d: { day: string; count: number }[]
   retrievals_7d: { day: string; count: number }[]
-  retrieval_p95_ms: number
+  retrieval_p95_ms: number | null
   failed_jobs: number
-  gaps: { query: string; count: number; top_score: number }[]
+  gaps: { query: string; count: number; top_score: number | null }[]
 }
 
 export interface ApiKey {
   id: string
   name: string
   prefix: string
-  scopes: ('read' | 'write' | 'review' | 'admin')[]
+  scopes: ('read' | 'write' | 'review')[] // Admin access is the static admin token, not a key scope
   created_at: ISODate
   last_used_at: ISODate | null
   revoked_at: ISODate | null
@@ -366,15 +361,8 @@ export interface ApiKeyCreated extends ApiKey {
   secret: string
 }
 
-export interface Member {
-  email: string
-  role: Role
-  added_at: ISODate
-}
-
 export interface NamespaceSettings {
   yaml: string
   templates: { name: string; body: string }[]
-  members: Member[]
-  embedding: { model: string; dimensions: number; space_id: string; rebuild_progress: number | null }
+  embedding: { model: string; dimensions: number | null; space_id: string | null; rebuild_progress: number | null } | null
 }

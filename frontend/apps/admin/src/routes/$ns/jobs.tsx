@@ -2,7 +2,6 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { createFileRoute, useNavigate } from '@tanstack/react-router'
 import { api } from '@/api/endpoints'
 import type { Job } from '@/api/types'
-import { useDenied } from '@/auth/can'
 import { DataTable, type Column } from '@/components/DataTable'
 import { EmptyState, ErrorNote, Loading, Mono, PageTitle } from '@/components/misc'
 import { StatusBadge } from '@/components/StatusBadge'
@@ -18,13 +17,12 @@ export const Route = createFileRoute('/$ns/jobs')({
 })
 
 function JobActions({ ns, job }: { ns: string; job: Job }) {
-  const denied = useDenied('manageJobs')
   const qc = useQueryClient()
   const done = () => qc.invalidateQueries({ queryKey: [ns] })
   const retry = useMutation({ mutationFn: () => api.jobs.retry(ns, job.id), onSuccess: done })
   const cancel = useMutation({ mutationFn: () => api.jobs.cancel(ns, job.id), onSuccess: done })
-  if (job.status === 'failed') return <Button size="sm" disabledReason={denied} disabled={retry.isPending} onClick={() => retry.mutate()}>Retry</Button>
-  if (job.status === 'pending') return <Button size="sm" variant="ghost" disabledReason={denied} disabled={cancel.isPending} onClick={() => cancel.mutate()}>Cancel</Button>
+  if (job.status === 'failed') return <Button size="sm" disabled={retry.isPending} onClick={() => retry.mutate()}>Retry</Button>
+  if (job.status === 'pending') return <Button size="sm" variant="ghost" disabled={cancel.isPending} onClick={() => cancel.mutate()}>Cancel</Button>
   return null
 }
 

@@ -3,8 +3,7 @@ import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { Link, useLocation, useNavigate, useParams } from '@tanstack/react-router'
 import { ChevronDown, Menu as MenuIcon } from 'lucide-react'
 import { api } from '@/api/endpoints'
-import type { Role } from '@/api/types'
-import { clearSession, setSession, useSession } from '@/auth/session'
+import { disconnect, useSession } from '@/auth/session'
 import { DemoMarker } from '@/components/misc'
 import { Select } from '@/components/ui/field'
 
@@ -99,39 +98,26 @@ function UserMenu() {
   const session = useSession()
   const queryClient = useQueryClient()
   const navigate = useNavigate()
-  if (!session) return null
-  const switchRole = (role: string) => {
-    setSession({ ...session, email: `${role}@demo`, role: role as Role })
-    void queryClient.invalidateQueries()
-  }
+  if (session?.mode !== 'live') return null // the demo has no connection to end
   return (
     <Menu.Root>
-      <Menu.Trigger className="flex h-8 items-center gap-1 px-2 text-[13px] hover:bg-wash" aria-label={`Account: ${session.email}, ${session.role}`}>
-        <span className="hidden font-mono md:inline">{session.email}</span>
-        <span className="capitalize text-ink-2 md:hidden">{session.role}</span>
+      <Menu.Trigger className="flex h-8 items-center gap-1 px-2 text-[13px] hover:bg-wash" aria-label={`Connected to ${session.baseUrl}`}>
+        <span className="hidden font-mono md:inline">{new URL(session.baseUrl).host}</span>
         <ChevronDown aria-hidden className="size-3.5" strokeWidth={1.75} />
       </Menu.Trigger>
       <Menu.Portal>
         <Menu.Content align="end" sideOffset={6} className="z-50 min-w-60 border border-ink bg-paper py-1 text-[14px] shadow-[0_8px_24px_rgba(0,0,0,0.12)]">
-          <Menu.Label className="px-3 py-1.5 text-[12.5px] text-ink-2">Demo role — see what each can do</Menu.Label>
-          <Menu.RadioGroup value={session.role} onValueChange={switchRole}>
-            {(['viewer', 'reviewer', 'owner'] as const).map((r) => (
-              <Menu.RadioItem key={r} value={r} className={menuItem}>
-                <span className="inline-block size-2 border-[1.5px] border-ink data-[state=checked]:bg-ink" data-state={session.role === r ? 'checked' : 'unchecked'} />
-                <span className="capitalize">{r}</span>
-              </Menu.RadioItem>
-            ))}
-          </Menu.RadioGroup>
+          <Menu.Label className="px-3 py-1.5 font-mono text-[12.5px] text-ink-2">{session.baseUrl}</Menu.Label>
           <Menu.Separator className="my-1 h-px bg-rule" />
           <Menu.Item
             className={menuItem}
             onSelect={() => {
-              clearSession()
+              disconnect()
               queryClient.clear()
-              void navigate({ to: '/login' })
+              void navigate({ to: '/connect' })
             }}
           >
-            Sign out
+            Disconnect
           </Menu.Item>
         </Menu.Content>
       </Menu.Portal>

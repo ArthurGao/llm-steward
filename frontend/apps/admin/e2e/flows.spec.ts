@@ -1,10 +1,10 @@
 import { expect, test } from '@playwright/test'
-import { signIn } from './helpers'
+import { openDemo } from './helpers'
 
 // Design §11 P6 acceptance, on mock data.
 
 test('review a high-risk candidate and see it verified and queued for sync', async ({ page }) => {
-  await signIn(page)
+  await openDemo(page)
   await page.getByRole('navigation', { name: 'Pages' }).getByRole('link', { name: /^Review/ }).click()
   await page.getByRole('button', { name: /Refund approval threshold/ }).click()
   await expect(page.getByRole('heading', { name: /Refunds over \$500 require approval/ })).toBeVisible()
@@ -22,7 +22,7 @@ test('review a high-risk candidate and see it verified and queued for sync', asy
 })
 
 test('find a gap in the Playground and add it to the KB through review', async ({ page }) => {
-  await signIn(page)
+  await openDemo(page)
   await page.getByRole('navigation', { name: 'Pages' }).getByRole('link', { name: 'Playground' }).click()
   await page.getByLabel('Question').fill('data retention period')
   await page.getByRole('button', { name: 'Retrieve' }).click()

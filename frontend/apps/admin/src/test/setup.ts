@@ -1,6 +1,5 @@
 import '@testing-library/jest-dom/vitest'
 import { cleanup } from '@testing-library/react'
-import { clearSession } from '@/auth/session'
 import { setClock } from '@/lib/clock'
 import { NOW } from '@/mocks/store'
 import { server } from './render'
@@ -11,7 +10,6 @@ beforeAll(() => {
 })
 afterEach(() => {
   cleanup()
-  clearSession()
 })
 afterAll(() => server.close())
 
