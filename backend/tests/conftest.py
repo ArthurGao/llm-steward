@@ -184,6 +184,9 @@ def test_settings(database_url: str, **overrides: object) -> "Settings":
         "run_worker": False,
         "token_secret": TEST_TOKEN_SECRET,
         "rate_limit_per_minute": None,  # off unless a test turns it on
+        # the production 800 ms budget made a shared CI runner time a fake search out now and
+        # then (a 503 with no retrieval_id); tests about timeouts set their own budget
+        "retrieve_timeout_ms": 10_000,
         **overrides,
     }
     settings = Settings(_env_file=None, **values)  # type: ignore[call-arg, arg-type]
