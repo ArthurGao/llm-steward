@@ -66,7 +66,7 @@ key, model).
    | `WEKNORA_JWT_SECRET` | `openssl rand -hex 32` |
    | `WEKNORA_ADMIN_PASSWORD` | 8–32 letters and digits (WeKnora's owner account) |
    | `STEWARD_LLM_BASE_URL`, `STEWARD_LLM_API_KEY`, `STEWARD_LLM_MODEL` | your LLM endpoint, e.g. `https://api.openai.com/v1`, a key, `gpt-4.1-mini` |
-   | `STEWARD_MEMORY_PROVIDER`, `STEWARD_MEMORY_LLM` | the memory engine: `mem0` / `false` (default), or `native` / `true` to run without mem0 (llm-steward extracts the facts) |
+   | `STEWARD_MEMORY_PROVIDER`, `STEWARD_MEMORY_LLM` | the memory engine: `mem0` / `false` (default), or `native` / `true` to run without mem0 (llm-steward extracts the facts), or `litemem` with `STEWARD_LITEMEM_URL` / `STEWARD_LITEMEM_API_KEY` ([lite-mem](https://github.com/ArthurGao/lite-mem), which also resolves conflicts itself) |
 
    `--profile db` below runs a bundled PostgreSQL + pgvector for llm-steward and mem0. To use your
    own instead, set `STEWARD_STANDARD_DATABASE_URL` (as seen from inside a container) and leave

@@ -150,6 +150,7 @@ class SyncService:
                     scope,
                     infer=False,
                     metadata={"steward_id": str(memory_id)},
+                    idempotency_key=str(memory_id),  # an engine that honours it writes once
                 )
                 external_id = event.external_id
         await self._confirm(

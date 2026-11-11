@@ -64,6 +64,8 @@ def build_providers(
                 memory = NativeMemoryProvider(store, embedder)
             case "mem0":
                 memory = build_mem0(settings)
+            case "litemem":
+                memory = build_litemem(settings, http)
 
     kb: KnowledgeProvider
     match settings.kb_provider:
@@ -92,6 +94,37 @@ def build_providers(
             kb = build_literag(settings, http)
 
     return Providers(memory=memory, kb=kb)
+
+
+# In-process lite-mem calls at once; its store pool has as many connections (lite-mem factory).
+LITEMEM_CONCURRENCY = 4
+
+
+def build_litemem(settings: Settings, http: httpx2.AsyncClient) -> MemoryProvider:
+    """lite-mem over its HTTP API (default), or in-process: its components (store, embedding
+    model, LLM clients) are built here, once, from lite-mem's own configuration (and fail here,
+    at startup, when that is wrong)."""
+    from llm_steward.providers.litemem import (
+        HttpTransport,
+        InProcessTransport,
+        LiteMemProvider,
+        Transport,
+    )
+
+    transport: Transport
+    if settings.litemem_mode == "inprocess":
+        from lite_mem.config import Settings as LiteMemSettings
+        from lite_mem.factory import Engines, open_components
+
+        own = LiteMemSettings(_env_file=settings.litemem_config)
+        components = open_components(own, max_size=LITEMEM_CONCURRENCY)
+        engines = Engines(components, max_namespaces=own.server.max_namespaces)
+        transport = InProcessTransport(components, engines, LITEMEM_CONCURRENCY)
+    else:
+        transport = HttpTransport(
+            http, settings.litemem_url, settings.litemem_api_key, settings.litemem_timeout_s
+        )
+    return LiteMemProvider(transport, settings.litemem_namespace_prefix)
 
 
 # In-process lite-rag calls at once; its store pool has as many connections (lite-rag design §3).

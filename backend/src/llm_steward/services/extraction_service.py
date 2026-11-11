@@ -117,6 +117,12 @@ class ExtractionService:
         events = await self._provider.add(messages, scope, infer=True, idempotency_key=str(last.id))
         added = [e for e in events if e.op == "ADD" and e.content]
         retired = [e for e in events if e.op == "DELETE"]
+        if RESOLVES_CONFLICTS in self._provider.capabilities:
+            # A retry can replay a write that later batches have since resolved against (the job
+            # timed out after the engine wrote it): mirror only what the engine still holds, so
+            # the mirror ends as the engine's current state whatever order the jobs finish in.
+            holds = [await self._provider.get(e.external_id) is not None for e in added]
+            added = [e for e, still in zip(added, holds, strict=True) if still]
         if not added and not retired:
             return []
         # Provenance of extraction (rule 10): the role and model that produced the facts.
@@ -141,7 +147,7 @@ class ExtractionService:
         episode_id: uuid.UUID,
         added: list[MemoryEvent],
         retired: list[MemoryEvent],
-        mirrors: dict[str, uuid.UUID],
+        mirrors: dict[str, Memory],
     ) -> list[Operation]:
         """One batch of governance ops for an engine's events: each new fact is recorded; a fact
         that replaces one (an engine that resolves conflicts) supersedes its mirror with `by=` the
@@ -152,41 +158,46 @@ class ExtractionService:
         ns = scope.namespace_id
         ops: list[Operation] = []
         done: set[uuid.UUID] = set()
+
+        def invalidate(external_id: str, by: uuid.UUID | None, why: str) -> None:
+            mirror = mirrors.get(external_id)
+            if mirror is None:
+                log.warning("engine %s %s, which has no active mirror", why, external_id)
+            elif mirror.id not in done:
+                done.add(mirror.id)
+                ops.append(SupersedeMemory(ns, mirror.id, by, f"{why}: by the engine"))
+
         for e in added:
             new = uuid7()
             ops.append(
                 RecordProviderMemory(
-                    namespace_id=ns, external_id=e.external_id, content=e.content or "",
-                    user_id=scope.user_id, agent_id=scope.agent_id, session_id=scope.session_id,
-                    source_episode_id=episode_id, id=new,
+                    namespace_id=ns,
+                    external_id=e.external_id,
+                    content=e.content or "",
+                    user_id=scope.user_id,
+                    agent_id=scope.agent_id,
+                    session_id=scope.session_id,
+                    source_episode_id=episode_id,
+                    id=new,
                 )
-            )  # fmt: skip
-            if e.replaces in mirrors and mirrors[e.replaces] not in done:
-                done.add(mirrors[e.replaces])
-                ops.append(SupersedeMemory(ns, mirrors[e.replaces], new, "UPDATE: by the engine"))
-            elif e.replaces is not None and e.replaces not in mirrors:
-                log.warning("engine replaced %s, which has no active mirror", e.replaces)
+            )
+            if e.replaces is not None:
+                invalidate(e.replaces, new, "UPDATE")
         for e in retired:
-            if e.external_id in mirrors and mirrors[e.external_id] not in done:
-                done.add(mirrors[e.external_id])
-                ops.append(
-                    SupersedeMemory(ns, mirrors[e.external_id], None, "DELETE: by the engine")
-                )
-            elif e.external_id not in mirrors:
-                log.warning("engine retired %s, which has no active mirror", e.external_id)
+            invalidate(e.external_id, None, "DELETE")
         return ops
 
-    async def _mirrors(self, scope: Scope, external_ids: set[str]) -> dict[str, uuid.UUID]:
-        """The active memories of exactly this scope (as `_related`) mirroring these engine ids."""
-        namespace_id = scope.namespace_id
+    async def _mirrors(self, scope: Scope, external_ids: set[str]) -> dict[str, Memory]:
+        """The active memories of exactly this scope that mirror these engine ids: what the
+        engine's decisions may invalidate, and the candidates compensation compares with."""
         if not external_ids:
             return {}
         async with self._sessions() as s:
             rows = await s.execute(
-                select(ExternalRef.external_id, Memory.id)
+                select(ExternalRef.external_id, Memory)
                 .join(Memory, Memory.id == ExternalRef.object_id)
                 .where(
-                    ExternalRef.namespace_id == namespace_id,
+                    ExternalRef.namespace_id == scope.namespace_id,
                     ExternalRef.object_type == ObjectType.MEMORY,
                     ExternalRef.provider == self._provider.name,
                     ExternalRef.external_id.in_(external_ids),
@@ -194,7 +205,7 @@ class ExtractionService:
                     *exact(Memory, scope, session=False),
                 )
             )
-            return {str(external_id): memory_id for external_id, memory_id in rows.all()}
+            return {str(external_id): memory for external_id, memory in rows.all()}
 
     async def _extract_here(
         self, scope: Scope, messages: list[dict[str, str]], last: uuid.UUID
@@ -282,20 +293,9 @@ class ExtractionService:
         hits = await self._provider.search(memory.content, scope, top_k=CANDIDATES + len(exclude))
         if not hits:
             return []
-        async with self._sessions() as s:
-            rows = await s.scalars(
-                select(Memory)
-                .join(ExternalRef, ExternalRef.object_id == Memory.id)
-                .where(
-                    ExternalRef.object_type == ObjectType.MEMORY,
-                    ExternalRef.provider == self._provider.name,
-                    ExternalRef.external_id.in_([h.external_id for h in hits]),
-                    *exact(Memory, scope, session=False),
-                    Memory.status == MemoryStatus.ACTIVE,
-                    Memory.id.not_in(exclude),
-                )
-            )
-            return list(rows)[:CANDIDATES]
+        mirrored = await self._mirrors(scope, {h.external_id for h in hits})
+        found = (mirrored.get(h.external_id) for h in hits)  # the engine's order: best first
+        return [m for m in found if m is not None and m.id not in exclude][:CANDIDATES]
 
     async def _episodes(
         self, namespace_id: uuid.UUID, episode_ids: Sequence[uuid.UUID]

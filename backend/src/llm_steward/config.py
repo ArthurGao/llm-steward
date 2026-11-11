@@ -5,7 +5,7 @@ from typing import Literal
 from pydantic import Field, SecretStr, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
-MemoryProviderName = Literal["mem0", "native"]
+MemoryProviderName = Literal["mem0", "native", "litemem"]
 KnowledgeProviderName = Literal["weknora", "ragflow", "native", "literag"]
 
 DEFAULT_DB_SCHEMA = "steward"
@@ -41,6 +41,18 @@ class Settings(BaseSettings):
     literag_api_key: str | None = None  # a lite-rag key whose namespaces cover `<prefix>/*`
     literag_namespace_prefix: str = Field(default="steward", pattern=r"^[a-z0-9][a-z0-9_.-]{0,62}$")
     literag_config: str | None = None
+    # lite-mem (the owner's own memory engine): its HTTP service by default, or in-process (extra
+    # `litemem`, configured by its own LITEMEM_* variables or `litemem_config`, an env file). Never
+    # run lite-mem's `maintain` on these namespaces: llm-steward owns validity and review.
+    litemem_mode: Literal["http", "inprocess"] = "http"
+    litemem_url: str = "http://127.0.0.1:8710"
+    litemem_api_key: str | None = None  # a lite-mem key whose namespaces cover `<prefix>/*`
+    litemem_namespace_prefix: str = Field(default="steward", pattern=r"^[a-z0-9][a-z0-9_.-]{0,62}$")
+    litemem_config: str | None = None
+    # One lite-mem call: an inferred add runs its extraction and resolution models, seconds to
+    # tens of seconds on a local model. The worker's per-job limit (30 s) still applies, and
+    # retrieval keeps its own `retrieve_timeout_ms`.
+    litemem_timeout_s: float = Field(default=30.0, gt=0)
     provider_timeout_ms: int = Field(default=800, gt=0)
     # Per-provider budget for one /v1/retrieve search; a slower provider is reported as degraded.
     retrieve_timeout_ms: int = Field(default=800, gt=0)

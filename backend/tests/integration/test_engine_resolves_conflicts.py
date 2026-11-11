@@ -36,9 +36,9 @@ class ResolvingEngine(FakeMemoryProvider):
         metadata: dict[str, Any] | None = None,
         idempotency_key: str | None = None,
     ) -> list[MemoryEvent]:
+        self.keys.append(idempotency_key)
         if not infer:
             return await super().add(messages, scope, infer=False, metadata=metadata)
-        self.keys.append(idempotency_key)
         said = " ".join(m.content for m in messages if m.role == "user")
         mine = [eid for eid, r in self.records.items() if r.scope.user_id == scope.user_id]
         if "不再" in said and mine:
@@ -129,11 +129,13 @@ def test_the_engine_retiring_what_was_already_invalidated_changes_nothing(
 
 
 class ScriptedEngine(ResolvingEngine):
-    """Answers the next inferred add with events written by the test."""
+    """Answers the next inferred add with events written by the test. Like a real engine it holds
+    what it reports adding, except the ids in `lost` (since replaced by later decisions)."""
 
     def __init__(self) -> None:
         super().__init__()
         self.next: list[MemoryEvent] | None = None
+        self.lost: set[str] = set()
 
     async def add(
         self,
@@ -146,6 +148,9 @@ class ScriptedEngine(ResolvingEngine):
     ) -> list[MemoryEvent]:
         if infer and self.next is not None:
             events, self.next = self.next, None
+            for e in events:
+                if e.op == "ADD" and e.external_id not in self.lost:
+                    self.records.setdefault(e.external_id, _Record(e.content or "", scope))
             return events
         return await super().add(messages, scope, infer=infer, metadata=metadata,
                                  idempotency_key=idempotency_key)  # fmt: skip
@@ -199,3 +204,40 @@ def test_one_memory_named_twice_in_a_batch_is_invalidated_once(migrated_url: str
         [shanghai] = _episode(c, h, "我搬到上海了")["memories"]
         history = c.http.get(f"/v1/memories/{beijing['id']}/history", headers=h).json()
         assert [m["id"] for m in history["chain"]] == [beijing["id"], shanghai["id"]]  # the ADD won
+
+
+def test_a_late_replay_does_not_bring_back_what_the_engine_since_replaced(
+    migrated_url: str,
+) -> None:
+    """Found by the S9 manual run on a real lite-mem: episode 1's job timed out after lite-mem had
+    written it; episode 2 was extracted (lite-mem superseded episode 1's city); then episode 1's
+    retry replayed its original ADDs, and llm-steward mirrored a city lite-mem no longer held. The
+    mirror now takes only the facts the engine still holds."""
+    engine = ScriptedEngine()
+    with running_app(migrated_url, memory_provider=engine, llm=FakeLLM()) as c:
+        h = c.new_key("acme")
+        _episode(c, h, "我喜欢绿茶")  # gives the engine the namespace (its records' scope)
+        namespace = next(iter(engine.records.values())).scope.namespace_id
+        engine.records["kept"] = _Record("works as a nurse", Scope(namespace, user_id="u1"))
+        engine.lost = {"gone"}
+        engine.next = [  # the replay: one fact since superseded in the engine, one still held
+            MemoryEvent("ADD", "gone", "lives in Wellington", DECIDED_BY),
+            MemoryEvent("ADD", "kept", "works as a nurse", DECIDED_BY),
+        ]
+        [kept] = _episode(c, h, "replayed")["memories"]
+        assert kept["content"] == "works as a nurse"
+        active = c.http.get("/v1/memories?user_id=u1", headers=h).json()["items"]
+        assert "lives in Wellington" not in [m["content"] for m in active]
+
+
+def test_the_syncer_keys_each_push_by_the_memory_it_pushes(
+    resolving: tuple[AppClient, ResolvingEngine, FakeLLM],
+) -> None:
+    """S9 /simplify: the Syncer names the key itself (the governed memory's id), so an engine that
+    honours keys writes a re-pushed memory once — no adapter has to guess it from metadata."""
+    c, engine, _ = resolving
+    h = c.new_key("acme")
+    created = c.http.post("/v1/memories", json={"content": "likes tea", "user_id": "u1"}, headers=h)
+    assert created.status_code in (200, 201), created.text
+    c.drain()
+    assert engine.keys == [created.json()["id"]]

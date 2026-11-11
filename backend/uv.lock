@@ -734,6 +734,30 @@ wheels = [
 ]
 
 [[package]]
+name = "lite-mem"
+version = "0.1.0"
+source = { git = "https://github.com/ArthurGao/lite-mem?rev=e9d4f0d1659beccb06f0012712006cd19c942266#e9d4f0d1659beccb06f0012712006cd19c942266" }
+dependencies = [
+    { name = "httpx2" },
+    { name = "jieba" },
+    { name = "jinja2" },
+    { name = "openai" },
+    { name = "psycopg", extra = ["binary", "pool"] },
+    { name = "pydantic" },
+    { name = "pydantic-settings" },
+    { name = "typer" },
+]
+
+[package.optional-dependencies]
+server = [
+    { name = "fastapi" },
+    { name = "uvicorn" },
+]
+sqlite = [
+    { name = "sqlite-vec" },
+]
+
+[[package]]
 name = "lite-rag"
 version = "0.1.0"
 source = { git = "https://github.com/ArthurGao/lite-rag?rev=6d52f90c161c53ee49f24e61517b906ba52ce0d1#6d52f90c161c53ee49f24e61517b906ba52ce0d1" }
@@ -779,6 +803,9 @@ dependencies = [
 ]
 
 [package.optional-dependencies]
+litemem = [
+    { name = "lite-mem", extra = ["server", "sqlite"] },
+]
 literag = [
     { name = "lite-rag", extra = ["server"] },
 ]
@@ -799,7 +826,7 @@ rerank = [
 [package.dev-dependencies]
 dev = [
     { name = "import-linter" },
-    { name = "llm-steward", extra = ["literag"] },
+    { name = "llm-steward", extra = ["litemem", "literag"] },
     { name = "llm-steward-client" },
     { name = "mypy" },
     { name = "pre-commit" },
@@ -821,6 +848,7 @@ requires-dist = [
     { name = "httpx2", specifier = ">=2.16" },
     { name = "jieba", marker = "extra == 'native'", specifier = ">=0.42.1" },
     { name = "jinja2", specifier = ">=3.1" },
+    { name = "lite-mem", extras = ["server", "sqlite"], marker = "extra == 'litemem'", git = "https://github.com/ArthurGao/lite-mem?rev=e9d4f0d1659beccb06f0012712006cd19c942266" },
     { name = "lite-rag", extras = ["server"], marker = "extra == 'literag'", git = "https://github.com/ArthurGao/lite-rag?rev=6d52f90c161c53ee49f24e61517b906ba52ce0d1" },
     { name = "mcp", specifier = "==2.3.0" },
     { name = "mem0ai", marker = "extra == 'mem0'", specifier = "==2.2.1" },
@@ -835,11 +863,12 @@ requires-dist = [
     { name = "typer", specifier = ">=0.15" },
     { name = "uvicorn", extras = ["standard"], specifier = ">=0.32" },
 ]
-provides-extras = ["native", "mem0", "rerank", "literag"]
+provides-extras = ["native", "mem0", "rerank", "literag", "litemem"]
 
 [package.metadata.requires-dev]
 dev = [
     { name = "import-linter", specifier = ">=2.1" },
+    { name = "llm-steward", extras = ["litemem"] },
     { name = "llm-steward", extras = ["literag"] },
     { name = "llm-steward-client", editable = "../sdk/python" },
     { name = "mypy", specifier = ">=1.13" },
@@ -1761,7 +1790,7 @@ wheels = [
 
 [[package]]
 name = "typer"
-version = "0.28.0"
+version = "0.27.3"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "annotated-doc" },
@@ -1769,9 +1798,9 @@ dependencies = [
     { name = "rich" },
     { name = "shellingham" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/ad/8f/21021859316f44289101638dc74d82e13d722d8533e4b8708a3ab7c8461a/typer-0.28.0.tar.gz", hash = "sha256:69ab84ef79fd601cff071bbd2566d855ecadfd93adbc4b3360b9924359bdd857", size = 205415, upload-time = "2026-11-06T08:37:19.779Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/03/51/d33db42cc72ffd8c30777547b42d01f0cbf9d95a770457698d0174b3ed71/typer-0.27.3.tar.gz", hash = "sha256:d0396f770a560ab1b0a8504e13b5f254b728cedb05c61cf0359e944e50ce8901", size = 205303, upload-time = "2026-10-06T17:24:16.61Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/19/98/8ef60c7cd773dbab9d276a4c7bff505913a25b61acd8a9ef01ceeb70f554/typer-0.28.0-py3-none-any.whl", hash = "sha256:afd18929180b706c5e9a239f53c3c8136903553c0c2d460598bbaa924191d4ab", size = 123253, upload-time = "2026-11-06T08:37:18.611Z" },
+    { url = "https://files.pythonhosted.org/packages/07/ea/2e31b67051e91a133189e9c000c222502ddc6969856416de0d095de4c0b0/typer-0.27.3-py3-none-any.whl", hash = "sha256:e50022f28b82a86313e54501317a1db64bf8f8d036ff8cfe5ca7e47675454aff", size = 123312, upload-time = "2026-10-06T17:24:15.054Z" },
 ]
 
 [[package]]

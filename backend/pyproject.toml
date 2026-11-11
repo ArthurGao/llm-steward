@@ -45,6 +45,12 @@ rerank = [
 literag = [
     "lite-rag[server] @ git+https://github.com/ArthurGao/lite-rag@6d52f90c161c53ee49f24e61517b906ba52ce0d1",
 ]
+# The owner's own memory engine in-process (`STEWARD_MEMORY_PROVIDER=litemem`,
+# `STEWARD_LITEMEM_MODE=inprocess`); the default HTTP mode needs nothing. Pinned to a commit:
+# upgrading requires the contract tests (`pytest -m contract`) to pass first.
+litemem = [
+    "lite-mem[server,sqlite] @ git+https://github.com/ArthurGao/lite-mem@e9d4f0d1659beccb06f0012712006cd19c942266",
+]
 
 [project.scripts]
 steward = "llm_steward.cli:app"
@@ -58,6 +64,7 @@ dev = [
     "import-linter>=2.1",
     "pre-commit>=4.0",
     "llm-steward[literag]",  # the default suite imports lite-rag; one pin, in the extra
+    "llm-steward[litemem]",  # and lite-mem (its contract tests and in-process transport)
     "types-pyyaml>=6.0",
     "llm-steward-client",
 ]
