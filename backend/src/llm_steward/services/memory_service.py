@@ -9,7 +9,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from llm_steward.errors import Unprocessable
 from llm_steward.models import ChangeLog, ExternalRef, Memory
 from llm_steward.models.enums import RESERVED_KEY_PREFIX, MemoryStatus, ObjectType, SyncStatus
-from llm_steward.providers.base import EXTRACT, MemoryProvider, Scope
+from llm_steward.providers.base import MemoryProvider, Scope
 from llm_steward.services.erasure import Erased
 from llm_steward.services.governance_service import (
     Actor,
@@ -61,16 +61,19 @@ class MemoryService:
         sessions: async_sessionmaker[AsyncSession],
         governance: GovernanceService,
         provider: MemoryProvider,
+        *,
+        extracts: bool,
     ) -> None:
         self._sessions = sessions
         self._governance = governance
         self._provider = provider
+        self._extracts = extracts  # conversations can become memories (engine or llm-steward)
 
     async def create(self, op: CreateMemory, *, infer: bool, actor: Actor) -> MemoryView:
-        if infer and EXTRACT not in self._provider.capabilities:
+        if infer and not self._extracts:
             raise Unprocessable(
-                f"the {self._provider.name} memory provider cannot extract memories; "
-                "send infer=false (extraction arrives with mem0 in P2)"
+                f"the {self._provider.name} memory provider cannot extract memories: send "
+                "infer=false, or set STEWARD_MEMORY_LLM=true"
             )
         memory: Memory = await self._governance.apply(op, actor)
         return MemoryView(memory, SyncStatus.PENDING)  # its ref was opened as pending

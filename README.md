@@ -13,10 +13,10 @@ llm-steward does not re-implement a memory or RAG engine. It drives mature ones 
 
 | Engine | Role | Profile |
 | --- | --- | --- |
-| [mem0](https://github.com/mem0ai/mem0) 2.2.1 | memory (extraction, conflict resolution) | `standard`, `docparse` |
+| [mem0](https://github.com/mem0ai/mem0) 2.2.1 | memory, extracting facts itself (default; optional) | `standard`, `docparse` |
 | [WeKnora](https://github.com/Tencent/WeKnora) v0.9.0 | knowledge base, documents | `standard` |
 | [RAGFlow](https://github.com/infiniflow/ragflow) v1.0.0 | knowledge base, complex documents | `docparse` |
-| built-in `native` (SQLite + sqlite-vec + FTS5, local embeddings) | both, single machine and tests | `native` |
+| built-in `native` (SQLite or PostgreSQL, sqlite-vec / pgvector, local embeddings) | both; for memory, llm-steward extracts the facts (`STEWARD_MEMORY_LLM=true`) | `native`, or the memory engine of any profile |
 
 Apps connect over REST, the [Python SDK](sdk/python/README.md) or MCP; end users answer
 confirmation cards in the [widget](frontend/packages/widget/README.md); reviewers work in the Admin.
@@ -51,7 +51,7 @@ are pulled).
 
 **You need:** Docker with Compose v2.20 or later; [Ollama](https://ollama.com) on the host with the
 embedding model WeKnora uses (`ollama pull bge-m3:567m`); Python 3 on the host (standard library
-only, for the bootstrap script); an OpenAI-compatible LLM endpoint for mem0's extraction (base URL,
+only, for the bootstrap script); an OpenAI-compatible LLM endpoint for memory extraction (base URL,
 key, model).
 
 1. **Configure.** Copy the template and fill in the secrets:
@@ -66,6 +66,7 @@ key, model).
    | `WEKNORA_JWT_SECRET` | `openssl rand -hex 32` |
    | `WEKNORA_ADMIN_PASSWORD` | 8–32 letters and digits (WeKnora's owner account) |
    | `STEWARD_LLM_BASE_URL`, `STEWARD_LLM_API_KEY`, `STEWARD_LLM_MODEL` | your LLM endpoint, e.g. `https://api.openai.com/v1`, a key, `gpt-4.1-mini` |
+   | `STEWARD_MEMORY_PROVIDER`, `STEWARD_MEMORY_LLM` | the memory engine: `mem0` / `false` (default), or `native` / `true` to run without mem0 (llm-steward extracts the facts) |
 
    `--profile db` below runs a bundled PostgreSQL + pgvector for llm-steward and mem0. To use your
    own instead, set `STEWARD_STANDARD_DATABASE_URL` (as seen from inside a container) and leave

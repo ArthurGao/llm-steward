@@ -55,6 +55,10 @@ class Settings(BaseSettings):
     # KB pipeline LLM steps (design §5): risk labels, worthiness scoring, drafting (roles kb.risk,
     # kb.worthiness, kb.draft). Off: rules-only risk, no suggestions; promote/suggestions → 422.
     kb_llm: bool = False
+    # Memory extraction by llm-steward (role memory.extract, then memory.resolve) for an engine that
+    # cannot extract (native): conversations then become memories without mem0. Off: such an
+    # engine takes direct writes only (POST /v1/memories). An engine that extracts ignores it.
+    memory_llm: bool = False
     # KB document uploads (P3d): the bytes wait in the governance DB until the KB provider has them.
     kb_max_upload_mb: int = Field(default=20, gt=0, le=50)  # WeKnora v0.9.0 accepts up to 50
 

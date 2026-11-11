@@ -4,11 +4,11 @@ and scores the model returns out of range or for ids it was not given are not tr
 
 import json
 from dataclasses import dataclass
-from importlib.resources import files
 from typing import Literal
 
 from pydantic import BaseModel, ConfigDict
 
+from llm_steward import prompts
 from llm_steward.llm.client import LLM
 from llm_steward.llm.roles import Provenance, Role
 from llm_steward.models.enums import RiskLevel
@@ -17,13 +17,9 @@ MIN_GENERALITY = 0.6  # a high mean is not enough for knowledge that is about on
 CRITERIA = ("reusability", "novelty", "timeliness", "generality", "trust")
 
 
-def _prompt(name: str) -> str:
-    return (files("llm_steward.prompts") / name).read_text(encoding="utf-8")
-
-
-RISK_PROMPT = _prompt("kb_risk.j2")
-WORTHINESS_PROMPT = _prompt("kb_worthiness.j2")
-DRAFT_PROMPT = _prompt("kb_draft.j2")
+RISK_PROMPT = prompts.load("kb_risk.j2")
+WORTHINESS_PROMPT = prompts.load("kb_worthiness.j2")
+DRAFT_PROMPT = prompts.load("kb_draft.j2")
 
 
 class RiskLabel(BaseModel):

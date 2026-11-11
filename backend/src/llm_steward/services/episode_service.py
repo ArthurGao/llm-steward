@@ -18,7 +18,7 @@ from llm_steward.errors import ProviderUnavailable, Unprocessable
 from llm_steward.models import Episode
 from llm_steward.models.base import utcnow
 from llm_steward.models.enums import EpisodeKind, JobType
-from llm_steward.providers.base import EXTRACT, MemoryProvider, Scope
+from llm_steward.providers.base import MemoryProvider, Scope
 from llm_steward.ranking import estimate_tokens
 from llm_steward.services.governance_service import Actor, CreateEpisode, GovernanceService
 from llm_steward.services.job_queue import enqueue
@@ -47,6 +47,7 @@ class EpisodeService:
         *,
         buffer_tokens: int,
         buffer_idle: timedelta,
+        extracts: bool,
     ) -> None:
         self._sessions = sessions
         self._governance = governance
@@ -54,16 +55,19 @@ class EpisodeService:
         self._run_job = run_job  # the worker's: a synchronous request still runs as a leased job
         self._buffer_tokens = buffer_tokens
         self._buffer_idle = buffer_idle
+        # conversations become memories: the engine extracts, or llm-steward does (memory_llm)
+        self._extracts = extracts
 
     async def ingest(
         self, scope: Scope, messages: list[dict[str, str]], actor: Actor, *, sync: bool
     ) -> Ingested:
         """Store an episode. Async: flush only when the buffer is large enough. Sync: flush now and
         run the extraction in this call; a failure leaves the job to retry with backoff."""
-        if EXTRACT not in self._provider.capabilities:
+        if not self._extracts:
             raise Unprocessable(
                 f"the {self._provider.name} memory provider cannot extract memories from "
-                "conversations; write memories directly with POST /v1/memories"
+                "conversations: set STEWARD_MEMORY_LLM=true to let llm-steward extract them, or "
+                "write memories directly with POST /v1/memories"
             )
         episode: Episode = await self._governance.apply(
             CreateEpisode(

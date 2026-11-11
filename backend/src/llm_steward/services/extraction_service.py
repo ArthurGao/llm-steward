@@ -11,6 +11,7 @@ key); the daily reconcile reports those orphans, and the retrieval safety net ne
 import logging
 import uuid
 from collections.abc import Awaitable, Callable, Sequence
+from typing import Literal
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
@@ -20,6 +21,7 @@ from llm_steward.llm.client import LLM
 from llm_steward.models import Episode, ExternalRef, Memory
 from llm_steward.models.enums import ActorType, MemoryOrigin, MemoryStatus, ObjectType
 from llm_steward.pipeline.conflict import Fact, resolve_conflict
+from llm_steward.pipeline.extract import extract_facts
 from llm_steward.providers.base import (
     EXTRACT,
     RESOLVES_CONFLICTS,
@@ -29,8 +31,10 @@ from llm_steward.providers.base import (
 )
 from llm_steward.services.governance_service import (
     Actor,
+    CreateMemory,
     DeleteMemory,
     GovernanceService,
+    Operation,
     RecordProviderMemory,
     SupersedeMemory,
 )
@@ -42,11 +46,22 @@ log = logging.getLogger(__name__)
 CANDIDATES = 5
 
 
-def compensates(provider: MemoryProvider) -> bool:
-    """Conflict compensation runs for an engine that extracts but does not resolve conflicts on
-    add (capability-driven, never by name; backend/AGENTS.md rule 4)."""
-    caps = provider.capabilities
-    return EXTRACT in caps and RESOLVES_CONFLICTS not in caps
+# Who turns conversations into memories: the engine on add, llm-steward for an engine that cannot
+# (STEWARD_MEMORY_LLM), or nobody (direct writes only). Decided once, from capabilities, never by
+# name (backend/AGENTS.md rule 4).
+ExtractionMode = Literal["engine", "steward", "none"]
+
+
+def extraction_mode(provider: MemoryProvider, memory_llm: bool) -> ExtractionMode:
+    if EXTRACT in provider.capabilities:
+        return "engine"
+    return "steward" if memory_llm else "none"
+
+
+def compensates(provider: MemoryProvider, mode: ExtractionMode) -> bool:
+    """Conflict compensation runs whenever facts are extracted and the engine does not resolve
+    conflicts on add itself."""
+    return mode != "none" and RESOLVES_CONFLICTS not in provider.capabilities
 
 
 class ExtractionService:
@@ -57,14 +72,20 @@ class ExtractionService:
         provider: MemoryProvider,
         llm: LLM | None,
         *,
+        mode: ExtractionMode,
         on_extracted: Callable[[uuid.UUID, list[uuid.UUID]], Awaitable[None]] | None = None,
     ) -> None:
-        """`on_extracted(namespace, memory ids)`: what follows a batch (the KB suggest job)."""
+        """`mode`: see `extraction_mode`. `on_extracted(namespace, memory ids)`: what follows a
+        batch (the KB suggest job)."""
         self._on_extracted = on_extracted
         self._sessions = sessions
         self._governance = governance
         self._provider = provider
-        if compensates(provider) and llm is None:
+        self.mode = mode
+        self._compensates = compensates(provider, mode)
+        if llm is None and mode == "steward":
+            raise ValueError("llm-steward extracts memories (STEWARD_MEMORY_LLM): it needs an LLM")
+        if llm is None and self._compensates:
             raise ValueError(f"the {provider.name} memory provider needs conflict compensation")
         self._llm = llm
 
@@ -75,7 +96,7 @@ class ExtractionService:
         self, namespace_id: uuid.UUID, episode_ids: Sequence[uuid.UUID]
     ) -> list[uuid.UUID]:
         """Extract from the episodes; returns the ids of the memories that stay active."""
-        if EXTRACT not in self._provider.capabilities:
+        if self.mode == "none":
             raise Unprocessable(f"the {self._provider.name} memory provider cannot extract")
         episodes = await self._episodes(namespace_id, episode_ids)
         if not episodes:
@@ -85,9 +106,10 @@ class ExtractionService:
         mirrored = await self._mirrored(namespace_id, last.id)
         if mirrored is not None:  # a retry: this batch already went to the engine
             return await self._finish(scope, mirrored)
-        messages = [
-            Message(m["role"], m["content"]) for e in episodes for m in e.content["messages"]
-        ]
+        said: list[dict[str, str]] = [m for e in episodes for m in e.content["messages"]]
+        if self.mode == "steward":
+            return await self._finish(scope, await self._extract_here(scope, said, last.id))
+        messages = [Message(m["role"], m["content"]) for m in said]
         added = [
             e
             for e in await self._provider.add(messages, scope, infer=True)
@@ -119,11 +141,33 @@ class ExtractionService:
         )
         return await self._finish(scope, created)
 
+    async def _extract_here(
+        self, scope: Scope, messages: list[dict[str, str]], last: uuid.UUID
+    ) -> list[Memory]:
+        """The facts the memory.extract role finds, written as memories in one governance
+        transaction (the Syncer pushes them to the engine): a retry finds them in the mirror and
+        never asks the model again."""
+        assert self._llm is not None
+        facts, provenance = await extract_facts(self._llm, messages)
+        if not facts:
+            return []
+        ops: list[Operation] = [
+            CreateMemory(
+                scope.namespace_id,
+                fact,
+                user_id=scope.user_id,
+                agent_id=scope.agent_id,
+                session_id=scope.session_id,
+                origin=MemoryOrigin.EXTRACTION,
+                source_episode_id=last,
+            )
+            for fact in facts
+        ]
+        return await self._governance.apply_all(ops, Actor(ActorType.AI, provenance.tag))
+
     async def _finish(self, scope: Scope, created: list[Memory]) -> list[uuid.UUID]:
         kept = (
-            await self._compensate(scope, created)
-            if compensates(self._provider)
-            else [m.id for m in created]
+            await self._compensate(scope, created) if self._compensates else [m.id for m in created]
         )
         if self._on_extracted is not None:
             await self._on_extracted(scope.namespace_id, kept)

@@ -33,7 +33,11 @@ from llm_steward.providers.registry import (
 from llm_steward.services.admin_service import AdminService
 from llm_steward.services.document_service import DocumentService
 from llm_steward.services.episode_service import EpisodeService
-from llm_steward.services.extraction_service import ExtractionService, compensates
+from llm_steward.services.extraction_service import (
+    ExtractionService,
+    compensates,
+    extraction_mode,
+)
 from llm_steward.services.governance_service import GovernanceService
 from llm_steward.services.idempotency_service import IdempotencyService
 from llm_steward.services.job_queue import ClaimedJob, JobQueue
@@ -85,8 +89,14 @@ class Services:
 
 def build_llm(settings: Settings, providers: Providers) -> LLM | None:
     """Exactly the roles that will be used, resolved now (a missing model fails at startup):
-    `memory.resolve` when conflict compensation runs, the KB roles when `kb_llm` is on."""
-    roles = [Role.MEMORY_RESOLVE] if compensates(providers.memory) else []
+    `memory.extract` when llm-steward extracts for the engine (`memory_llm`), `memory.resolve`
+    when conflict compensation runs, the KB roles when `kb_llm` is on."""
+    memory = providers.memory
+    mode = extraction_mode(memory, settings.memory_llm)
+    roles = [Role.MEMORY_EXTRACT] if mode == "steward" else []
+    roles += [Role.MEMORY_RESOLVE] if compensates(memory, mode) else []
+    if settings.memory_llm and mode == "engine":
+        log.info("STEWARD_MEMORY_LLM is unused: the %s engine extracts itself", memory.name)
     if settings.kb_llm:
         roles += [Role.KB_RISK, Role.KB_WORTHINESS, Role.KB_DRAFT]
     else:
@@ -110,8 +120,14 @@ def build_services(
     sync = SyncService(sessions, providers)
     kb = KbService(sessions, governance, llm if settings.kb_llm else None)
     extraction = ExtractionService(
-        sessions, governance, providers.memory, llm, on_extracted=kb.queue_suggestions
+        sessions,
+        governance,
+        providers.memory,
+        llm,
+        mode=extraction_mode(providers.memory, settings.memory_llm),
+        on_extracted=kb.queue_suggestions,
     )
+    extracts = extraction.mode != "none"
     reconcile = ReconcileService(sessions, providers.memory)
     idempotency = IdempotencyService(sessions)
     out = Outbound(allow_private=settings.allow_private_urls)  # user-supplied URLs only
@@ -175,6 +191,7 @@ def build_services(
         worker.run_job,
         buffer_tokens=settings.buffer_tokens,
         buffer_idle=timedelta(minutes=settings.buffer_idle_minutes),
+        extracts=extracts,
     )
     return Services(
         engine=engine,
@@ -186,7 +203,7 @@ def build_services(
             sessions,
             settings.token_secret.get_secret_value() if settings.token_secret else None,
         ),
-        memories=MemoryService(sessions, governance, providers.memory),
+        memories=MemoryService(sessions, governance, providers.memory, extracts=extracts),
         kb=kb,
         documents=documents,
         episodes=episodes,

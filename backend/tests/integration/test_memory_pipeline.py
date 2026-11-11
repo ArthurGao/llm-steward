@@ -144,7 +144,7 @@ def test_an_engine_that_resolves_conflicts_itself_gets_no_compensation(migrated_
 
 def test_an_engine_that_needs_compensation_cannot_run_without_a_resolver() -> None:
     with pytest.raises(ValueError, match="needs conflict compensation"):
-        ExtractionService(None, None, FakeMemoryProvider(), None)  # type: ignore[arg-type]
+        ExtractionService(None, None, FakeMemoryProvider(), None, mode="engine")  # type: ignore[arg-type]
 
 
 def test_a_retried_extraction_does_not_add_to_the_engine_twice(migrated_url: str) -> None:

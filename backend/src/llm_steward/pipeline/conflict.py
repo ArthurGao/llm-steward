@@ -7,16 +7,16 @@ the candidates is not applied — the new memory is simply kept (ADD).
 
 import json
 from dataclasses import dataclass
-from importlib.resources import files
 from typing import Literal
 
 from pydantic import BaseModel, ConfigDict
 
+from llm_steward import prompts
 from llm_steward.llm.client import LLM
 from llm_steward.llm.roles import Provenance, Role
 
 Action = Literal["ADD", "UPDATE", "DELETE", "NOOP"]
-SYSTEM_PROMPT = (files("llm_steward.prompts") / "resolve_conflict.j2").read_text(encoding="utf-8")
+SYSTEM_PROMPT = prompts.load("resolve_conflict.j2")
 
 
 class ConflictDecision(BaseModel):

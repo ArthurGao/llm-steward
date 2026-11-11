@@ -4,6 +4,11 @@
 from importlib import resources
 
 
+def load(name: str) -> str:
+    """One template's source, by file name (e.g. `kb_risk.j2`)."""
+    return (resources.files(__package__) / name).read_text(encoding="utf-8")
+
+
 def templates() -> list[tuple[str, str]]:
     """Every template as (name, source), by name (the Admin shows them read-only)."""
     folder = resources.files(__package__)

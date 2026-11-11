@@ -43,3 +43,12 @@ def update_when(marker: str) -> Handler:
         return {"action": "ADD", "target_id": None, "reason": "unrelated"}
 
     return decide
+
+
+def user_lines() -> Handler:
+    """memory.extract: each user message is one fact, as said (assistant turns are skipped)."""
+
+    def extract(payload: dict[str, Any]) -> dict[str, Any]:
+        return {"facts": [m["content"] for m in payload["MESSAGES"] if m["role"] == "user"]}
+
+    return extract
