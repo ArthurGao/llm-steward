@@ -1,6 +1,9 @@
 import asyncio
+import uuid
+from datetime import UTC, datetime
 
 import pytest
+import sqlalchemy as sa
 from alembic import command
 from alembic.autogenerate import compare_metadata
 from alembic.runtime.migration import MigrationContext
@@ -15,7 +18,7 @@ from llm_steward.storage.db import engine_scope
 from tests.conftest import TEST_SCHEMA
 from tests.fakes.embedder import FakeEmbedder
 
-HEAD = "0012"
+HEAD = "0013"
 
 
 def _state(url: str) -> tuple[tuple[str, ...], bool]:
@@ -61,6 +64,60 @@ def test_models_match_the_migrated_schema(db_url: str) -> None:
                 return await conn.run_sync(diff)
 
     assert asyncio.run(run()) == []
+
+
+def test_0012_backfills_hit_counts_from_the_results(db_url: str) -> None:
+    """Logs written before 0012 get `hit_count = len(results)`: 0 for a gap (one UPDATE)."""
+    cfg = alembic_config(db_url, TEST_SCHEMA)
+    command.upgrade(cfg, "0011")
+    ns, gap, answered = (uuid.uuid4() for _ in range(3))
+    now = datetime.now(UTC)
+    logs = sa.table(
+        "retrieval_logs",
+        sa.column("id", sa.Uuid),
+        sa.column("namespace_id", sa.Uuid),
+        *(sa.column(c) for c in ("query", "created_at")),
+        sa.column("filters", sa.JSON),
+        sa.column("results", sa.JSON),
+        sa.column("latency_ms", sa.JSON),
+        sa.column("left_out", sa.JSON),
+        sa.column("counted"),
+    )
+    namespaces = sa.table(
+        "namespaces",
+        sa.column("id", sa.Uuid),
+        *(sa.column(c) for c in ("slug", "name", "created_at")),
+        sa.column("config", sa.JSON),
+    )
+
+    async def seed() -> None:
+        async with engine_scope(db_url, schema=TEST_SCHEMA) as engine, engine.begin() as conn:
+            await conn.execute(
+                sa.insert(namespaces).values(id=ns, slug="m", name="m", config={}, created_at=now)
+            )
+            for log_id, results in ((gap, []), (answered, [{"id": "a"}, {"id": "b"}])):
+                await conn.execute(
+                    sa.insert(logs).values(
+                        id=log_id,
+                        namespace_id=ns,
+                        query="q",
+                        created_at=now,
+                        filters={},
+                        results=results,
+                        latency_ms={},
+                        left_out=[],
+                        counted=False,
+                    )
+                )
+
+    async def counts() -> dict[uuid.UUID, int]:
+        async with engine_scope(db_url, schema=TEST_SCHEMA) as engine, engine.connect() as conn:
+            rows = await conn.execute(sa.text("SELECT id, hit_count FROM retrieval_logs"))
+            return {uuid.UUID(str(i)): n for i, n in rows.all()}
+
+    asyncio.run(seed())
+    command.upgrade(cfg, "0012")
+    assert asyncio.run(counts()) == {gap: 0, answered: 2}
 
 
 # Marks the public.alembic_version this test plants, so it only ever drops its own table.

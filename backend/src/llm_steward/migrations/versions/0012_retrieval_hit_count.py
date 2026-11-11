@@ -8,7 +8,6 @@ Revises: 0011
 Create Date: 2026-11-11
 """
 
-import json
 from collections.abc import Sequence
 
 import sqlalchemy as sa
@@ -26,12 +25,10 @@ def upgrade() -> None:
     with op.batch_alter_table("retrieval_logs") as batch:
         batch.alter_column("hit_count", server_default=None)
         batch.create_index("ix_retrieval_logs_gaps", ["namespace_id", "hit_count", "id"])
-    bind = op.get_bind()
-    logs = sa.table("retrieval_logs", sa.column("id"), sa.column("results"), sa.column("hit_count"))
-    for log_id, results in bind.execute(sa.select(logs.c.id, logs.c.results)).all():
-        rows = json.loads(results) if isinstance(results, str) else (results or [])
-        if rows:
-            bind.execute(sa.update(logs).where(logs.c.id == log_id).values(hit_count=len(rows)))
+    # one set-based UPDATE (results is JSONB on PostgreSQL, JSON text on SQLite)
+    pg = op.get_bind().dialect.name == "postgresql"
+    length = "jsonb_array_length" if pg else "json_array_length"
+    op.execute(f"UPDATE retrieval_logs SET hit_count = {length}(results)")
 
 
 def downgrade() -> None:

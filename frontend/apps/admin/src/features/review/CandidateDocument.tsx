@@ -12,7 +12,7 @@ import { StatusLadder, type Rung } from '@/components/StatusLadder'
 import { Button } from '@/components/ui/button'
 import { Field, Textarea } from '@/components/ui/field'
 import { EntryRef } from '@/features/kb/EntryDocument'
-import { stamp } from '@/lib/format'
+import { score, stamp } from '@/lib/format'
 
 function ladder(c: Candidate): Rung[] {
   const decided = c.status !== 'pending'
@@ -50,7 +50,7 @@ export function CandidateDocument({ ns, id }: { ns: string; id: string }) {
   const right: HeaderRow[] = [
     ['Candidate', c.key],
     ['Proposed', stamp(c.created_at)],
-    ...(c.similar ? [['Similarity', c.similar.similarity.toFixed(2)] as HeaderRow] : []),
+    ...(c.similar?.similarity != null ? [['Similarity', score(c.similar.similarity)] as HeaderRow] : []),
     ['Source', c.episode_id ?? c.origin.replace('_', ' ')],
   ]
 

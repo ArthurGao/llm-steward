@@ -2,25 +2,29 @@
 // shapes (src/client, from the backend's OpenAPI spec) to these; the mock store produces them
 // directly. A value the backend does not report is null and shown as "—", never invented.
 
+import type * as gen from '@/client/types.gen'
+
 export type ISODate = string
 
-export type MemoryStatus = 'active' | 'superseded' | 'deleted'
-export type MemoryOrigin = 'extraction' | 'direct' | 'import'
-export type KbStatus = 'draft' | 'active' | 'verified' | 'deprecated' | 'rejected'
-export type RiskLevel = 'low' | 'medium' | 'high'
-export type KbOrigin = 'manual' | 'import' | 'promoted_memory' | 'user_suggestion' | 'extraction'
-export type AuthorType = 'ai' | 'human'
-export type DocStatus = 'pending' | 'processing' | 'ready' | 'failed'
-export type CandidateTarget = 'memory' | 'kb_entry'
-export type CandidateOp = 'ADD' | 'UPDATE' | 'DELETE'
-export type CandidateOrigin = 'extraction' | 'promote' | 'user_suggestion' | 'api'
-export type CandidateStage = 'awaiting_user' | 'awaiting_review'
-export type CandidateStatus = 'pending' | 'accepted' | 'rejected' | 'expired'
-export type SyncStatus = 'pending' | 'synced' | 'failed' | 'deleting' | 'deleted'
-export type ActorType = 'ai' | 'end_user' | 'admin' | 'system' | 'provider' | 'host_app'
-export type JobStatus = 'pending' | 'running' | 'done' | 'failed'
-export type ObjectType = 'memory' | 'kb_entry' | 'kb_document' | 'kb_collection' | 'candidate' | 'episode' | 'user'
-export type ChangeOp = 'create' | 'update' | 'transition' | 'delete' | 'erase'
+// Enums are the backend's (the generated client). ObjectType and ChangeOp stay wider: the demo
+// also logs user-level erasure, which the backend records differently.
+export type MemoryStatus = gen.MemoryStatus
+export type MemoryOrigin = gen.MemoryOrigin
+export type KbStatus = gen.KbStatus
+export type RiskLevel = gen.RiskLevel
+export type KbOrigin = gen.KbOrigin
+export type AuthorType = gen.AuthorType
+export type DocStatus = gen.DocStatus
+export type CandidateTarget = gen.CandidateTarget
+export type CandidateOp = gen.CandidateOp
+export type CandidateOrigin = gen.CandidateOrigin
+export type CandidateStage = gen.CandidateStage
+export type CandidateStatus = gen.CandidateStatus
+export type SyncStatus = gen.SyncStatus
+export type ActorType = gen.ActorType
+export type JobStatus = gen.JobStatus
+export type ObjectType = gen.ObjectType | 'user'
+export type ChangeOp = gen.ChangeOp | 'delete' | 'erase'
 
 export interface Page<T> {
   items: T[]
@@ -186,7 +190,7 @@ export interface SimilarEntry {
   content: string
   version: number
   status: KbStatus
-  similarity: number
+  similarity: number | null // the backend reports the target, not a score
 }
 
 export interface Candidate {

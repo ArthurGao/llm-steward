@@ -71,7 +71,7 @@ export type AddToKbIn = {
     /**
      * Collection Id
      */
-    collection_id: string;
+    collection_id?: string | null;
     /**
      * Content
      */
@@ -83,49 +83,13 @@ export type AddToKbIn = {
 };
 
 /**
- * AdminJobOut
- */
-export type AdminJobOut = {
-    /**
-     * Attempts
-     */
-    attempts: number;
-    /**
-     * Created At
-     */
-    created_at: string;
-    /**
-     * Error
-     */
-    error: string | null;
-    /**
-     * Id
-     */
-    id: string;
-    /**
-     * Max Attempts
-     */
-    max_attempts: number;
-    /**
-     * Run After
-     */
-    run_after: string;
-    status: JobStatus;
-    type: JobType;
-    /**
-     * Updated At
-     */
-    updated_at: string;
-};
-
-/**
  * AdminJobPage
  */
 export type AdminJobPage = {
     /**
      * Items
      */
-    items: Array<AdminJobOut>;
+    items: Array<JobOut>;
     /**
      * Next Cursor
      */
@@ -274,6 +238,64 @@ export type BufferScope = {
      * User Id
      */
     user_id?: string | null;
+};
+
+/**
+ * CandidateDetailOut
+ *
+ * A candidate as the reviewer reads it: for an UPDATE or DELETE of an entry, that entry as
+ * it is now (what the decision would obsolete).
+ */
+export type CandidateDetailOut = {
+    /**
+     * Created At
+     */
+    created_at: string;
+    /**
+     * Decided At
+     */
+    decided_at: string | null;
+    /**
+     * Decided By
+     */
+    decided_by: string | null;
+    /**
+     * Decision Note
+     */
+    decision_note: string | null;
+    /**
+     * Draft
+     */
+    draft: {
+        [key: string]: unknown;
+    };
+    /**
+     * Expires At
+     */
+    expires_at: string | null;
+    /**
+     * Id
+     */
+    id: string;
+    op: CandidateOp;
+    origin: CandidateOrigin;
+    /**
+     * Reason
+     */
+    reason: string | null;
+    /**
+     * Requested For User
+     */
+    requested_for_user: string | null;
+    risk_level: RiskLevel;
+    stage: CandidateStage;
+    status: CandidateStatus;
+    target?: EntryOut | null;
+    /**
+     * Target Id
+     */
+    target_id: string | null;
+    target_type: CandidateTarget;
 };
 
 /**
@@ -2211,7 +2233,7 @@ export type GetCandidateAdminV1NsSlugCandidatesCandidateIdGetResponses = {
     /**
      * Successful Response
      */
-    200: CandidateOut;
+    200: CandidateDetailOut;
 };
 
 export type GetCandidateAdminV1NsSlugCandidatesCandidateIdGetResponse = GetCandidateAdminV1NsSlugCandidatesCandidateIdGetResponses[keyof GetCandidateAdminV1NsSlugCandidatesCandidateIdGetResponses];
@@ -2366,7 +2388,7 @@ export type CancelJobAdminV1NsSlugJobsJobIdCancelPostResponses = {
     /**
      * Successful Response
      */
-    200: AdminJobOut;
+    200: JobOut;
 };
 
 export type CancelJobAdminV1NsSlugJobsJobIdCancelPostResponse = CancelJobAdminV1NsSlugJobsJobIdCancelPostResponses[keyof CancelJobAdminV1NsSlugJobsJobIdCancelPostResponses];
@@ -2400,7 +2422,7 @@ export type RetryJobAdminV1NsSlugJobsJobIdRetryPostResponses = {
     /**
      * Successful Response
      */
-    200: AdminJobOut;
+    200: JobOut;
 };
 
 export type RetryJobAdminV1NsSlugJobsJobIdRetryPostResponse = RetryJobAdminV1NsSlugJobsJobIdRetryPostResponses[keyof RetryJobAdminV1NsSlugJobsJobIdRetryPostResponses];

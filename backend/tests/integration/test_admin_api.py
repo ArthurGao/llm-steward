@@ -1,6 +1,7 @@
 """`/admin/v1` (design §9, P6a): one static admin token, no login; the Admin's reads and the
 operator actions, each inside one namespace. Both dialects."""
 
+import asyncio
 import uuid
 from collections.abc import Iterator
 from typing import Any
@@ -91,6 +92,30 @@ def test_stats_count_what_is_there(c: AppClient, t: Tenant) -> None:
     assert kept
 
 
+def test_retrieval_logs_carry_the_total_latency_and_what_degraded(
+    c: AppClient, t: Tenant, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    post_memory(c, t.host, "likes green tea", user_id="u1")
+    t.submit(t.collection(default_risk="low"), "Green tea ships in tins")  # synced: kb is searched
+    c.drain()
+    search = c.services.providers.memory.search
+
+    async def slow(*args: Any, **kwargs: Any) -> Any:
+        await asyncio.sleep(0.06)
+        return await search(*args, **kwargs)
+
+    async def broken(*args: Any, **kwargs: Any) -> Any:
+        raise ConnectionError("engine down")
+
+    monkeypatch.setattr(c.services.providers.memory, "search", slow)
+    monkeypatch.setattr(c.services.providers.kb, "search", broken)
+    c.retrieve(t.host, query="green tea", sources=["memory", "kb"], scope={"user_id": "u1"})
+    [log] = get(c, "/ns/acme/retrieval-logs")["items"]
+    assert log["latency_ms"] >= 60
+    assert log["degraded"] == ["kb"]
+    assert get(c, "/ns/acme/stats")["retrieval_p95_ms"] >= 60
+
+
 def test_users_roll_up_and_can_be_erased(c: AppClient, t: Tenant) -> None:
     post_memory(c, t.host, "u1 likes tea", user_id="u1", pinned=True)
     post_memory(c, t.host, "u1 lives in Oslo", user_id="u1")
@@ -173,6 +198,35 @@ def test_a_playground_gap_goes_to_the_kb_through_review(c: AppClient, t: Tenant)
     assert candidate["draft"]["source_refs"] == [{"type": "retrieval", "id": log["id"]}]
     accepted = post(c, f"/ns/acme/candidates/{candidate['id']}/accept", {})
     assert accepted["entry"]["status"] == "verified"
+
+
+def test_an_answer_without_a_collection_goes_to_the_suggestions_collection(
+    c: AppClient, t: Tenant
+) -> None:
+    c.retrieve(t.host, query="do you ship to Norway", sources=["kb"])
+    [log] = get(c, "/ns/acme/retrieval-logs")["items"]
+    body = {"title": "Shipping to Norway", "content": "We ship to Norway."}
+    written = post(c, f"/ns/acme/retrieval-logs/{log['id']}/add-to-kb", body, status=202)
+    suggestions = c.call(c.services.kb.suggestion_collection, t.ns)
+    assert written["candidate"]["draft"]["collection_id"] == str(suggestions)
+
+
+def test_an_update_candidate_comes_with_the_entry_it_would_obsolete(
+    c: AppClient, t: Tenant
+) -> None:
+    collection = t.collection(default_risk="low")
+    entry = t.post(
+        "/v1/kb/entries",
+        {"collection_id": collection, "title": "Refund time", "content": "Five days"},
+        as_reviewer=True,
+    ).json()["entry"]
+    r = c.http.patch(f"/v1/kb/entries/{entry['id']}", json={"content": "Ten days"}, headers=t.host)
+    candidate = r.json()["candidate"]
+    assert candidate["op"] == "UPDATE"
+    detail = get(c, f"/ns/acme/candidates/{candidate['id']}")
+    assert (detail["target"]["id"], detail["target"]["content"]) == (entry["id"], "Five days")
+    added = t.submit(collection, "Refunds are free", risk_level="high").json()["candidate"]
+    assert get(c, f"/ns/acme/candidates/{added['id']}")["target"] is None
 
 
 # --- activity, jobs, providers, sync -------------------------------------------------------------

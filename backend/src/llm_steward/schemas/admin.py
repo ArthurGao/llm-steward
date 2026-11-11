@@ -7,8 +7,9 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from llm_steward.models.enums import ActorType, ChangeOp, JobStatus, JobType, ObjectType, SyncStatus
-from llm_steward.schemas.kb import CollectionOut
+from llm_steward.models.enums import ActorType, ChangeOp, ObjectType, SyncStatus
+from llm_steward.schemas.jobs import JobOut
+from llm_steward.schemas.kb import CandidateOut, CollectionOut, EntryOut
 from llm_steward.schemas.memories import MemoryBrief
 
 
@@ -137,26 +138,13 @@ class RetrievalLogPage(BaseModel):
 
 
 class AddToKbIn(BaseModel):
-    collection_id: uuid.UUID
+    collection_id: uuid.UUID | None = None  # None: the namespace's suggestions collection
     title: str = Field(min_length=1, max_length=500)
     content: str = Field(min_length=1, max_length=50_000)
 
 
-class AdminJobOut(BaseModel):
-    model_config = ConfigDict(from_attributes=True)
-    id: uuid.UUID
-    type: JobType
-    status: JobStatus
-    attempts: int
-    max_attempts: int
-    error: str | None
-    run_after: datetime
-    created_at: datetime
-    updated_at: datetime
-
-
 class AdminJobPage(BaseModel):
-    items: list[AdminJobOut]
+    items: list[JobOut]
     next_cursor: uuid.UUID | None
 
 
@@ -238,3 +226,10 @@ class ApiKeyIn(BaseModel):
 
 class ApiKeyCreatedOut(ApiKeyOut):
     key: str = Field(description="Shown once: store it now, it cannot be shown again.")
+
+
+class CandidateDetailOut(CandidateOut):
+    """A candidate as the reviewer reads it: for an UPDATE or DELETE of an entry, that entry as
+    it is now (what the decision would obsolete)."""
+
+    target: EntryOut | None = None

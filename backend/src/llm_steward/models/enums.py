@@ -143,12 +143,6 @@ class EpisodeKind(StrEnum):
     MANUAL = "manual"
 
 
-class AdminRole(StrEnum):
-    OWNER = "owner"
-    REVIEWER = "reviewer"
-    VIEWER = "viewer"
-
-
 class ApiScope(StrEnum):
     READ = "read"
     WRITE = "write"

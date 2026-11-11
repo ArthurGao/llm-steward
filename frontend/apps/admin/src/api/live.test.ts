@@ -60,17 +60,14 @@ test('a Problem Details error becomes an ApiError with its status and title', as
 })
 
 test('a candidate reads its screening from the reason and, for an UPDATE, the entry it would obsolete', async () => {
-  server.use(
-    http.get(`${B}/candidates/${ID}`, () => HttpResponse.json(candidateOut)),
-    http.get(`${B}/kb/entries/${TARGET}`, () => HttpResponse.json(entryOut)),
-  )
+  server.use(http.get(`${B}/candidates/${ID}`, () => HttpResponse.json({ ...candidateOut, target: entryOut })))
   const c = await liveApi.candidates.get('acme', ID)
   expect(c.screening).toEqual({ reasons: ['keyword: refund', 'pii: phone', 'pii: email'], pii: ['phone', 'email'] })
   expect(c.draft).toEqual({ title: 'Refund threshold', content: 'Refunds over [PHONE] need approval.' })
   expect(c.collection_id).toBe('col')
   expect(c.episode_id).toBe('ep1')
   expect(c.key).toBe('C-00c0de')
-  expect(c.similar).toEqual({ entry_id: TARGET, key: 'KB-0e0001', title: 'Refund threshold', content: 'Refunds over $500 need approval.', version: 3, status: 'verified', similarity: 1 })
+  expect(c.similar).toEqual({ entry_id: TARGET, key: 'KB-0e0001', title: 'Refund threshold', content: 'Refunds over $500 need approval.', version: 3, status: 'verified', similarity: null })
 })
 
 test('an entry carries its hit count and helpful rate; per-object sync state is unknown here', async () => {
@@ -112,16 +109,15 @@ test('the Playground shows only the final ranking the backend returns', async ()
   expect(r).toMatchObject({ log_id: 'rl1', degraded: ['rerank'], gap: false })
 })
 
-test('adding a gap to the KB defaults to the first collection', async () => {
+test('an added answer without a collection leaves the choice to the backend', async () => {
   let sent: unknown = null
   server.use(
-    http.get(`${B}/kb/collections`, () => HttpResponse.json({ items: [{ id: 'col1', name: 'Policy', default_risk: 'high', review_policy: null, created_at: T, entry_count: 0, document_count: 0 }] })),
     http.post(`${B}/retrieval-logs/rl1/add-to-kb`, async ({ request }) => {
       sent = await request.json()
       return HttpResponse.json({ entry: null, candidate: { ...candidateOut, op: 'ADD', target_id: null } })
     }),
   )
   const w = await liveApi.retrieval.addToKb('acme', 'rl1', { title: 'Retention', content: 'Kept 30 days.' })
-  expect(sent).toEqual({ collection_id: 'col1', title: 'Retention', content: 'Kept 30 days.' })
+  expect(sent).toEqual({ title: 'Retention', content: 'Kept 30 days.' })
   expect(w.candidate?.key).toBe('C-00c0de')
 })

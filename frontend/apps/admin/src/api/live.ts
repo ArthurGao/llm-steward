@@ -38,7 +38,8 @@ async function call<T>(promise: Promise<{ data?: T }>): Promise<T> {
   return data
 }
 
-const path = (slug: string) => ({ slug })
+/** The generated client's `path` option: the namespace plus the route's own ids. */
+const at = <I extends Record<string, string>>(slug: string, ids?: I) => ({ path: { slug, ...ids } as { slug: string } & I })
 const shortKey = (id: string, prefix: string) => `${prefix}-${id.slice(-6)}`
 const str = (q: Query, k: string) => (q[k] === undefined || q[k] === null || q[k] === '' ? undefined : String(q[k]))
 
@@ -54,18 +55,15 @@ function memory(m: gen.MemoryOut): ui.Memory {
   return { ...m, metadata: m.metadata ?? {}, source_refs: m.source_refs ?? [], superseded_by: null }
 }
 
-function change(c: gen.ChangeOut | gen.ActivityOut, object?: { type: ui.ObjectType; id: string }): ui.Change {
+function change(c: gen.ChangeOut, object: { type: ui.ObjectType; id: string }): ui.Change {
   return {
-    id: c.id,
-    object_type: ('object_type' in c ? c.object_type : object?.type ?? 'memory') as ui.ObjectType,
-    object_id: 'object_id' in c ? c.object_id : object?.id ?? '',
+    ...c,
+    object_type: object.type,
+    object_id: object.id,
     op: c.op as ui.ChangeOp,
     actor_type: c.actor_type as ui.ActorType,
-    actor_id: c.actor_id,
-    reason: c.reason,
     before: c.before ?? null,
     after: c.after ?? null,
-    created_at: c.created_at,
   }
 }
 
@@ -103,18 +101,19 @@ function candidate(c: gen.CandidateOut, similar: ui.SimilarEntry | null = null):
   }
 }
 
-/** For an UPDATE, the entry it would obsolete (the diff the reviewer reads). */
-async function withTarget(slug: string, c: gen.CandidateOut): Promise<ui.Candidate> {
-  if (c.op !== 'UPDATE' || c.target_type !== 'kb_entry' || !c.target_id) return candidate(c)
-  const target = entry(await call(sdk.getEntryAdminV1NsSlugKbEntriesEntryIdGet({ path: { ...path(slug), entry_id: c.target_id } })))
-  return candidate(c, { entry_id: target.id, key: target.key, title: target.title, content: target.content, version: target.version, status: target.status, similarity: 1 })
+/** For an UPDATE or DELETE, the backend sends the entry it would obsolete (what the reviewer
+ * compares against); it reports no similarity score for it. */
+function detail(c: gen.CandidateDetailOut): ui.Candidate {
+  if (!c.target) return candidate(c)
+  const t = entry(c.target)
+  return candidate(c, { entry_id: t.id, key: t.key, title: t.title, content: t.content, version: t.version, status: t.status, similarity: null })
 }
 
 function written(w: gen.Written): ui.Written {
   return { entry: w.entry ? entry(w.entry) : null, candidate: w.candidate ? candidate(w.candidate) : null }
 }
 
-function job(j: gen.AdminJobOut): ui.Job {
+function job(j: gen.JobOut): ui.Job {
   return { id: j.id, kind: j.type, status: j.status, attempts: j.attempts, max_attempts: j.max_attempts, object_type: null, object_id: null, last_error: j.error, run_after: j.run_after, created_at: j.created_at, updated_at: j.updated_at }
 }
 
@@ -131,7 +130,7 @@ function hit(i: gen.RetrievedItemOut): ui.RetrievalHit {
 export const liveApi: typeof mockApi = {
   namespaces: async () => ({ items: (await call(sdk.namespacesAdminV1NamespacesGet())).items }),
   stats: async (slug) => {
-    const s = await call(sdk.statsAdminV1NsSlugStatsGet({ path: path(slug) }))
+    const s = await call(sdk.statsAdminV1NsSlugStatsGet(at(slug)))
     return {
       ...s,
       memories: s.memories as ui.Stats['memories'],
@@ -145,47 +144,44 @@ export const liveApi: typeof mockApi = {
   memories: {
     list: async (slug, q) =>
       page(
-        await call(sdk.listMemoriesAdminV1NsSlugMemoriesGet({ path: path(slug), query: { user_id: str(q, 'user_id'), memory_type: str(q, 'memory_type'), status: str(q, 'status') as gen.MemoryStatus | undefined, tag: str(q, 'tag'), ...paging(q) } })),
+        await call(sdk.listMemoriesAdminV1NsSlugMemoriesGet({ ...at(slug), query: { user_id: str(q, 'user_id'), memory_type: str(q, 'memory_type'), status: str(q, 'status') as gen.MemoryStatus | undefined, tag: str(q, 'tag'), ...paging(q) } })),
         memory,
       ),
-    get: async (slug, id) => memory(await call(sdk.getMemoryAdminV1NsSlugMemoriesMemoryIdGet({ path: { ...path(slug), memory_id: id } }))),
+    get: async (slug, id) => memory(await call(sdk.getMemoryAdminV1NsSlugMemoriesMemoryIdGet(at(slug, { memory_id: id })))),
     history: async (slug, id) => {
-      const h = await call(sdk.memoryHistoryAdminV1NsSlugMemoriesMemoryIdHistoryGet({ path: { ...path(slug), memory_id: id } }))
+      const h = await call(sdk.memoryHistoryAdminV1NsSlugMemoriesMemoryIdHistoryGet(at(slug, { memory_id: id })))
       return { memory_id: h.memory_id, changes: h.changes.map((c) => change(c, { type: 'memory', id })), chain: h.chain }
     },
-    patch: async (slug, id, patch) => memory(await call(sdk.patchMemoryAdminV1NsSlugMemoriesMemoryIdPatch({ path: { ...path(slug), memory_id: id }, body: patch }))),
-    remove: async (slug, id) => memory(await call(sdk.deleteMemoryAdminV1NsSlugMemoriesMemoryIdDelete({ path: { ...path(slug), memory_id: id } }))),
+    patch: async (slug, id, patch) => memory(await call(sdk.patchMemoryAdminV1NsSlugMemoriesMemoryIdPatch({ ...at(slug, { memory_id: id }), body: patch }))),
+    remove: async (slug, id) => memory(await call(sdk.deleteMemoryAdminV1NsSlugMemoriesMemoryIdDelete(at(slug, { memory_id: id })))),
     promote: async (slug, id) => {
-      const w = await call(sdk.promoteAdminV1NsSlugMemoriesMemoryIdPromotePost({ path: { ...path(slug), memory_id: id } }))
+      const w = await call(sdk.promoteAdminV1NsSlugMemoriesMemoryIdPromotePost(at(slug, { memory_id: id })))
       if (!w.candidate) throw new ApiError(500, { title: 'Promote produced no candidate' })
       return candidate(w.candidate)
     },
     eraseUser: async (slug, userId) => {
-      const e = await call(sdk.eraseUserAdminV1NsSlugMemoriesDelete({ path: path(slug), query: { user_id: userId } }))
+      const e = await call(sdk.eraseUserAdminV1NsSlugMemoriesDelete({ ...at(slug), query: { user_id: userId } }))
       return { user_id: e.user_id, deleted_memories: e.memories, deleted_episodes: e.episodes }
     },
   },
 
   users: {
     list: async (slug) => {
-      const r = await call(sdk.usersAdminV1NsSlugUsersGet({ path: path(slug) }))
-      return { items: r.items, next_cursor: null, total: r.items.length }
+      const r = await call(sdk.usersAdminV1NsSlugUsersGet(at(slug)))
+      return { items: r.items, next_cursor: null, total: null } // capped by the backend, not counted
     },
-    get: async (slug, userId) => {
-      const u = await call(sdk.userAdminV1NsSlugUsersUserIdGet({ path: { ...path(slug), user_id: userId } }))
-      return u
-    },
+    get: async (slug, userId) => call(sdk.userAdminV1NsSlugUsersUserIdGet(at(slug, { user_id: userId }))),
   },
 
   kb: {
     collections: async (slug) => ({
-      items: (await call(sdk.collectionsAdminV1NsSlugKbCollectionsGet({ path: path(slug) }))).items.map((c) => ({ ...c, review_policy: c.review_policy ?? {} })),
+      items: (await call(sdk.collectionsAdminV1NsSlugKbCollectionsGet(at(slug)))).items.map((c) => ({ ...c, review_policy: c.review_policy ?? {} })),
     }),
     entries: async (slug, q) =>
-      page(await call(sdk.listEntriesAdminV1NsSlugKbEntriesGet({ path: path(slug), query: { collection_id: str(q, 'collection_id'), status: str(q, 'status') as gen.KbStatus | undefined, ...paging(q) } })), entry),
-    entry: async (slug, id) => entry(await call(sdk.getEntryAdminV1NsSlugKbEntriesEntryIdGet({ path: { ...path(slug), entry_id: id } }))),
+      page(await call(sdk.listEntriesAdminV1NsSlugKbEntriesGet({ ...at(slug), query: { collection_id: str(q, 'collection_id'), status: str(q, 'status') as gen.KbStatus | undefined, ...paging(q) } })), entry),
+    entry: async (slug, id) => entry(await call(sdk.getEntryAdminV1NsSlugKbEntriesEntryIdGet(at(slug, { entry_id: id })))),
     history: async (slug, id) => {
-      const h = await call(sdk.entryHistoryAdminV1NsSlugKbEntriesEntryIdHistoryGet({ path: { ...path(slug), entry_id: id } }))
+      const h = await call(sdk.entryHistoryAdminV1NsSlugKbEntriesEntryIdHistoryGet(at(slug, { entry_id: id })))
       const link = (l: gen.EntryLink) => ({ id: l.id, key: shortKey(l.id, 'KB'), title: l.title, status: l.status as ui.KbStatus, version: l.version })
       return {
         entry_id: h.entry_id,
@@ -194,10 +190,10 @@ export const liveApi: typeof mockApi = {
         obsoleted_by: h.obsoleted_by ? link(h.obsoleted_by) : null,
       }
     },
-    patch: async (slug, id, patch) => written(await call(sdk.patchEntryAdminV1NsSlugKbEntriesEntryIdPatch({ path: { ...path(slug), entry_id: id }, body: patch }))),
-    deprecate: async (slug, id, reason) => entry(await call(sdk.deprecateEntryAdminV1NsSlugKbEntriesEntryIdDeprecatePost({ path: { ...path(slug), entry_id: id }, query: { reason } }))),
+    patch: async (slug, id, patch) => written(await call(sdk.patchEntryAdminV1NsSlugKbEntriesEntryIdPatch({ ...at(slug, { entry_id: id }), body: patch }))),
+    deprecate: async (slug, id, reason) => entry(await call(sdk.deprecateEntryAdminV1NsSlugKbEntriesEntryIdDeprecatePost({ ...at(slug, { entry_id: id }), query: { reason } }))),
     documents: async (slug, collectionId) => ({
-      items: (await call(sdk.listDocumentsAdminV1NsSlugKbDocumentsGet({ path: path(slug), query: { collection_id: collectionId } }))).items.map((d) => ({
+      items: (await call(sdk.listDocumentsAdminV1NsSlugKbDocumentsGet({ ...at(slug), query: { collection_id: collectionId } }))).items.map((d) => ({
         id: d.id,
         collection_id: d.collection_id,
         filename: d.filename,
@@ -215,12 +211,12 @@ export const liveApi: typeof mockApi = {
 
   candidates: {
     list: async (slug, q) => {
-      const p = await call(sdk.listCandidatesAdminV1NsSlugCandidatesGet({ path: path(slug), query: { stage: str(q, 'stage') as gen.CandidateStage | undefined, status: str(q, 'status') as gen.CandidateStatus | undefined, user_id: str(q, 'user_id'), ...paging(q) } }))
+      const p = await call(sdk.listCandidatesAdminV1NsSlugCandidatesGet({ ...at(slug), query: { stage: str(q, 'stage') as gen.CandidateStage | undefined, status: str(q, 'status') as gen.CandidateStatus | undefined, user_id: str(q, 'user_id'), ...paging(q) } }))
       return page(p, (c) => candidate(c))
     },
-    get: async (slug, id) => withTarget(slug, await call(sdk.getCandidateAdminV1NsSlugCandidatesCandidateIdGet({ path: { ...path(slug), candidate_id: id } }))),
+    get: async (slug, id) => detail(await call(sdk.getCandidateAdminV1NsSlugCandidatesCandidateIdGet(at(slug, { candidate_id: id })))),
     decide: async (slug, id, verdict, decision) => {
-      const options = { path: { ...path(slug), candidate_id: id }, body: decision }
+      const options = { ...at(slug, { candidate_id: id }), body: decision }
       const d = await call(verdict === 'accept' ? sdk.acceptAdminV1NsSlugCandidatesCandidateIdAcceptPost(options) : sdk.rejectAdminV1NsSlugCandidatesCandidateIdRejectPost(options))
       return { ...candidate(d), entry: d.entry ? entry(d.entry) : null }
     },
@@ -229,12 +225,12 @@ export const liveApi: typeof mockApi = {
   retrieval: {
     run: async (slug, body) => {
       const started = performance.now()
-      const r = await call(sdk.retrieveAdminV1NsSlugRetrievePost({ path: path(slug), body: { query: body.query, sources: body.sources, top_k: body.top_k, scope: { user_id: body.user_id } } }))
+      const r = await call(sdk.retrieveAdminV1NsSlugRetrievePost({ ...at(slug), body: { query: body.query, sources: body.sources, top_k: body.top_k, scope: { user_id: body.user_id } } }))
       const final = r.items.map(hit)
       return { log_id: r.retrieval_id, query: body.query, stages: { vector: null, keyword: null, rrf: null, final }, context: r.context ?? '', degraded: r.degraded, latency_ms: Math.round(performance.now() - started), gap: final.length === 0 }
     },
     logs: async (slug, q) =>
-      page(await call(sdk.retrievalLogsAdminV1NsSlugRetrievalLogsGet({ path: path(slug), query: { gaps: q.gaps === true || q.gaps === 'true' ? true : undefined, ...paging(q) } })), (l) => ({
+      page(await call(sdk.retrievalLogsAdminV1NsSlugRetrievalLogsGet({ ...at(slug), query: { gaps: q.gaps === true || q.gaps === 'true' ? true : undefined, ...paging(q) } })), (l) => ({
         id: l.id,
         query: l.query,
         user_id: l.user_id,
@@ -245,25 +241,23 @@ export const liveApi: typeof mockApi = {
         gap: l.gap,
         created_at: l.created_at,
       })),
-    addToKb: async (slug, logId, draft) => {
-      const collection = draft.collection_id ?? (await liveApi.kb.collections(slug)).items[0]?.id
-      if (!collection) throw new ApiError(422, { title: 'No collection to add it to' })
-      return written(await call(sdk.addToKbAdminV1NsSlugRetrievalLogsLogIdAddToKbPost({ path: { ...path(slug), log_id: logId }, body: { collection_id: collection, title: draft.title, content: draft.content } })))
-    },
+    // No collection chosen: the backend puts it in the namespace's suggestions collection.
+    addToKb: async (slug, logId, draft) =>
+      written(await call(sdk.addToKbAdminV1NsSlugRetrievalLogsLogIdAddToKbPost({ ...at(slug, { log_id: logId }), body: draft }))),
   },
 
   activity: async (slug, q) =>
-    page(await call(sdk.activityAdminV1NsSlugActivityGet({ path: path(slug), query: { object_type: str(q, 'object_type') as gen.ObjectType | undefined, actor_type: str(q, 'actor_type') as gen.ActorType | undefined, object_id: str(q, 'object_id'), ...paging(q) } })), (c) => change(c)),
+    page(await call(sdk.activityAdminV1NsSlugActivityGet({ ...at(slug), query: { object_type: str(q, 'object_type') as gen.ObjectType | undefined, actor_type: str(q, 'actor_type') as gen.ActorType | undefined, object_id: str(q, 'object_id'), ...paging(q) } })), (c) => change(c, { type: c.object_type, id: c.object_id })),
 
   jobs: {
-    list: async (slug, q) => page(await call(sdk.jobsAdminV1NsSlugJobsGet({ path: path(slug), query: { status: str(q, 'status') as gen.JobStatus | undefined, ...paging(q) } })), job),
-    retry: async (slug, id) => job(await call(sdk.retryJobAdminV1NsSlugJobsJobIdRetryPost({ path: { ...path(slug), job_id: id } }))),
-    cancel: async (slug, id) => job(await call(sdk.cancelJobAdminV1NsSlugJobsJobIdCancelPost({ path: { ...path(slug), job_id: id } }))),
+    list: async (slug, q) => page(await call(sdk.jobsAdminV1NsSlugJobsGet({ ...at(slug), query: { status: str(q, 'status') as gen.JobStatus | undefined, ...paging(q) } })), job),
+    retry: async (slug, id) => job(await call(sdk.retryJobAdminV1NsSlugJobsJobIdRetryPost(at(slug, { job_id: id })))),
+    cancel: async (slug, id) => job(await call(sdk.cancelJobAdminV1NsSlugJobsJobIdCancelPost(at(slug, { job_id: id })))),
   },
 
   providers: {
     list: async (slug) => ({
-      items: (await call(sdk.providersAdminV1NsSlugProvidersGet({ path: path(slug) }))).items.map((p) => ({
+      items: (await call(sdk.providersAdminV1NsSlugProvidersGet(at(slug)))).items.map((p) => ({
         name: p.name,
         kind: p.role,
         engine: p.name,
@@ -277,21 +271,21 @@ export const liveApi: typeof mockApi = {
         reconcile_drift: null,
       })),
     }),
-    syncRefs: async (slug) => ({ items: (await call(sdk.syncRefsAdminV1NsSlugSyncGet({ path: path(slug) }))).items.map(syncRef) }),
-    retrySync: async (slug, refId) => syncRef(await call(sdk.retrySyncAdminV1NsSlugSyncRefIdRetryPost({ path: { ...path(slug), ref_id: refId } }))),
+    syncRefs: async (slug) => ({ items: (await call(sdk.syncRefsAdminV1NsSlugSyncGet(at(slug)))).items.map(syncRef) }),
+    retrySync: async (slug, refId) => syncRef(await call(sdk.retrySyncAdminV1NsSlugSyncRefIdRetryPost(at(slug, { ref_id: refId })))),
   },
 
   settings: {
     get: async (slug) => {
-      const s = await call(sdk.settingsAdminV1NsSlugSettingsGet({ path: path(slug) }))
+      const s = await call(sdk.settingsAdminV1NsSlugSettingsGet(at(slug)))
       return { yaml: s.yaml, templates: s.templates, embedding: s.embedding_model ? { model: s.embedding_model, dimensions: null, space_id: null, rebuild_progress: null } : null }
     },
-    keys: async (slug) => ({ items: (await call(sdk.keysAdminV1NsSlugKeysGet({ path: path(slug) }))).items.map(apiKey) }),
+    keys: async (slug) => ({ items: (await call(sdk.keysAdminV1NsSlugKeysGet(at(slug)))).items.map(apiKey) }),
     createKey: async (slug, body) => {
-      const k = await call(sdk.createKeyAdminV1NsSlugKeysPost({ path: path(slug), body }))
+      const k = await call(sdk.createKeyAdminV1NsSlugKeysPost({ ...at(slug), body }))
       return { ...apiKey(k), secret: k.key }
     },
-    revokeKey: async (slug, id) => apiKey(await call(sdk.revokeKeyAdminV1NsSlugKeysKeyIdDelete({ path: { ...path(slug), key_id: id } }))),
+    revokeKey: async (slug, id) => apiKey(await call(sdk.revokeKeyAdminV1NsSlugKeysKeyIdDelete(at(slug, { key_id: id })))),
   },
 }
 

@@ -4,13 +4,15 @@ the operator actions that only touch the outbox or keys (requeue a job, cancel i
 governed writes still go through GovernanceService (the API layer calls it as the admin).
 """
 
+import asyncio
 import uuid
 from collections import Counter
+from collections.abc import Awaitable
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from typing import Any
 
-from sqlalchemy import case, func, select, update
+from sqlalchemy import case, func, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from llm_steward.errors import Conflict
@@ -42,7 +44,7 @@ from llm_steward.models.enums import (
 from llm_steward.providers.base import Providers
 from llm_steward.services.governance_service import load_owned
 from llm_steward.services.health_service import HealthReport
-from llm_steward.services.job_queue import enqueue
+from llm_steward.services.job_queue import enqueue, requeued
 from llm_steward.services.paging import page
 
 WEEK = 7
@@ -316,9 +318,7 @@ class AdminService:
 
     async def retry_job(self, namespace_id: uuid.UUID, job_id: uuid.UUID) -> Job:
         """A failed job, given a fresh set of attempts (handlers are idempotent)."""
-        return await self._set_job(
-            namespace_id, job_id, JobStatus.FAILED, status=JobStatus.PENDING, attempts=0
-        )
+        return await self._set_job(namespace_id, job_id, JobStatus.FAILED, **requeued())
 
     async def cancel_job(self, namespace_id: uuid.UUID, job_id: uuid.UUID) -> Job:
         """A job not started yet, set aside as failed (visible, and retryable later)."""
@@ -333,13 +333,10 @@ class AdminService:
             job = await load_owned(s, Job, namespace_id, job_id, "job")
             if job.status != expected:
                 raise Conflict(f"a {job.status.value!r} job cannot be changed this way")
-            if values.get("status") == JobStatus.PENDING:
-                values["run_after"] = utcnow()  # due now
-            await s.execute(update(Job).where(Job.id == job_id).values(**values))
-        async with self._sessions() as s:
-            refreshed = await s.get(Job, job_id)
-        assert refreshed is not None
-        return refreshed
+            for name, value in values.items():
+                setattr(job, name, value)
+            await s.flush()
+            return job
 
     async def sync_refs(
         self,
@@ -370,8 +367,11 @@ class AdminService:
             await s.flush()
             return ref
 
-    async def queue_counts(self, namespace_id: uuid.UUID) -> dict[str, dict[str, int]]:
-        """Pending / failed sync refs per provider."""
+    async def _sync_state(
+        self, namespace_id: uuid.UUID
+    ) -> tuple[dict[str, dict[str, int]], datetime | None]:
+        """Pending / failed sync refs per provider, and when the memory engine was last
+        reconciled against the mirror."""
         async with self._sessions() as s:
             rows = await s.execute(
                 select(ExternalRef.provider, ExternalRef.sync_status, func.count())
@@ -381,18 +381,24 @@ class AdminService:
                 )
                 .group_by(ExternalRef.provider, ExternalRef.sync_status)
             )
+            reconciled = await s.scalar(
+                select(func.max(Job.updated_at)).where(
+                    Job.namespace_id == namespace_id,
+                    Job.type == JobType.MEMORY_RECONCILE,
+                    Job.status == JobStatus.DONE,
+                )
+            )
         counts: dict[str, dict[str, int]] = {}
         for provider, status, count in rows.all():
             counts.setdefault(provider, {"pending": 0, "failed": 0})[status.value] = int(count)
-        return counts
+        return counts, reconciled
 
     async def providers(
-        self, namespace_id: uuid.UUID, providers: Providers, report: HealthReport
+        self, namespace_id: uuid.UUID, providers: Providers, probe: Awaitable[HealthReport]
     ) -> list[ProviderStatus]:
-        """Each engine's health (`report`, probed by the caller), its sync queue here and, for
-        the memory engine, when it was last reconciled against the mirror."""
-        queues = await self.queue_counts(namespace_id)
-        reconciled = await self.last_reconciled(namespace_id)
+        """Each engine's health (`probe`, which calls the engines), its sync queue here and, for
+        the memory engine, when it was last reconciled. The probe and the reads run together."""
+        report, (queues, reconciled) = await asyncio.gather(probe, self._sync_state(namespace_id))
         statuses = []
         engines: tuple[tuple[str, str, Any], ...] = (
             ("memory", "memory_provider", providers.memory),
@@ -414,16 +420,6 @@ class AdminService:
                 )
             )
         return statuses
-
-    async def last_reconciled(self, namespace_id: uuid.UUID) -> datetime | None:
-        async with self._sessions() as s:
-            return await s.scalar(
-                select(func.max(Job.updated_at)).where(
-                    Job.namespace_id == namespace_id,
-                    Job.type == JobType.MEMORY_RECONCILE,
-                    Job.status == JobStatus.DONE,
-                )
-            )
 
     # --- keys --------------------------------------------------------------------------------
 

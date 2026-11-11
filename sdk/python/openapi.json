@@ -133,9 +133,16 @@
       "AddToKbIn": {
         "properties": {
           "collection_id": {
-            "format": "uuid",
-            "title": "Collection Id",
-            "type": "string"
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Collection Id"
           },
           "content": {
             "maxLength": 50000,
@@ -151,80 +158,17 @@
           }
         },
         "required": [
-          "collection_id",
           "title",
           "content"
         ],
         "title": "AddToKbIn",
         "type": "object"
       },
-      "AdminJobOut": {
-        "properties": {
-          "attempts": {
-            "title": "Attempts",
-            "type": "integer"
-          },
-          "created_at": {
-            "format": "date-time",
-            "title": "Created At",
-            "type": "string"
-          },
-          "error": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Error"
-          },
-          "id": {
-            "format": "uuid",
-            "title": "Id",
-            "type": "string"
-          },
-          "max_attempts": {
-            "title": "Max Attempts",
-            "type": "integer"
-          },
-          "run_after": {
-            "format": "date-time",
-            "title": "Run After",
-            "type": "string"
-          },
-          "status": {
-            "$ref": "#/components/schemas/JobStatus"
-          },
-          "type": {
-            "$ref": "#/components/schemas/JobType"
-          },
-          "updated_at": {
-            "format": "date-time",
-            "title": "Updated At",
-            "type": "string"
-          }
-        },
-        "required": [
-          "id",
-          "type",
-          "status",
-          "attempts",
-          "max_attempts",
-          "error",
-          "run_after",
-          "created_at",
-          "updated_at"
-        ],
-        "title": "AdminJobOut",
-        "type": "object"
-      },
       "AdminJobPage": {
         "properties": {
           "items": {
             "items": {
-              "$ref": "#/components/schemas/AdminJobOut"
+              "$ref": "#/components/schemas/JobOut"
             },
             "title": "Items",
             "type": "array"
@@ -526,6 +470,154 @@
           }
         },
         "title": "BufferScope",
+        "type": "object"
+      },
+      "CandidateDetailOut": {
+        "description": "A candidate as the reviewer reads it: for an UPDATE or DELETE of an entry, that entry as\nit is now (what the decision would obsolete).",
+        "properties": {
+          "created_at": {
+            "format": "date-time",
+            "title": "Created At",
+            "type": "string"
+          },
+          "decided_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Decided At"
+          },
+          "decided_by": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Decided By"
+          },
+          "decision_note": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Decision Note"
+          },
+          "draft": {
+            "additionalProperties": true,
+            "title": "Draft",
+            "type": "object"
+          },
+          "expires_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Expires At"
+          },
+          "id": {
+            "format": "uuid",
+            "title": "Id",
+            "type": "string"
+          },
+          "op": {
+            "$ref": "#/components/schemas/CandidateOp"
+          },
+          "origin": {
+            "$ref": "#/components/schemas/CandidateOrigin"
+          },
+          "reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reason"
+          },
+          "requested_for_user": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Requested For User"
+          },
+          "risk_level": {
+            "$ref": "#/components/schemas/RiskLevel"
+          },
+          "stage": {
+            "$ref": "#/components/schemas/CandidateStage"
+          },
+          "status": {
+            "$ref": "#/components/schemas/CandidateStatus"
+          },
+          "target": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/EntryOut"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "target_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Target Id"
+          },
+          "target_type": {
+            "$ref": "#/components/schemas/CandidateTarget"
+          }
+        },
+        "required": [
+          "id",
+          "target_type",
+          "op",
+          "target_id",
+          "draft",
+          "reason",
+          "risk_level",
+          "origin",
+          "stage",
+          "status",
+          "requested_for_user",
+          "decided_by",
+          "decided_at",
+          "decision_note",
+          "expires_at",
+          "created_at"
+        ],
+        "title": "CandidateDetailOut",
         "type": "object"
       },
       "CandidateOp": {
@@ -4173,7 +4265,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/CandidateOut"
+                  "$ref": "#/components/schemas/CandidateDetailOut"
                 }
               }
             },
@@ -4487,7 +4579,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/AdminJobOut"
+                  "$ref": "#/components/schemas/JobOut"
                 }
               }
             },
@@ -4544,7 +4636,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/AdminJobOut"
+                  "$ref": "#/components/schemas/JobOut"
                 }
               }
             },

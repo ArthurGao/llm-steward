@@ -231,6 +231,7 @@ class RetrievalService:
     async def retrieve(self, namespace_id: uuid.UUID, req: RetrieveRequest) -> RetrieveResult:
         if req.rerank and self._reranker is None:
             raise Unprocessable("rerank is not available: no reranker is configured")
+        started = time.perf_counter()
         scope = Scope(namespace_id, req.user_id, req.agent_id, req.session_id)
         degraded: list[Degraded] = []
         async with self._sessions() as s:  # one session for both reads before the search
@@ -290,9 +291,10 @@ class RetrievalService:
         budget = req.token_budget or scoring.token_budget
         items, left_out = _select(pinned, ranked, top_k, budget, cost)
         ranks = {i.id: rank for r in rankings for rank, i in enumerate(r, start=1)}
+        timing = {**latency_ms, "total": int((time.perf_counter() - started) * 1000)}
         async with self._sessions() as s, s.begin():
             retrieval_id = self._log(
-                s, namespace_id, req, items, left_out, ranks, latency_ms, reranked_by
+                s, namespace_id, req, items, left_out, ranks, timing, degraded, reranked_by
             )
         context = _render(items) if req.with_context else None
         return RetrieveResult(retrieval_id, items, degraded, context)
@@ -613,6 +615,7 @@ class RetrievalService:
         left_out: list[tuple[RetrievedItem, str]],
         ranks: dict[uuid.UUID, int],
         latency_ms: dict[str, int],
+        degraded: list[Degraded],
         reranked_by: str | None,
     ) -> uuid.UUID:
         """What was asked and how each candidate fared (design §6 step 9): the returned items in
@@ -642,7 +645,9 @@ class RetrievalService:
             results=[_log_row(i, ranks) for i in items],
             hit_count=len(items),
             left_out=[{**_log_row(i, ranks), "why": why} for i, why in left_out],
-            latency_ms=latency_ms,
+            # per source, rerank and the whole call (`total`), plus the sources that failed or
+            # timed out: what the Admin's logs and the dashboard's p95 read
+            latency_ms={**latency_ms, "degraded": list(degraded)},
         )
         s.add(entry)
         return entry.id

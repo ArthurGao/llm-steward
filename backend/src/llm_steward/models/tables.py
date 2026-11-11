@@ -13,7 +13,6 @@ from sqlalchemy.orm import Mapped, mapped_column
 from llm_steward.models.base import Base, CreatedMixin, IdMixin, TimestampMixin, enum_column
 from llm_steward.models.enums import (
     ActorType,
-    AdminRole,
     AuthorType,
     CandidateOp,
     CandidateOrigin,
@@ -55,16 +54,6 @@ class ApiKey(IdMixin, CreatedMixin, Base):
     scopes: Mapped[list[str]] = mapped_column()
     last_used_at: Mapped[datetime | None]
     revoked_at: Mapped[datetime | None]
-
-
-class AdminUser(IdMixin, CreatedMixin, Base):
-    """Admin login arrives in P5; the table exists so the schema is complete."""
-
-    __tablename__ = "admin_users"
-    email: Mapped[str] = mapped_column(String(320), unique=True)
-    password_hash: Mapped[str] = mapped_column(String(200))
-    role: Mapped[AdminRole] = mapped_column(enum_column(AdminRole, "admin_role"))
-    namespaces: Mapped[list[str]] = mapped_column(default=list)
 
 
 class Episode(IdMixin, CreatedMixin, Base):
@@ -271,7 +260,10 @@ class ExternalRef(IdMixin, Base):
 
 class ChangeLog(IdMixin, CreatedMixin, Base):
     __tablename__ = "change_log"
-    __table_args__ = (Index("ix_change_log_object", "object_type", "object_id"),)
+    __table_args__ = (
+        Index("ix_change_log_object", "object_type", "object_id"),
+        Index("ix_change_log_recent", "namespace_id", "created_at"),  # the Admin's last 7 days
+    )
     namespace_id: Mapped[uuid.UUID] = _namespace_fk()
     object_type: Mapped[ObjectType] = mapped_column(enum_column(ObjectType, "log_object_type"))
     object_id: Mapped[uuid.UUID]
@@ -289,6 +281,7 @@ class RetrievalLog(IdMixin, CreatedMixin, Base):
     __table_args__ = (
         Index("ix_retrieval_logs_uncounted", "counted", "id"),
         Index("ix_retrieval_logs_gaps", "namespace_id", "hit_count", "id"),  # the Admin's gaps
+        Index("ix_retrieval_logs_recent", "namespace_id", "created_at"),  # its last 7 days
     )
     namespace_id: Mapped[uuid.UUID] = _namespace_fk()
     query: Mapped[str] = mapped_column(Text)

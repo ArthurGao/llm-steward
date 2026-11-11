@@ -2,6 +2,9 @@ import type { HTMLAttributes, ReactNode } from 'react'
 import { MODE } from '@/auth/session'
 import { cn } from '@/lib/cn'
 
+/** Why a control the backend has no route for yet is disabled. */
+export const NOT_IN_DEMO = MODE === 'mock' ? 'Not available in the demo' : 'Not available in this version'
+
 export function DemoMarker() {
   if (MODE === 'live') return null // real data: nothing to mark
   return (

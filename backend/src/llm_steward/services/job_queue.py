@@ -197,11 +197,16 @@ class JobQueue:
             query = query.where(Job.id.in_(job_ids))
         async with self._sessions() as session, session.begin():
             result = await session.execute(
-                query.values(status=JobStatus.PENDING, attempts=0, run_after=utcnow())
+                query.values(**requeued())
                 .execution_options(synchronize_session=False)
                 .returning(Job.id)
             )
             return len(result.all())
+
+
+def requeued() -> dict[str, Any]:
+    """What a retried job is set to: a fresh set of attempts, due now (the CLI and the Admin)."""
+    return {"status": JobStatus.PENDING, "attempts": 0, "run_after": utcnow()}
 
 
 def _still_ours(job: ClaimedJob) -> tuple[Any, ...]:

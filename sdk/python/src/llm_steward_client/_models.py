@@ -8,7 +8,7 @@ from uuid import UUID
 
 
 class AddToKbIn(BaseModel):
-    collection_id: Annotated[UUID, Field(title="Collection Id")]
+    collection_id: Annotated[UUID | None, Field(title="Collection Id")] = None
     content: Annotated[str, Field(max_length=50000, min_length=1, title="Content")]
     title: Annotated[str, Field(max_length=500, min_length=1, title="Title")]
 
@@ -510,41 +510,6 @@ class ActivityPage(BaseModel):
     next_cursor: Annotated[UUID | None, Field(title="Next Cursor")]
 
 
-class AdminJobOut(BaseModel):
-    attempts: Annotated[int, Field(title="Attempts")]
-    created_at: Annotated[AwareDatetime, Field(title="Created At")]
-    error: Annotated[str | None, Field(title="Error")]
-    id: Annotated[UUID, Field(title="Id")]
-    max_attempts: Annotated[int, Field(title="Max Attempts")]
-    run_after: Annotated[AwareDatetime, Field(title="Run After")]
-    status: Annotated[
-        Literal["pending", "running", "done", "failed"], Field(title="JobStatus")
-    ]
-    type: Annotated[
-        Literal[
-            "sync.memory_upsert",
-            "sync.memory_remove",
-            "sync.kb_upsert",
-            "sync.kb_remove",
-            "memory.extract",
-            "memory.reconcile",
-            "kb.suggest",
-            "kb.doc_ingest",
-            "kb.doc_status",
-            "kb.doc_remove",
-            "kb.doc_fetch",
-            "webhook.deliver",
-        ],
-        Field(title="JobType"),
-    ]
-    updated_at: Annotated[AwareDatetime, Field(title="Updated At")]
-
-
-class AdminJobPage(BaseModel):
-    items: Annotated[list[AdminJobOut], Field(title="Items")]
-    next_cursor: Annotated[UUID | None, Field(title="Next Cursor")]
-
-
 class BodyUploadDocumentV1KbDocumentsPost(BaseModel):
     collection_id: Annotated[UUID, Field(title="Collection Id")]
     file: Annotated[str | None, Field(title="File")] = None
@@ -974,6 +939,46 @@ class Written(BaseModel):
 
     candidate: CandidateOut | None
     entry: EntryOut | None
+
+
+class AdminJobPage(BaseModel):
+    items: Annotated[list[JobOut], Field(title="Items")]
+    next_cursor: Annotated[UUID | None, Field(title="Next Cursor")]
+
+
+class CandidateDetailOut(BaseModel):
+    """
+    A candidate as the reviewer reads it: for an UPDATE or DELETE of an entry, that entry as
+    it is now (what the decision would obsolete).
+    """
+
+    created_at: Annotated[AwareDatetime, Field(title="Created At")]
+    decided_at: Annotated[AwareDatetime | None, Field(title="Decided At")]
+    decided_by: Annotated[str | None, Field(title="Decided By")]
+    decision_note: Annotated[str | None, Field(title="Decision Note")]
+    draft: Annotated[dict[str, Any], Field(title="Draft")]
+    expires_at: Annotated[AwareDatetime | None, Field(title="Expires At")]
+    id: Annotated[UUID, Field(title="Id")]
+    op: Annotated[Literal["ADD", "UPDATE", "DELETE"], Field(title="CandidateOp")]
+    origin: Annotated[
+        Literal["extraction", "promote", "user_suggestion", "api"],
+        Field(title="CandidateOrigin"),
+    ]
+    reason: Annotated[str | None, Field(title="Reason")]
+    requested_for_user: Annotated[str | None, Field(title="Requested For User")]
+    risk_level: Annotated[Literal["low", "medium", "high"], Field(title="RiskLevel")]
+    stage: Annotated[
+        Literal["awaiting_user", "awaiting_review"], Field(title="CandidateStage")
+    ]
+    status: Annotated[
+        Literal["pending", "accepted", "rejected", "expired"],
+        Field(title="CandidateStatus"),
+    ]
+    target: EntryOut | None = None
+    target_id: Annotated[UUID | None, Field(title="Target Id")]
+    target_type: Annotated[
+        Literal["memory", "kb_entry", "kb_document"], Field(title="CandidateTarget")
+    ]
 
 
 class DecisionOut(BaseModel):

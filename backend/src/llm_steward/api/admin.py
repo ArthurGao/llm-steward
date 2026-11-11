@@ -10,7 +10,7 @@ comes from `AdminService`. Not here, by design: anything that writes to an engin
 import hmac
 import uuid
 from dataclasses import asdict, replace
-from typing import Annotated, Any
+from typing import Annotated
 
 import yaml
 from fastapi import APIRouter, Depends, HTTPException, Query, Response
@@ -20,13 +20,14 @@ from llm_steward.api.deps import ServicesDep
 from llm_steward.api.v1.candidates import decide
 from llm_steward.api.v1.kb import written
 from llm_steward.errors import Unprocessable
-from llm_steward.models import Namespace
+from llm_steward.models import Namespace, RetrievalLog
 from llm_steward.models.enums import (
     ActorType,
     ApiScope,
     AuthorType,
     CandidateStage,
     CandidateStatus,
+    CandidateTarget,
     JobStatus,
     JobType,
     KbOrigin,
@@ -39,6 +40,7 @@ from llm_steward.models.enums import (
 from llm_steward.prompts import templates as prompt_templates
 from llm_steward.providers.base import Scope
 from llm_steward.schemas import admin as out
+from llm_steward.schemas.jobs import JobOut
 from llm_steward.schemas.kb import (
     CandidateOut,
     CandidatePage,
@@ -363,8 +365,15 @@ async def list_candidates(
 
 
 @router.get("/ns/{slug}/candidates/{candidate_id}")
-async def get_candidate(ns: Ns, candidate_id: uuid.UUID, services: ServicesDep) -> CandidateOut:
-    return CandidateOut.model_validate(await services.kb.get_candidate(ns.id, candidate_id))
+async def get_candidate(
+    ns: Ns, candidate_id: uuid.UUID, services: ServicesDep
+) -> out.CandidateDetailOut:
+    candidate = await services.kb.get_candidate(ns.id, candidate_id)
+    detail = out.CandidateDetailOut.model_validate(candidate)
+    if candidate.target_type == CandidateTarget.KB_ENTRY and candidate.target_id is not None:
+        target = await services.kb.get_entry(ns.id, candidate.target_id)
+        detail.target = EntryOut.model_validate(target)
+    return detail
 
 
 @router.post("/ns/{slug}/candidates/{candidate_id}/accept")
@@ -419,7 +428,7 @@ async def retrieval_logs(
     return out.RetrievalLogPage(items=[_log_out(r) for r in rows], next_cursor=next_cursor)
 
 
-def _log_out(log: Any) -> out.RetrievalLogOut:
+def _log_out(log: RetrievalLog) -> out.RetrievalLogOut:
     scores = [float(r.get("score", 0.0)) for r in log.results]
     latency = (log.latency_ms or {}).get("total")
     return out.RetrievalLogOut(
@@ -427,7 +436,7 @@ def _log_out(log: Any) -> out.RetrievalLogOut:
         query=log.query,
         user_id=(log.filters or {}).get("user_id"),
         top_score=max(scores) if scores else None,
-        hit_count=len(log.results),
+        hit_count=log.hit_count,
         latency_ms=int(latency) if latency is not None else None,
         degraded=list((log.latency_ms or {}).get("degraded", [])),
         gap=is_gap(log),
@@ -452,7 +461,7 @@ async def add_to_kb(
     log = await services.admin.retrieval_log(ns.id, log_id)
     op = SubmitKbEntry(
         namespace_id=ns.id,
-        collection_id=body.collection_id,
+        collection_id=body.collection_id or await services.kb.suggestion_collection(ns.id),
         title=body.title,
         content=body.content,
         risk_level=RiskLevel.LOW,
@@ -502,25 +511,23 @@ async def jobs(
     rows, next_cursor = await services.admin.jobs(
         ns.id, status=status, job_type=type, cursor=cursor, limit=limit
     )
-    return out.AdminJobPage(
-        items=[out.AdminJobOut.model_validate(j) for j in rows], next_cursor=next_cursor
-    )
+    return out.AdminJobPage(items=[JobOut.model_validate(j) for j in rows], next_cursor=next_cursor)
 
 
 @router.post("/ns/{slug}/jobs/{job_id}/retry")
-async def retry_job(ns: Ns, job_id: uuid.UUID, services: ServicesDep) -> out.AdminJobOut:
-    return out.AdminJobOut.model_validate(await services.admin.retry_job(ns.id, job_id))
+async def retry_job(ns: Ns, job_id: uuid.UUID, services: ServicesDep) -> JobOut:
+    return JobOut.model_validate(await services.admin.retry_job(ns.id, job_id))
 
 
 @router.post("/ns/{slug}/jobs/{job_id}/cancel")
-async def cancel_job(ns: Ns, job_id: uuid.UUID, services: ServicesDep) -> out.AdminJobOut:
-    return out.AdminJobOut.model_validate(await services.admin.cancel_job(ns.id, job_id))
+async def cancel_job(ns: Ns, job_id: uuid.UUID, services: ServicesDep) -> JobOut:
+    return JobOut.model_validate(await services.admin.cancel_job(ns.id, job_id))
 
 
 @router.get("/ns/{slug}/providers")
 async def providers(ns: Ns, services: ServicesDep) -> out.ProviderPage:
-    report = await check_health(services.engine, services.providers.by_role())
-    rows = await services.admin.providers(ns.id, services.providers, report)
+    probe = check_health(services.engine, services.providers.by_role())
+    rows = await services.admin.providers(ns.id, services.providers, probe)
     return out.ProviderPage(items=[out.ProviderOut.model_validate(asdict(r)) for r in rows])
 
 
