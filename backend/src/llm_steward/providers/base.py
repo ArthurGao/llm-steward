@@ -9,10 +9,9 @@ from collections.abc import Iterable
 from dataclasses import dataclass, field
 from typing import Any, Literal, Protocol, cast
 
-from llm_steward.errors import ProviderUnavailable
 from llm_steward.models.enums import DocStatus
 
-ComponentStatus = Literal["ok", "error", "not_implemented"]
+ComponentStatus = Literal["ok", "error"]
 
 # Memory capabilities
 EXTRACT = "extract"
@@ -80,6 +79,17 @@ class ProviderHit:
     # a KB hit's best chunks, best first (`text` among them): a long document answers with
     # several passages; empty when the engine returned one
     passages: tuple[str, ...] = ()
+
+
+# What one adapter write (upsert, remove, upload) may take, waits included: under the worker's
+# per-job limit, which is half the job lease (services/worker.py, JobQueue.lease 60 s).
+WRITE_BUDGET_S = 20.0
+
+
+def collection_name(collection_id: uuid.UUID | str) -> str:
+    """What an engine calls a llm-steward collection (its knowledge base or dataset): found by
+    this exact name, so a crash between creating it and recording its id never makes two."""
+    return f"steward-{collection_id}"
 
 
 CHUNKS_PER_ID = 3  # a KB hit carries up to this many chunks of its entry or document
@@ -240,71 +250,3 @@ class Providers:
             close = getattr(provider, "aclose", None)
             if close is not None:
                 await close()
-
-
-class _Pending:
-    """A configured provider whose adapter belongs to a later stage: health says so, calls 503."""
-
-    capabilities: frozenset[str] = frozenset()
-
-    def __init__(self, name: str, stage: str) -> None:
-        self.name = name
-        self.stage = stage
-
-    def _unavailable(self) -> ProviderUnavailable:
-        return ProviderUnavailable(f"the {self.name} adapter arrives in {self.stage}")
-
-    async def health(self) -> ComponentHealth:
-        return ComponentHealth(self.name, "not_implemented", f"adapter arrives in {self.stage}")
-
-
-class PendingMemoryProvider(_Pending):
-    async def add(
-        self,
-        messages: list[Message],
-        scope: Scope,
-        *,
-        infer: bool = True,
-        metadata: dict[str, Any] | None = None,
-    ) -> list[MemoryEvent]:
-        raise self._unavailable()
-
-    async def search(
-        self, query: str, scope: Scope, *, top_k: int, filters: dict[str, Any] | None = None
-    ) -> list[ProviderHit]:
-        raise self._unavailable()
-
-    async def get(self, external_id: str) -> MemoryRecord | None:
-        raise self._unavailable()
-
-    async def update(self, external_id: str, content: str) -> None:
-        raise self._unavailable()
-
-    async def delete(self, external_id: str) -> None:
-        raise self._unavailable()
-
-    async def list(self, scope: Scope) -> list[MemoryRecord]:
-        raise self._unavailable()
-
-
-class PendingKnowledgeProvider(_Pending):
-    async def ensure_collection(self, collection: KbCollectionRef) -> str:
-        raise self._unavailable()
-
-    async def upsert_entry(
-        self, entry: KbEntryDoc, collection_ext_id: str, existing_id: str | None = None
-    ) -> str:
-        raise self._unavailable()
-
-    async def remove(self, external_id: str) -> None:
-        raise self._unavailable()
-
-    async def search(
-        self,
-        query: str,
-        collection_ext_ids: list[str],
-        *,
-        top_k: int,
-        filters: dict[str, Any] | None = None,
-    ) -> list[ProviderHit]:
-        raise self._unavailable()

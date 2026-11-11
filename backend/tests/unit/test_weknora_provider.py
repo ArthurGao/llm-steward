@@ -2,10 +2,9 @@
 were checked against the running v0.9.0 server (2026-11-09); the real engine runs in
 tests/contract/test_kb_contract.py under -m contract."""
 
-import json
 import uuid
 from collections.abc import Callable
-from typing import Any
+from typing import Any, ClassVar
 
 import httpx2
 import pytest
@@ -20,7 +19,7 @@ from llm_steward.providers.base import (
     KbEntryDoc,
 )
 from llm_steward.providers.weknora import WeKnoraProvider
-from tests.fakes.http import mock_http
+from tests.fakes.http import Router, mock_http
 
 BASE = "http://weknora.test"
 NS = uuid.UUID("00000000-0000-7000-8000-000000000001")
@@ -32,26 +31,8 @@ def ok(data: Any, status: int = 200) -> httpx2.Response:
     return httpx2.Response(status, json={"success": True, "data": data})
 
 
-class Api:
-    """Routes (method, path) to a handler; records every request."""
-
-    def __init__(self, routes: dict[tuple[str, str], Callable[[httpx2.Request], httpx2.Response]]):
-        self.routes = routes
-        self.requests: list[httpx2.Request] = []
-
-    def __call__(self, request: httpx2.Request) -> httpx2.Response:
-        self.requests.append(request)
-        handler = self.routes.get((request.method, request.url.path))
-        if handler is None:
-            return httpx2.Response(404, json={"success": False, "error": {"code": 1004}})
-        return handler(request)
-
-    def calls(self) -> list[str]:
-        return [f"{r.method} {r.url.path}" for r in self.requests]
-
-    def body(self, method: str, path: str) -> dict[str, Any]:
-        [request] = [r for r in self.requests if (r.method, r.url.path) == (method, path)]
-        return json.loads(request.content)  # type: ignore[no-any-return]
+class Api(Router):
+    not_found: ClassVar[dict[str, Any]] = {"success": False, "error": {"code": 1004}}
 
 
 def provider(api: Api, *, model: str | None = "model-1", budget_s: float = 5) -> WeKnoraProvider:

@@ -111,15 +111,30 @@ def test_weknora_failures_are_reported(
     }
 
 
-def test_ragflow_is_reported_not_implemented(tmp_path: Path) -> None:
-    settings = _settings(f"sqlite+aiosqlite:///{tmp_path}/h.db", kb_provider="ragflow")
-    body = _get_health(settings).json()
-    assert body["status"] == "degraded"
-    assert body["components"]["kb_provider"] == {
+RAGFLOW = "http://ragflow.test:8690"
+
+
+def test_ragflow_is_probed_at_its_url_with_its_own_status(tmp_path: Path) -> None:
+    seen: list[str] = []
+    replies = iter([{"status": "ok"}, {"doc_engine": "timeout", "status": "nok"}])
+
+    def handler(request: httpx2.Request) -> httpx2.Response:
+        seen.append(str(request.url))
+        return httpx2.Response(200, json=next(replies))
+
+    settings = _settings(
+        f"sqlite+aiosqlite:///{tmp_path}/h.db", kb_provider="ragflow", ragflow_url=RAGFLOW
+    )
+    with TestClient(create_app(settings, http=mock_http(handler), embedder=FakeEmbedder())) as c:
+        up, down = c.get("/health").json(), c.get("/health").json()
+    assert up["components"]["kb_provider"] == {"name": "ragflow", "status": "ok", "detail": None}
+    assert down["status"] == "degraded"
+    assert down["components"]["kb_provider"] == {
         "name": "ragflow",
-        "status": "not_implemented",
-        "detail": "adapter arrives in P7",
+        "status": "error",
+        "detail": "HTTP 200, nok",  # RAGFlow's own verdict: it answers 200 either way
     }
+    assert seen == [f"{RAGFLOW}/api/v1/system/healthz"] * 2
 
 
 LITERAG = "http://literag.test:8700"

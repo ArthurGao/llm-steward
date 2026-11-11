@@ -13,11 +13,11 @@ from llm_steward.llm.roles import Role, resolve
 from llm_steward.providers.base import (
     KnowledgeProvider,
     MemoryProvider,
-    PendingKnowledgeProvider,
     Providers,
     Reranker,
 )
 from llm_steward.providers.native.embedding import Embedder, FastEmbedEmbedder
+from llm_steward.providers.ragflow import RAGFlowProvider
 from llm_steward.providers.weknora import WeKnoraProvider
 
 
@@ -81,7 +81,13 @@ def build_providers(
                 timeout_s=settings.provider_timeout_ms / 1000,
             )
         case "ragflow":
-            kb = PendingKnowledgeProvider("ragflow", "P7")
+            kb = RAGFlowProvider(
+                http,
+                settings.ragflow_url,
+                settings.ragflow_api_key,
+                timeout_s=settings.provider_timeout_ms / 1000,
+                parser_id=settings.ragflow_parser_id,
+            )
         case "literag":
             kb = build_literag(settings, http)
 

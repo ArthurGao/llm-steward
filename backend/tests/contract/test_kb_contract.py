@@ -12,9 +12,10 @@ HTTP app (`create_app`, API keys on, reached through ASGI).
 import asyncio
 import time
 import uuid
-from collections.abc import AsyncIterator, Iterator
+from collections.abc import AsyncIterator, Callable, Iterator
 from contextlib import contextmanager
-from typing import Any
+from dataclasses import dataclass
+from typing import Any, cast
 
 import httpx2
 import pytest
@@ -29,10 +30,12 @@ from llm_steward.providers.base import (
     KbDocumentUpload,
     KbEntryDoc,
     KnowledgeProvider,
+    collection_name,
     document_parser,
 )
 from llm_steward.providers.literag import HttpTransport, InProcessTransport, LiteRagProvider
 from llm_steward.providers.native.providers import NativeKnowledgeProvider, create_store
+from llm_steward.providers.ragflow import RAGFlowProvider
 from llm_steward.providers.weknora import WeKnoraProvider
 from llm_steward.storage.db import engine_scope, prepare_schema
 from tests.conftest import TEST_SCHEMA, _pg_url
@@ -310,15 +313,38 @@ async def test_weknora(weknora: WeKnoraProvider) -> None:
     uuid.UUID(await check_documents(weknora, settle_s=60))
 
 
+@dataclass(frozen=True)
+class _Engine:
+    """A real KB engine for the governance-level tests: the Settings that point the app at it,
+    and how to look up a llm-steward collection's id there (None: never created)."""
+
+    settings: dict[str, Any]
+    collection: Callable[[str], str | None]
+
+
+@pytest.fixture
+def weknora_engine(weknora_target: _WeKnoraTarget) -> _Engine:
+    t = weknora_target
+    settings = {
+        "kb_provider": "weknora",
+        "weknora_url": t.url,
+        "weknora_api_key": t.api_key,
+        "weknora_embedding_model_id": t.embedding_model_id,
+    }
+    return _Engine(settings, lambda collection: _named(_weknora_kbs(t), collection))
+
+
+@pytest.fixture(params=["weknora", "ragflow"])
+def real_engine(request: pytest.FixtureRequest) -> _Engine:
+    return cast(_Engine, request.getfixturevalue(f"{request.param}_engine"))
+
+
 @pytest.mark.contract
-def test_weknora_acceptance_through_governance(
-    migrated_url: str, weknora_target: _WeKnoraTarget
-) -> None:
-    """P3 acceptance (design §11), real on both sides: a high-risk entry never reaches WeKnora
-    before a reviewer approves it; a deprecated one leaves retrieval at once — while WeKnora still
-    has it, with the worker stopped — and leaves WeKnora when the worker runs."""
-    target = weknora_target
-    with _weknora_app(migrated_url, target) as (c, host, reviewer):
+def test_acceptance_through_governance(migrated_url: str, real_engine: _Engine) -> None:
+    """P3 acceptance (design §11), real on both sides: a high-risk entry never reaches the engine
+    before a reviewer approves it; a deprecated one leaves retrieval at once — while the engine
+    still has it, with the worker stopped — and leaves the engine when the worker runs."""
+    with _engine_app(migrated_url, real_engine) as (c, host, reviewer):
         client = c.http
         collection = client.post(
             "/v1/kb/collections", json={"name": "faq", "default_risk": "low"}, headers=reviewer
@@ -331,7 +357,7 @@ def test_weknora_acceptance_through_governance(
         }
         card = client.post("/v1/kb/entries", json=body, headers=host).json()["candidate"]
         c.drain()
-        assert _weknora_kb(target, collection) is None  # nothing reached WeKnora at all
+        assert real_engine.collection(collection) is None  # nothing reached the engine at all
 
         def retrieve() -> list[str]:
             r = client.post(
@@ -349,23 +375,20 @@ def test_weknora_acceptance_through_governance(
         client.post(f"/v1/kb/entries/{entry['id']}/deprecate", headers=reviewer)
         assert retrieve() == []  # worker not run: the safety net
         kb = c.services.providers.kb
-        ext = _weknora_kb(target, collection)  # looked up: ensure_collection would create one
+        ext = real_engine.collection(collection)  # looked up: ensure_collection would create one
         assert ext is not None
-        assert c.call(kb.search, "refunds", [ext], top_k=5) != []  # WeKnora still has it
+        assert c.call(kb.search, "refunds", [ext], top_k=5) != []  # the engine still has it
         c.drain()
         assert c.call(kb.search, "refunds", [ext], top_k=5) == []
 
 
 @pytest.mark.contract
-def test_weknora_documents_through_governance(
-    migrated_url: str, weknora_target: _WeKnoraTarget
-) -> None:
+def test_documents_through_governance(migrated_url: str, real_engine: _Engine) -> None:
     """P3d, real on both sides: a document in a high-risk collection waits for a reviewer with
-    nothing in WeKnora; approved, the worker uploads it and polls until WeKnora has parsed it, and
-    retrieval serves its chunk; deleted, it leaves retrieval at once and WeKnora when the worker
-    runs."""
-    target = weknora_target
-    with _weknora_app(migrated_url, target) as (c, host, reviewer):
+    nothing in the engine; approved, the worker uploads it and polls until the engine has parsed
+    it, and retrieval serves its chunk; deleted, it leaves retrieval at once and the engine when
+    the worker runs."""
+    with _engine_app(migrated_url, real_engine) as (c, host, reviewer):
         collection = c.http.post(
             "/v1/kb/collections", json={"name": "docs", "default_risk": "high"}, headers=reviewer
         ).json()["id"]
@@ -378,11 +401,11 @@ def test_weknora_documents_through_governance(
         assert r.status_code == 202, r.text
         doc, card = r.json()["document"], r.json()["candidate"]
         c.drain()
-        assert _weknora_kb(target, collection) is None  # nothing reached WeKnora at all
+        assert real_engine.collection(collection) is None  # nothing reached the engine at all
 
         r = c.http.post(f"/v1/candidates/{card['id']}/accept", headers=reviewer)
         assert r.status_code == 200, r.text
-        deadline = time.monotonic() + 60
+        deadline = time.monotonic() + 120
         while (state := _document(c, host, doc["id"]))["status"] in ("pending", "processing"):
             assert time.monotonic() < deadline, state
             c.make_jobs_due()  # the next poll is scheduled seconds ahead
@@ -405,16 +428,17 @@ def test_weknora_documents_through_governance(
 
         assert c.http.delete(f"/v1/kb/documents/{doc['id']}", headers=reviewer).status_code == 200
         assert retrieve() == []  # worker not run: the safety net
-        kb, ext = c.services.providers.kb, _weknora_kb(target, collection)
+        kb, ext = c.services.providers.kb, real_engine.collection(collection)
         assert ext is not None
-        assert c.call(kb.search, "refunds", [ext], top_k=5) != []  # WeKnora still has it
+        assert c.call(kb.search, "refunds", [ext], top_k=5) != []  # the engine still has it
         c.drain()
         assert c.call(kb.search, "refunds", [ext], top_k=5) == []
 
 
 @contextmanager
-def _weknora_app(migrated_url: str, target: _WeKnoraTarget) -> Iterator[Any]:
-    """The app on WeKnora, with a host-app key (read/write) and a reviewer key (review scope)."""
+def _engine_app(migrated_url: str, engine: _Engine) -> Iterator[Any]:
+    """The app on a real engine, with a host-app key (read/write) and a reviewer key (review
+    scope)."""
     from fastapi.testclient import TestClient
 
     from llm_steward.main import create_app
@@ -422,10 +446,7 @@ def _weknora_app(migrated_url: str, target: _WeKnoraTarget) -> Iterator[Any]:
 
     settings = test_settings(
         migrated_url,
-        kb_provider="weknora",
-        weknora_url=target.url,
-        weknora_api_key=target.api_key,
-        weknora_embedding_model_id=target.embedding_model_id,
+        **engine.settings,
         provider_timeout_ms=10_000,
         retrieve_timeout_ms=10_000,
     )
@@ -446,12 +467,87 @@ def _auth(target: _WeKnoraTarget) -> dict[str, str]:
 
 
 def _weknora_kbs(target: _WeKnoraTarget) -> dict[str, str]:
-    """name → id of every knowledge base in the WeKnora workspace."""
+    """id → name of every knowledge base in the WeKnora workspace."""
     r = httpx2.get(f"{target.url}/api/v1/knowledge-bases", headers=_auth(target))
     return {kb["id"]: kb["name"] for kb in r.json()["data"]}
 
 
-def _weknora_kb(target: _WeKnoraTarget, collection_id: str) -> str | None:
-    """The WeKnora knowledge base of a llm-steward collection, if it was ever created."""
-    name = f"steward-{collection_id}"
-    return next((i for i, n in _weknora_kbs(target).items() if n == name), None)
+def _named(listing: dict[str, str], collection_id: str) -> str | None:
+    """The engine id (in an id → name listing) of a llm-steward collection, if it was ever
+    created: engines name it `collection_name`."""
+    name = collection_name(collection_id)
+    return next((i for i, n in listing.items() if n == name), None)
+
+
+# --- RAGFlow v1.0.0 (real engine, -m contract) ----------------------------------------------
+
+
+class _RAGFlowTarget(BaseSettings):
+    """The local RAGFlow (deploy/ragflow; its key from deploy/ragflow/bootstrap.py), read from the
+    environment or backend/.env. Missing: the test fails, it never skips."""
+
+    model_config = SettingsConfigDict(
+        env_prefix="STEWARD_RAGFLOW_", env_file=".env", extra="ignore"
+    )
+    url: str = "http://127.0.0.1:8690"
+    api_key: str | None = None
+
+
+@pytest.fixture
+def ragflow_target() -> Iterator[_RAGFlowTarget]:
+    """The configured local RAGFlow; afterwards, every dataset the test created is deleted (listed
+    before and after: governance never drops a collection, so no provider call does)."""
+    target = _RAGFlowTarget()
+    if not target.api_key:
+        pytest.fail(
+            "RAGFlow contract needs STEWARD_RAGFLOW_API_KEY (deploy/ragflow/README.md: start it, "
+            "then run deploy/ragflow/bootstrap.py)"
+        )
+    before = set(_ragflow_datasets(target))
+    yield target
+    created = sorted(set(_ragflow_datasets(target)) - before)
+    if created:
+        httpx2.request(
+            "DELETE",
+            f"{target.url}/api/v1/datasets",
+            json={"ids": created},
+            headers=_ragflow_auth(target),
+        )
+
+
+@pytest.fixture
+def ragflow_engine(ragflow_target: _RAGFlowTarget) -> _Engine:
+    t = ragflow_target
+    settings = {"kb_provider": "ragflow", "ragflow_url": t.url, "ragflow_api_key": t.api_key}
+    return _Engine(settings, lambda collection: _named(_ragflow_datasets(t), collection))
+
+
+@pytest.mark.contract
+async def test_ragflow(ragflow_target: _RAGFlowTarget) -> None:
+    t = ragflow_target
+    async with httpx2.AsyncClient() as http:
+        kb = RAGFlowProvider(http, t.url, t.api_key, timeout_s=10)
+        assert (await kb.health()).status == "ok"
+        dataset, document = (await check_lifecycle(kb)).split("/")
+        assert dataset and document  # <dataset>/<document>: every document call needs both
+        await check_documents(kb, settle_s=120)
+
+
+@pytest.mark.contract
+async def test_ragflow_refuses_a_wrong_key(ragflow_target: _RAGFlowTarget) -> None:
+    async with httpx2.AsyncClient() as http:
+        kb = RAGFlowProvider(http, ragflow_target.url, "ragflow-wrong", timeout_s=10)
+        with pytest.raises(ProviderUnavailable):
+            await kb.search("refunds", ["0" * 32], top_k=1)
+
+
+def _ragflow_auth(target: _RAGFlowTarget) -> dict[str, str]:
+    return {"Authorization": f"Bearer {target.api_key or ''}"}
+
+
+def _ragflow_datasets(target: _RAGFlowTarget) -> dict[str, str]:
+    """id → name of every dataset the key can see."""
+    r = httpx2.get(
+        f"{target.url}/api/v1/datasets", params={"page_size": 100}, headers=_ragflow_auth(target)
+    )
+    return {d["id"]: d["name"] for d in r.json()["data"]}

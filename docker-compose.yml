@@ -1,8 +1,9 @@
 # Profiles (design §3):
 #   native    llm-steward alone, SQLite on a volume, native providers.     docker compose --profile native up
 #   standard  llm-steward + WeKnora; governance DB is the shared local PG.  docker compose --profile standard up
-#   docparse  RAGFlow instead of WeKnora — arrives in P7.
-# Copy .env.example to .env first (secrets for WeKnora and the standard DB URL).
+#   docparse  llm-steward + RAGFlow (complex documents); RAGFlow is its own stack:
+#             deploy/ragflow/README.md, then  docker compose --profile docparse up
+# Copy .env.example to .env first (engine secrets and keys, and the governance DB URL).
 name: llm-steward
 
 include:
@@ -15,6 +16,22 @@ x-steward: &steward
   ports:
     - "127.0.0.1:8600:8600"
   restart: unless-stopped
+
+# llm-steward on the shared PG with mem0 (`standard`, `docparse`); only the KB engine differs.
+x-steward-pg: &steward-pg
+  <<: *steward
+  extra_hosts:
+    - "host.docker.internal:host-gateway"
+
+x-steward-pg-env: &steward-pg-env
+  # Without a password in .env the database check fails loudly in /health.
+  STEWARD_DATABASE_URL: ${STEWARD_STANDARD_DATABASE_URL:-postgresql+asyncpg://llm_steward@host.docker.internal:5432/llm_steward}
+  STEWARD_MEMORY_PROVIDER: mem0
+  # mem0 extracts through the LLM role layer; without these the service refuses to start.
+  # llm-gateway is loopback-only by design, so a container needs a vendor endpoint here.
+  STEWARD_LLM_BASE_URL: ${STEWARD_LLM_BASE_URL:-}
+  STEWARD_LLM_API_KEY: ${STEWARD_LLM_API_KEY:-}
+  STEWARD_LLM_MODEL: ${STEWARD_LLM_MODEL:-}
 
 services:
   steward-native:
@@ -29,24 +46,27 @@ services:
       - steward-data:/data
 
   steward-standard:
-    <<: *steward
+    <<: *steward-pg
     profiles: [standard]
     environment:
-      # Without a password in .env the database check fails loudly in /health.
-      STEWARD_DATABASE_URL: ${STEWARD_STANDARD_DATABASE_URL:-postgresql+asyncpg://llm_steward@host.docker.internal:5432/llm_steward}
-      STEWARD_MEMORY_PROVIDER: mem0
+      <<: *steward-pg-env
       STEWARD_KB_PROVIDER: weknora
       STEWARD_WEKNORA_URL: http://weknora-app:8080
-      # mem0 extracts through the LLM role layer; without these the service refuses to start.
-      # llm-gateway is loopback-only by design, so a container needs a vendor endpoint here.
-      STEWARD_LLM_BASE_URL: ${STEWARD_LLM_BASE_URL:-}
-      STEWARD_LLM_API_KEY: ${STEWARD_LLM_API_KEY:-}
-      STEWARD_LLM_MODEL: ${STEWARD_LLM_MODEL:-}
-    extra_hosts:
-      - "host.docker.internal:host-gateway"
+      STEWARD_WEKNORA_API_KEY: ${STEWARD_WEKNORA_API_KEY:-}  # deploy/weknora/bootstrap.py
+      STEWARD_WEKNORA_EMBEDDING_MODEL_ID: ${STEWARD_WEKNORA_EMBEDDING_MODEL_ID:-}
     depends_on:
       weknora-app:
         condition: service_healthy
+
+  steward-docparse:
+    <<: *steward-pg
+    profiles: [docparse]
+    environment:
+      <<: *steward-pg-env
+      STEWARD_KB_PROVIDER: ragflow
+      # RAGFlow runs as its own compose project, published on the host's 127.0.0.1:8690
+      STEWARD_RAGFLOW_URL: http://host.docker.internal:8690
+      STEWARD_RAGFLOW_API_KEY: ${STEWARD_RAGFLOW_API_KEY:-}  # deploy/ragflow/bootstrap.py
 
 volumes:
   steward-data:

@@ -131,6 +131,8 @@ Stack (run from the repo root):
 ```
 docker compose --profile native up -d --build      # llm-steward alone, SQLite volume
 docker compose --profile standard up -d --build    # llm-steward + WeKnora, shared PG
+python deploy/ragflow/setup.py                     # RAGFlow's own stack (deploy/ragflow/README.md), then
+docker compose --profile docparse up -d --build    # llm-steward + RAGFlow
 ```
 
 SDK (run from `sdk/python/`): `uv sync --all-extras && uv run pytest` (includes the OpenAPI drift check);

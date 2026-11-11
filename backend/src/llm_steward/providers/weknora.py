@@ -39,11 +39,13 @@ from llm_steward.models.enums import DocStatus
 from llm_steward.providers.base import (
     DOC_PARSING,
     ENTRY_UPSERT,
+    WRITE_BUDGET_S,
     ComponentHealth,
     KbCollectionRef,
     KbDocumentUpload,
     KbEntryDoc,
     ProviderHit,
+    collection_name,
     group_hits,
 )
 
@@ -75,7 +77,7 @@ class WeKnoraProvider:
         embedding_model_id: str | None,
         *,
         timeout_s: float,
-        budget_s: float = 20.0,
+        budget_s: float = WRITE_BUDGET_S,
         first_poll_s: float = 0.2,
     ) -> None:
         """`timeout_s`: health and search (retrieval's budget). `budget_s`: everything one upsert
@@ -157,7 +159,7 @@ class WeKnoraProvider:
                 "weknora needs an embedding model for new collections: set "
                 "STEWARD_WEKNORA_EMBEDDING_MODEL_ID (deploy/weknora/bootstrap.py prints it)"
             )
-        name = f"steward-{collection.collection_id}"
+        name = collection_name(collection.collection_id)
         timeout = self._budget_s
         existing = await self._call("GET", "/knowledge-bases", timeout_s=timeout)
         for kb in existing or []:

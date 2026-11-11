@@ -713,7 +713,7 @@ llm-steward/
 │   │   │   ├── registry.py       # entry points + module:Class 加载，按 namespace 缓存实例
 │   │   │   ├── mem0_provider.py
 │   │   │   ├── weknora_provider.py
-│   │   │   ├── ragflow_provider.py
+│   │   │   ├── ragflow.py
 │   │   │   └── native/           # memory.py, knowledge.py, vector_sqlite.py, vector_pg.py, fts.py, chunker.py
 │   │   ├── pipeline/
 │   │   │   ├── buffer.py
@@ -764,7 +764,7 @@ llm-steward/
    - [x] monorepo、uv、ruff、mypy、import-linter、pre-commit（pnpm workspace 推迟到 P6，与 Admin 一起建）
    - [x] `config.py`、`storage/db.py`（SQLite / PG）、Alembic
    - [x] docker-compose 的 `native`、`standard`（共用 PG + 锁定版本的 WeKnora）两个 profile；CI（一次运行覆盖 SQLite 与 PG）
-   - `docparse`（RAGFlow）profile 推迟到 P7：本机无法启动验证（4C/16GB），不写未验证的配置
+   - `docparse`（RAGFlow）profile 推迟到 P7：本机无法启动验证（4C/16GB），不写未验证的配置。→ 2026-11-11 更正：RAGFlow v1.0.0 的镜像有 arm64 版，本机跑得动（约 5.5 GB），P7a 已加上 `docparse`
    - [x] CLAUDE.md
    - 验收：`native` 和 `standard` 都能启动，`GET /health` 返回各组件状态，CI 通过
 2. **P1 治理核心（基于 native provider）**
@@ -968,9 +968,11 @@ llm-steward/
    - P6 收尾 · simplify（2026-11-11，四个角度，整个 stage 的 diff，基准 `d705080`）。修了：检索日志从不记总耗时和 degraded（Dashboard 的 p95、日志的耗时和 degraded 在真后端上一直是空的；先写红测试，现在 `retrieve()` 记 `total` 和失败的数据源）；日志的 `hit_count` 用存储的列；Admin 的 job 重试和 CLI 共用 `job_queue.requeued()`，`_set_job` 不再开第二个 session；`AdminJobOut` 去掉，用 `/v1` 的 `JobOut`；providers 页的引擎探测和 DB 读取并发，两个 DB 读取合成一个 session；`add-to-kb` 不给 collection 时由后端放进 suggestions collection（和 promote 一样），前端不再自己挑；候选详情 `CandidateDetailOut.target` 由后端带上要被取代的条目，前端不再多发一个请求，也不再编一个相似度 1；迁移 0012 的回填改成一条 UPDATE（加了回填测试）；迁移 0013 给 `change_log`、`retrieval_logs` 加 `(namespace_id, created_at)` 索引（Dashboard 的 7 天窗口），并删掉 `admin_users` 表和 `AdminUser`/`AdminRole`（不做账号）；前端：枚举直接用生成的类型（`ObjectType`、`ChangeOp` 保留演示多出的值），`change` 只有一个适配，`at()` 生成路径参数，`NOT_IN_DEMO` 并入 `components/misc`，users 列表不再编总数。没做，记下：结构化的筛查结果（候选表加字段，改治理表，需要先计划）；reject 必须写理由下沉到 `kb.decide`（会改 `/v1` 行为，待 owner 定）；Dashboard 的按天计数和 p95 改成 SQL 聚合（需要方言相关的 SQL，现在有索引、只读 7 天，先不动）；通用 `Page[T]` 和把 `Limit` 移到 `api/deps.py`（会改 OpenAPI 的 schema 名）；去掉 `ApiScope.ADMIN`（已存的 key 可能带着它，要先迁移数据）；`ActivityOut` 不继承 `ChangeOut`（它的字段是枚举，比 `ChangeOut` 的字符串严格）；`collections` 不改用 `KbService.list_collections`（Admin 按名字排序，`/v1` 按 id，合并要多开一个 session）；`session.ts` 去掉 `mode` 哨兵、`entry_history` 改返回 dataclass、只失效更窄的 query key、job 显示所属对象、Playground 显示 `weight`/`rel`、users 分页：都是小改进，留到 P7。
    - P6 收尾 · Codex（2026-11-11，只读，`git diff d705080`）报 3 条。修了 2 条，各先写红测试：(1) 连接页只接受 http/https、不带账号密码/query/fragment 的后端地址（`backendUrl`），admin token 不会发往别的 scheme；(2) users 列表原来静默截在 100 个，现在按（最后活动时间, user id）做 keyset 翻页，`next_cursor` 是不透明字符串。不成立 1 条："Admin 直接 verify 绕过审核"——规则 5 写的是只有 reviewer/admin 能 verify，Admin 就是审核者，§7 的 Admin 路由本来就有 verify；它走 `GovernanceService.apply()`，有状态机和 change_log。P6 关闭。
 8. **P7 RAGFlow 与收尾**
-   - [ ] `RAGFlowProvider` + 合约测试；`steward resync`（更换 provider 并全量重新同步）
+   - [x] `RAGFlowProvider` + 合约测试
+   - [ ] `steward resync`（更换 provider 并全量重新同步）
    - P7 计划（2026-11-11）。RAGFlow v1.0.0 已在本机跑通（arm64 原生镜像，约 5.5 GB），事实见 KB `global/ragflow/README.md`。P7a `RAGFlowProvider`：collection ↔ dataset `steward-<collection_id>`（按精确名字找，崩溃后不重建）；entry ↔ 一个文档 `entry-<entry_id>.txt`，其中一个手动 chunk 存"标题 + 内容"（马上可检），外部 id 为 `<dataset_id>/<document_id>`，更新时 PATCH 那个 chunk，文档没了就重建；document ↔ 上传文件，名字为 `<document_id>-<filename>`（按名字去重，因为 RAGFlow 不按内容去重），然后 `POST /datasets/{id}/chunks` 开始解析，`ingestion_status` 映射为 COMPLETED → ready、FAILED/STOPPED → failed、RUNNING/STOPPING → processing、其余 → pending，查不到（code 102）→ failed；检索走 `/api/v1/retrieval`，`similarity_threshold` 0（由治理层决定，和 native、lite-rag 一致），`keywords_similarity_weight` 0.3（实测默认 0.7 会压低换说法的问题）；每个响应都检查 `code`，报错时不带响应正文。另有：配置 `STEWARD_RAGFLOW_URL`、`STEWARD_RAGFLOW_API_KEY`；`deploy/ragflow`（固定 v1.0.0、端口只绑 127.0.0.1、换掉示例密码、`bootstrap.py` 不点 UI 完成初始化并打印 STEWARD_RAGFLOW_* 配置）；单元测试（脚本化的 API）；`-m contract` 合约测试和经治理层的验收测试。P7b `steward resync`；P7c `@llm-steward/widget`；P7d 后台维护任务；P7e README 与接入指南；LoCoMo 评测要调真模型，owner 没要求，不做。
    - [ ] `@llm-steward/widget`、后台维护任务、LoCoMo 评测、README 与接入指南
+   - P7a RAGFlow（2026-11-11）：`providers/ragflow.py` 按上面的计划实现，单元测试 `tests/unit/test_ragflow_provider.py`（脚本化的 v1.0.0 API，28 个；8 处变异都能抓到）。对真引擎的 `-m contract`：`test_ragflow`（生命周期 + 文档真解析）、错误 key 被拒，以及经治理层的两条验收（high 风险条目审核前不进引擎、deprecate 后先被安全网挡住再被 worker 移除；文档审核 → 上传 → 解析 → 可检 → 删除），在 SQLite 和 PG 上共 6 个通过。这两条验收原来只写给 WeKnora，现在按引擎参数化，WeKnora 5 个照样通过。真引擎上发现两处和文档不一致，各自先在测试里改成真实行为：建 dataset 不收 `description`（code 101）；按名字查不存在的文档是 code 102，不是空列表。`deploy/ragflow`：`setup.py` 拉 v1.0.0 的 `docker/` 到被 gitignore 的 `upstream/`，端口只绑 127.0.0.1，只替换仍是上游示例值的密码（重跑不动已有密码，已验证），`bootstrap.py` 不点 UI 完成初始化（新账号、重跑、错密码三种情况都验证过；用它建的 tenant 跑合约测试 6/6）。本机这套 RAGFlow 已从临时目录切到 `deploy/ragflow/upstream`，数据卷保留。根 compose 加了 `docparse`（mem0 + RAGFlow，经 `host.docker.internal:8690`，容器内连通已验证；mem0 需要真模型的 key，所以整个容器没在这里起）。顺带修了 `standard`：容器原来拿不到 `STEWARD_WEKNORA_API_KEY` 和模型 id，所有 WeKnora 调用都会被拒；两个 profile 现在都从根 `.env` 读引擎的 key。去掉了只为 RAGFlow 占位的 `Pending*Provider`。 simplify（四个角度）后：查文档合成一个 `_docs`（按 id 或名字，code 102 = 没有）；新文档上传后直接加它的 chunk；collection 的命名 `collection_name` 和写操作预算 `WRITE_BUDGET_S` 放进 `providers/base.py`，WeKnora 也用；新增 `STEWARD_RAGFLOW_PARSER_ID`（新 dataset 用的内置解析器，默认 `general`，RAGFlow 的长处在 paper、table、laws 这些专门的解析器）；单元测试的脚本化 API `Router` 移到 `tests/fakes/http.py`，WeKnora 和 RAGFlow 共用；compose 的 `standard` 和 `docparse` 共用 PG + mem0 那一段，只有引擎那几行各自写。没做，记下：更新条目时先列 chunk、失败再查文档能省一次请求，但列一个不存在文档的 chunk 返回的是 HTTP 500，和真的服务器错误分不开，先不动；"不带 `existing_id` 重试也返回同一个 id" 现在只有 RAGFlow 做到（按名字找回），WeKnora 做不到，写进 Protocol 前要先改 WeKnora 或做 Syncer 层的 pending → confirm（会改同步状态机）；三个 adapter 的 HTTP 外壳相似，合并成共用模块价值不大，各自保留；`keywords_similarity_weight` 0.3 只凭一次实测，之后用 `-m eval` 的 recall@8 在 RAGFlow 上跑一次再定；每个 collection 用不同解析器要改 Protocol，留到以后。
    - 验收：把一个 namespace 从 WeKnora 切换到 RAGFlow 后，全部生效条目可检索，治理状态和历史不变；全新环境按 README 在 15 分钟内完成 `standard` 部署与第一次写入和检索
 
 ### 给 Claude Code 的第一条指令（参考）

@@ -65,3 +65,6 @@ logs/
 
 # Frontend local (routeTree.gen.ts is generated but committed, as TanStack Router advises: typecheck needs it)
 .vercel/
+
+# RAGFlow upstream deployment fetched by deploy/ragflow/setup.py (holds generated passwords)
+deploy/ragflow/upstream/

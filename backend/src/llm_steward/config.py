@@ -27,6 +27,13 @@ class Settings(BaseSettings):
     weknora_api_key: str | None = None
     # The embedding model new WeKnora knowledge bases use (deploy/weknora/bootstrap.py prints it).
     weknora_embedding_model_id: str | None = None
+    # RAGFlow (complex documents, profile `docparse`); its embedding model is the tenant default
+    # that deploy/ragflow/bootstrap.py sets, and it prints the key.
+    ragflow_url: str = "http://127.0.0.1:8690"
+    ragflow_api_key: str | None = None
+    # The built-in parser new datasets use: general, paper, table, laws, book, manual, … (RAGFlow's
+    # reason to be the complex-documents engine; existing datasets keep theirs)
+    ragflow_parser_id: str = "general"
     # lite-rag (the owner's own RAG engine): its HTTP service by default, or in-process (extra
     # `literag`, configured by its own LITERAG_* variables or `literag_config`, a lite-rag YAML).
     literag_mode: Literal["http", "inprocess"] = "http"
