@@ -372,9 +372,9 @@ class AdminService:
                 raise Conflict(
                     f"only a failed sync is retried (this one is {ref.sync_status.value!r})"
                 )
-            job_type, key = SYNC_JOBS[ref.object_type]
+            jobs = SYNC_JOBS[ref.object_type]
             ref.sync_status, ref.last_error = SyncStatus.PENDING, None
-            enqueue(s, namespace_id, job_type, {key: str(ref.object_id)})
+            enqueue(s, namespace_id, jobs.upsert, {jobs.key: str(ref.object_id)})
             await s.flush()
             return ref
 

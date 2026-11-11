@@ -223,8 +223,9 @@ class SyncService:
         # Governance opens a collection's ref for the engine of the day; after a switch the new
         # engine has none, and a collection has no governed state to wait for: open it here.
         async with self._sessions() as s, s.begin():
-            ref = (ObjectType.KB_COLLECTION, collection, provider.name, SyncStatus.PENDING)
-            await mark_ref(s, *ref)
+            await mark_ref(
+                s, ObjectType.KB_COLLECTION, collection, provider.name, SyncStatus.PENDING
+            )
         await self._set(ObjectType.KB_COLLECTION, collection.id, provider.name, synced=ext)
         return ext
 

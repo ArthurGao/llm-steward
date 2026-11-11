@@ -27,7 +27,8 @@ export type ObjectType = gen.ObjectType | 'user'
 export type ChangeOp = gen.ChangeOp | 'delete' | 'erase'
 
 /** The Admin's review lists: flagged for review, or active and well rated (worth verifying). */
-export type ReviewFilter = 'due' | 'verify'
+export const REVIEW_FILTERS = ['due', 'verify'] as const
+export type ReviewFilter = (typeof REVIEW_FILTERS)[number]
 
 export interface Page<T> {
   items: T[]

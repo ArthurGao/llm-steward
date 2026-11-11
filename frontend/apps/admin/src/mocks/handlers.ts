@@ -3,13 +3,14 @@
 import { delay, HttpResponse, type HttpResponseResolver } from 'msw'
 import { http } from 'msw/http'
 import { oneOf } from '@/lib/search'
+import { REVIEW_FILTERS } from '@/api/types'
 import { StoreError, type Actor, type Store } from './store'
 
 // Query-string enums are validated, so an unknown value means "no filter" rather than a bad type.
 const memoryStatus = oneOf(['active', 'superseded', 'deleted'] as const)
 const kbStatus = oneOf(['draft', 'active', 'verified', 'deprecated', 'rejected'] as const)
 const risk = oneOf(['low', 'medium', 'high'] as const)
-const review = oneOf(['due', 'verify'] as const)
+const review = oneOf(REVIEW_FILTERS)
 const stage = oneOf(['awaiting_user', 'awaiting_review'] as const)
 const candidateStatus = oneOf(['pending', 'accepted', 'rejected', 'expired', 'all'] as const)
 const origin = oneOf(['extraction', 'promote', 'user_suggestion', 'api'] as const)

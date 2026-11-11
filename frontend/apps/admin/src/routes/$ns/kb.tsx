@@ -2,7 +2,7 @@ import { useQuery } from '@tanstack/react-query'
 import { createFileRoute, useNavigate } from '@tanstack/react-router'
 import { api } from '@/api/endpoints'
 import { oneOf, str } from '@/lib/search'
-import type { KbDocument, KbEntry, ReviewFilter } from '@/api/types'
+import { REVIEW_FILTERS, type KbDocument, type KbEntry, type ReviewFilter } from '@/api/types'
 import { DataTable, type Column } from '@/components/DataTable'
 import { DocumentStack } from '@/components/DocumentStack'
 import { EmptyState, ErrorNote, Loading, Mono, NOT_IN_DEMO, PageTitle } from '@/components/misc'
@@ -39,7 +39,7 @@ export const Route = createFileRoute('/$ns/kb')({
     doc: str(s.doc),
     status: str(s.status) as Search['status'],
     risk: str(s.risk) as Search['risk'],
-    review: oneOf(['due', 'verify'] as const)(s.review),
+    review: oneOf(REVIEW_FILTERS)(s.review),
     q: str(s.q),
     cursor: str(s.cursor),
   }),

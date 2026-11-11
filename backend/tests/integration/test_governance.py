@@ -23,7 +23,7 @@ from llm_steward.models.enums import (
     MemoryStatus,
     RiskLevel,
 )
-from llm_steward.services import governance_service
+from llm_steward.services import job_queue
 from llm_steward.services.governance_service import (
     SYSTEM,
     Actor,
@@ -96,7 +96,7 @@ async def test_a_failure_after_the_object_write_leaves_nothing(
     def broken_enqueue(*args: Any, **kwargs: Any) -> None:
         raise RuntimeError("outbox down")
 
-    monkeypatch.setattr(governance_service, "enqueue", broken_enqueue)
+    monkeypatch.setattr(job_queue, "enqueue", broken_enqueue)  # the outbox write
     with pytest.raises(RuntimeError, match="outbox down"):
         await stack.apply(CreateMemory(stack.ns, "never stored"))
     assert (await stack.count(Memory), await stack.count(ChangeLog), await stack.count(Job)) == (

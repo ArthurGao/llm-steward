@@ -8,6 +8,7 @@ from datetime import datetime
 from typing import Any
 
 from sqlalchemy import ForeignKey, Index, LargeBinary, String, Text, UniqueConstraint, func, text
+from sqlalchemy.ext.hybrid import hybrid_property
 from sqlalchemy.orm import Mapped, mapped_column
 
 from llm_steward.models.base import Base, CreatedMixin, IdMixin, TimestampMixin, enum_column
@@ -164,6 +165,21 @@ class KbEntry(IdMixin, TimestampMixin, Base):
     reviewed_hits: Mapped[int] = mapped_column(default=0)
     reviewed_helpful: Mapped[int] = mapped_column(default=0)
     reviewed_unhelpful: Mapped[int] = mapped_column(default=0)
+
+    # Feedback since the last review (the counters above as of then): what flags an entry for
+    # review again, in SQL (the daily scan) and on an instance (the logged reason) alike.
+    @hybrid_property
+    def hits_since_review(self) -> int:
+        return self.hit_count - self.reviewed_hits
+
+    @hybrid_property
+    def unhelpful_since_review(self) -> int:
+        return self.unhelpful_count - self.reviewed_unhelpful
+
+    @hybrid_property
+    def rated_since_review(self) -> int:
+        return self.unhelpful_since_review + self.helpful_count - self.reviewed_helpful
+
     version: Mapped[int] = mapped_column(default=1)
     tags: Mapped[list[str]] = mapped_column(default=list)
     meta: Mapped[dict[str, Any]] = mapped_column("metadata", default=dict)

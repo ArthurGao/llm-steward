@@ -7,11 +7,10 @@ re-upload, not queued.
 """
 
 import uuid
-from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Any
 
-from sqlalchemy import ColumnElement, and_, exists, or_, select
+from sqlalchemy import ColumnElement, and_, exists, not_, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from llm_steward.models import ExternalRef, KbDocument, KbDocumentFile, KbEntry, Memory
@@ -38,30 +37,21 @@ class ResyncReport:
 class _Kind:
     model: Any
     object_type: ObjectType
-    effective: Callable[[], ColumnElement[bool]]
-    # what governance takes out of an engine (a superseded memory is left to the engine)
-    retired: Callable[[], ColumnElement[bool]]
+    effective: ColumnElement[bool]
+    # what governance takes out of an engine; default: not effective
+    retired: ColumnElement[bool] | None = None
     versioned: bool = False  # a synced copy of an older version is stale
 
 
 ENTRIES = _Kind(
-    KbEntry,
-    ObjectType.KB_ENTRY,
-    lambda: KbEntry.status.in_(EFFECTIVE_KB_STATUSES),
-    lambda: KbEntry.status.not_in(EFFECTIVE_KB_STATUSES),
-    versioned=True,
+    KbEntry, ObjectType.KB_ENTRY, KbEntry.status.in_(EFFECTIVE_KB_STATUSES), versioned=True
 )
-DOCUMENTS = _Kind(
-    KbDocument,
-    ObjectType.KB_DOCUMENT,
-    lambda: KbDocument.state.in_(EFFECTIVE_KB_STATUSES),
-    lambda: KbDocument.state.not_in(EFFECTIVE_KB_STATUSES),
-)
-MEMORIES = _Kind(
+DOCUMENTS = _Kind(KbDocument, ObjectType.KB_DOCUMENT, KbDocument.state.in_(EFFECTIVE_KB_STATUSES))
+MEMORIES = _Kind(  # a superseded memory is left to the engine
     Memory,
     ObjectType.MEMORY,
-    lambda: Memory.status == MemoryStatus.ACTIVE,
-    lambda: Memory.status == MemoryStatus.DELETED,
+    Memory.status == MemoryStatus.ACTIVE,
+    retired=Memory.status == MemoryStatus.DELETED,
 )
 
 
@@ -76,7 +66,7 @@ async def resync(
 ) -> ResyncReport:
     """Queue what `kb_provider` / `memory_provider` (the configured engines' names) lack, in one
     transaction for the namespace."""
-    counts = dict.fromkeys(ObjectType, 0)
+    counts: dict[ObjectType, int] = {}
     without_file: list[uuid.UUID] = []
     removed = 0
     kinds = [(k, kb_provider) for k in (ENTRIES, DOCUMENTS) if kb]
@@ -90,18 +80,31 @@ async def resync(
                 objects = [d for d in objects if d.id in held]  # fetching: its fetch ingests it
                 for doc in objects:  # its parse status was the old engine's; this one starts
                     doc.status, doc.error = DocStatus.PENDING, None
-            for obj in objects:
-                await queue_sync(s, kind.object_type, obj, provider)
+            stale = await _still_held(s, kind, namespace_id, provider)
+            with s.no_autoflush:  # one flush at commit, not one per queued object
+                for obj in objects:
+                    await queue_sync(s, kind.object_type, obj, provider)
+                for obj in stale:
+                    await queue_removal(s, kind.object_type, obj, provider)
             counts[kind.object_type] = len(objects)
-            for obj in (stale := await _still_held(s, kind, namespace_id, provider)):
-                await queue_removal(s, kind.object_type, obj, provider)
             removed += len(stale)
     return ResyncReport(
-        entries=counts[ObjectType.KB_ENTRY],
-        memories=counts[ObjectType.MEMORY],
-        documents=counts[ObjectType.KB_DOCUMENT],
+        entries=counts.get(ObjectType.KB_ENTRY, 0),
+        memories=counts.get(ObjectType.MEMORY, 0),
+        documents=counts.get(ObjectType.KB_DOCUMENT, 0),
         removed=removed,
         documents_without_file=without_file,
+    )
+
+
+def _ref_at(kind: _Kind, provider: str, status: ColumnElement[bool]) -> ColumnElement[bool]:
+    """The object has a ref at `provider` matching `status`."""
+    ref = ExternalRef
+    return exists().where(
+        ref.object_type == kind.object_type,
+        ref.object_id == kind.model.id,
+        ref.provider == provider,
+        status,
     )
 
 
@@ -110,18 +113,15 @@ async def _lacking(
 ) -> list[Any]:
     """Effective objects the provider does not hold: no ref there, or a ref that is neither
     pending (already queued) nor synced (at the object's version, when versioned)."""
-    model, ref = kind.model, ExternalRef
+    ref = ExternalRef
     synced = ref.sync_status == SyncStatus.SYNCED
     if kind.versioned:
-        synced = and_(synced, ref.synced_version == model.version)
-    has_it = exists().where(
-        ref.object_type == kind.object_type,
-        ref.object_id == model.id,
-        ref.provider == provider,
-        or_(ref.sync_status == SyncStatus.PENDING, synced),
+        synced = and_(synced, ref.synced_version == kind.model.version)
+    has_it = _ref_at(kind, provider, or_(ref.sync_status == SyncStatus.PENDING, synced))
+    query = select(kind.model).where(
+        kind.model.namespace_id == namespace_id, kind.effective, ~has_it
     )
-    query = select(model).where(model.namespace_id == namespace_id, kind.effective(), ~has_it)
-    return list(await s.scalars(query.order_by(model.id)))
+    return list(await s.scalars(query.order_by(kind.model.id)))
 
 
 async def _still_held(
@@ -129,14 +129,11 @@ async def _still_held(
 ) -> list[Any]:
     """Retired objects the provider may still hold a copy of (a synced or failed push there; a
     removal already queued is `deleting`)."""
-    ref = ExternalRef
-    held = exists().where(
-        ref.object_type == kind.object_type,
-        ref.object_id == kind.model.id,
-        ref.provider == provider,
-        ref.sync_status.in_((SyncStatus.SYNCED, SyncStatus.FAILED)),
+    retired = kind.retired if kind.retired is not None else not_(kind.effective)
+    held = _ref_at(
+        kind, provider, ExternalRef.sync_status.in_((SyncStatus.SYNCED, SyncStatus.FAILED))
     )
-    query = select(kind.model).where(kind.model.namespace_id == namespace_id, kind.retired(), held)
+    query = select(kind.model).where(kind.model.namespace_id == namespace_id, retired, held)
     return list(await s.scalars(query.order_by(kind.model.id)))
 
 

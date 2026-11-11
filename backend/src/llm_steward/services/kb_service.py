@@ -488,15 +488,14 @@ class KbService:
     async def flag_for_review(self) -> int:
         """Flag effective knowledge often rated unhelpful since its last review (a daily worker
         tick, every namespace), each in its own transaction; returns how many were flagged."""
-        unhelpful = KbEntry.unhelpful_count - KbEntry.reviewed_unhelpful
-        rated = unhelpful + KbEntry.helpful_count - KbEntry.reviewed_helpful
+        unhelpful, rated = KbEntry.unhelpful_since_review, KbEntry.rated_since_review
         async with self._sessions() as s:
             due = (
                 await s.execute(
                     select(KbEntry.namespace_id, KbEntry.id).where(
                         KbEntry.status.in_(EFFECTIVE_KB_STATUSES),
                         KbEntry.review_due_at.is_(None),
-                        KbEntry.hit_count - KbEntry.reviewed_hits >= REVIEW_MIN_HITS,
+                        KbEntry.hits_since_review >= REVIEW_MIN_HITS,
                         rated > 0,
                         _share_at_least(unhelpful, rated, REVIEW_UNHELPFUL_PERCENT),
                     )

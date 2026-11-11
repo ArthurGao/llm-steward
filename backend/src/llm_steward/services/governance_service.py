@@ -56,7 +56,7 @@ from llm_steward.namespace_config import read_config
 from llm_steward.pipeline.risk import Assessment, RiskPolicy, assess, redact_pii
 from llm_steward.providers.base import Scope
 from llm_steward.services.erasure import Erased, erase_user
-from llm_steward.services.job_queue import enqueue, mark_ref
+from llm_steward.services.job_queue import enqueue, mark_ref, queue_removal, queue_sync
 from llm_steward.services.scoping import exact
 from llm_steward.services.webhook_service import candidate_event, entry_event, queue_event
 
@@ -116,7 +116,6 @@ STAGES: dict[Route, CandidateStage] = {
     "user": CandidateStage.AWAITING_USER,
     "review": CandidateStage.AWAITING_REVIEW,
 }
-REMOVALS = frozenset({JobType.KB_REMOVE, JobType.DOC_REMOVE})
 EDITABLE = frozenset({"title", "content"})  # what a decision may change in a draft
 CANDIDATE_TTL = timedelta(days=7)  # unanswered cards expire (design §5)
 
@@ -559,8 +558,7 @@ class GovernanceService:
         if previous is not None:
             reason = f"profile key {op.key!r} has a new value"
             self._superseded(s, previous, memory.id, before, actor, reason)
-        await mark_ref(s, ObjectType.MEMORY, memory, self._memory_provider, SyncStatus.PENDING)
-        enqueue(s, op.namespace_id, JobType.MEMORY_UPSERT, {"memory_id": str(memory.id)})
+        await queue_sync(s, ObjectType.MEMORY, memory, self._memory_provider)
         return memory
 
     @staticmethod
@@ -663,8 +661,7 @@ class GovernanceService:
         memory.valid_to = utcnow()
         await s.flush()
         self._log(s, ObjectType.MEMORY, memory, ChangeOp.TRANSITION, before, actor, op.reason)
-        await mark_ref(s, ObjectType.MEMORY, memory, self._memory_provider, SyncStatus.DELETING)
-        enqueue(s, op.namespace_id, JobType.MEMORY_REMOVE, {"memory_id": str(memory.id)})
+        await queue_removal(s, ObjectType.MEMORY, memory, self._memory_provider)
         return memory
 
     async def _erase_user(self, s: AsyncSession, op: EraseUser, actor: Actor) -> Erased:
@@ -737,7 +734,7 @@ class GovernanceService:
         await s.flush()
         self._log(s, ObjectType.KB_ENTRY, entry, ChangeOp.CREATE, None, actor)
         if entry.status in EFFECTIVE_KB_STATUSES:
-            await self._queue_kb(s, entry, JobType.KB_UPSERT)
+            await queue_sync(s, ObjectType.KB_ENTRY, entry, self._kb_provider)
         if entry.status == KbStatus.VERIFIED:
             await queue_event(s, entry.namespace_id, "kb_entry.verified", entry_event(entry))
         return entry
@@ -824,7 +821,7 @@ class GovernanceService:
         await s.flush()
         self._log(s, ObjectType.KB_ENTRY, entry, ChangeOp.UPDATE, before, actor, reason)
         if entry.status in EFFECTIVE_KB_STATUSES:
-            await self._queue_kb(s, entry, JobType.KB_UPSERT)
+            await queue_sync(s, ObjectType.KB_ENTRY, entry, self._kb_provider)
         return entry
 
     async def _transition_kb_entry(
@@ -843,9 +840,10 @@ class GovernanceService:
         before = snapshot(entry)
         entry.review_due_at = utcnow()
         await s.flush()
-        unhelpful = entry.unhelpful_count - entry.reviewed_unhelpful
-        rated = unhelpful + entry.helpful_count - entry.reviewed_helpful
-        reason = f"feedback since the last review: {unhelpful} of {rated} ratings unhelpful"
+        reason = (
+            f"feedback since the last review: {entry.unhelpful_since_review} of "
+            f"{entry.rated_since_review} ratings unhelpful"
+        )
         self._log(s, ObjectType.KB_ENTRY, entry, ChangeOp.UPDATE, before, actor, reason)
         return entry
 
@@ -870,9 +868,9 @@ class GovernanceService:
         await s.flush()
         self._log(s, ObjectType.KB_ENTRY, entry, ChangeOp.TRANSITION, before, actor, reason)
         if to in EFFECTIVE_KB_STATUSES:
-            await self._queue_kb(s, entry, JobType.KB_UPSERT)
+            await queue_sync(s, ObjectType.KB_ENTRY, entry, self._kb_provider)
         elif was_effective:
-            await self._queue_kb(s, entry, JobType.KB_REMOVE)
+            await queue_removal(s, ObjectType.KB_ENTRY, entry, self._kb_provider)
         if to == KbStatus.VERIFIED:
             await queue_event(s, entry.namespace_id, "kb_entry.verified", entry_event(entry))
         elif to == KbStatus.DEPRECATED:
@@ -1005,7 +1003,7 @@ class GovernanceService:
             s.add(KbDocumentFile(document_id=doc.id, namespace_id=doc.namespace_id, data=op.data))
         if not waits:
             if op.data is not None:
-                await self._queue_kb(s, doc, JobType.DOC_INGEST)
+                await queue_sync(s, ObjectType.KB_DOCUMENT, doc, self._kb_provider)
             return doc, None
         candidate = CreateCandidate(
             namespace_id=op.namespace_id,
@@ -1039,7 +1037,7 @@ class GovernanceService:
         await s.flush()
         self._log(s, ObjectType.KB_DOCUMENT, doc, ChangeOp.UPDATE, before, actor, "fetched")
         if doc.state in EFFECTIVE_KB_STATUSES:
-            await self._queue_kb(s, doc, JobType.DOC_INGEST)
+            await queue_sync(s, ObjectType.KB_DOCUMENT, doc, self._kb_provider)
         return doc
 
     async def _fail_document_fetch(
@@ -1099,9 +1097,9 @@ class GovernanceService:
         await s.flush()
         self._log(s, ObjectType.KB_DOCUMENT, doc, ChangeOp.TRANSITION, before, actor, reason)
         if to in EFFECTIVE_KB_STATUSES and not was_live and not doc.fetch_pending:
-            await self._queue_kb(s, doc, JobType.DOC_INGEST)
+            await queue_sync(s, ObjectType.KB_DOCUMENT, doc, self._kb_provider)
         elif was_live and to not in EFFECTIVE_KB_STATUSES:
-            await self._queue_kb(s, doc, JobType.DOC_REMOVE)
+            await queue_removal(s, ObjectType.KB_DOCUMENT, doc, self._kb_provider)
         return doc
 
     # candidates
@@ -1242,17 +1240,6 @@ class GovernanceService:
                 continue  # decided between the scan and now
             expired += 1
         return expired
-
-    async def _queue_kb(self, s: AsyncSession, obj: KbEntry | KbDocument, job: JobType) -> None:
-        """Open the object's ref at the KB provider and queue its push (or removal)."""
-        status = SyncStatus.DELETING if job in REMOVALS else SyncStatus.PENDING
-        object_type, key = (
-            (ObjectType.KB_DOCUMENT, "document_id")
-            if isinstance(obj, KbDocument)
-            else (ObjectType.KB_ENTRY, "entry_id")
-        )
-        await mark_ref(s, object_type, obj, self._kb_provider, status)
-        enqueue(s, obj.namespace_id, job, {key: str(obj.id)})
 
     # change log
 

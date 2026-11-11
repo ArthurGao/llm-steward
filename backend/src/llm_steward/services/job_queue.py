@@ -11,7 +11,7 @@ import uuid
 from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import timedelta
-from typing import Any
+from typing import Any, NamedTuple
 
 from sqlalchemy import and_, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
@@ -40,17 +40,16 @@ class ClaimedJob:
         return self.attempts >= self.max_attempts
 
 
-# The job that pushes an object to its engine, and the payload key naming it.
+class SyncJobs(NamedTuple):
+    upsert: JobType  # pushes the object to its engine
+    remove: JobType  # takes the engine's copy out
+    key: str  # the payload key naming the object
+
+
 SYNC_JOBS = {
-    ObjectType.MEMORY: (JobType.MEMORY_UPSERT, "memory_id"),
-    ObjectType.KB_ENTRY: (JobType.KB_UPSERT, "entry_id"),
-    ObjectType.KB_DOCUMENT: (JobType.DOC_INGEST, "document_id"),
-}
-# The job that takes an object's copy out of its engine (same payload key).
-REMOVE_JOBS = {
-    ObjectType.MEMORY: JobType.MEMORY_REMOVE,
-    ObjectType.KB_ENTRY: JobType.KB_REMOVE,
-    ObjectType.KB_DOCUMENT: JobType.DOC_REMOVE,
+    ObjectType.MEMORY: SyncJobs(JobType.MEMORY_UPSERT, JobType.MEMORY_REMOVE, "memory_id"),
+    ObjectType.KB_ENTRY: SyncJobs(JobType.KB_UPSERT, JobType.KB_REMOVE, "entry_id"),
+    ObjectType.KB_DOCUMENT: SyncJobs(JobType.DOC_INGEST, JobType.DOC_REMOVE, "document_id"),
 }
 
 
@@ -265,14 +264,14 @@ async def mark_ref(
 
 async def queue_sync(s: AsyncSession, object_type: ObjectType, obj: Any, provider: str) -> None:
     """Open (or re-open) the object's ref at `provider` as pending and queue its push: the outbox
-    half of a sync, for callers that change no governed state (admin retry, resync)."""
-    job, key = SYNC_JOBS[object_type]
+    half of a sync, in the caller's transaction."""
+    jobs = SYNC_JOBS[object_type]
     await mark_ref(s, object_type, obj, provider, SyncStatus.PENDING)
-    enqueue(s, obj.namespace_id, job, {key: str(obj.id)})
+    enqueue(s, obj.namespace_id, jobs.upsert, {jobs.key: str(obj.id)})
 
 
 async def queue_removal(s: AsyncSession, object_type: ObjectType, obj: Any, provider: str) -> None:
     """Mark the object's ref at `provider` as deleting and queue the removal of its copy."""
-    _, key = SYNC_JOBS[object_type]
+    jobs = SYNC_JOBS[object_type]
     await mark_ref(s, object_type, obj, provider, SyncStatus.DELETING)
-    enqueue(s, obj.namespace_id, REMOVE_JOBS[object_type], {key: str(obj.id)})
+    enqueue(s, obj.namespace_id, jobs.remove, {jobs.key: str(obj.id)})
