@@ -12,17 +12,22 @@ from llm_steward.providers.registry import build_reranker
 from llm_steward.providers.rerank import FastEmbedReranker
 
 
+def _settings(rerank_model: str | None) -> Settings:
+    """Only what these tests set: no .env (CI has none), no database."""
+    return Settings(_env_file=None, database_url="sqlite+aiosqlite://", rerank_model=rerank_model)  # type: ignore[call-arg]
+
+
 def test_no_model_means_no_reranker() -> None:
-    assert build_reranker(Settings(rerank_model=None)) is None
+    assert build_reranker(_settings(None)) is None
 
 
 def test_an_unknown_model_is_refused_at_startup() -> None:
     with pytest.raises(ValueError, match="no cross-encoder"):
-        build_reranker(Settings(rerank_model="acme/not-a-reranker"))
+        build_reranker(_settings("acme/not-a-reranker"))
 
 
 def test_a_known_model_is_named_but_not_loaded() -> None:
-    reranker = build_reranker(Settings(rerank_model="BAAI/bge-reranker-v2-m3-int8"))
+    reranker = build_reranker(_settings("BAAI/bge-reranker-v2-m3-int8"))
     assert reranker is not None and reranker.model == "BAAI/bge-reranker-v2-m3-int8"
     assert reranker._impl is None  # type: ignore[attr-defined]  # downloads on first use only
 
