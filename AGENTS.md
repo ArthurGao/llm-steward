@@ -141,6 +141,7 @@ pnpm install
 pnpm dev                           # Admin on http://127.0.0.1:8610, in-browser mock API (MSW)
 pnpm typecheck && pnpm lint && pnpm test && pnpm build
 pnpm e2e                           # Playwright against the production build on 8611
+pnpm e2e:live                      # the P6 acceptance flows: live Admin (8612) against a real backend (8602, native, fake LLM)
 ```
 
 ## Workflow

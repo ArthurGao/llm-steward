@@ -121,7 +121,7 @@ function Result({ ns, result }: { ns: string; result: RetrievalResult }) {
       <p className="font-mono text-[13px] text-ink-2">
         {result.stages.final.length} results · top {score(top)} · {result.latency_ms} ms{result.degraded.length > 0 && ` · degraded: ${result.degraded.join(', ')}`}
       </p>
-      {result.gap && <Gap ns={ns} result={result} />}
+      <AddAnswer ns={ns} result={result} />
       <div className="grid gap-6 lg:grid-cols-4 lg:gap-5">
         <Stage title="Vector" hits={result.stages.vector} note="semantic similarity" />
         <Stage title="Keyword" hits={result.stages.keyword} note="full-text match" />
@@ -138,7 +138,11 @@ function Result({ ns, result }: { ns: string; result: RetrievalResult }) {
   )
 }
 
-function Gap({ ns, result }: { ns: string; result: RetrievalResult }) {
+/**
+ * Logged gaps get a banner; otherwise the operator judges whether the hits answer the question.
+ * Either way an added answer is only a candidate until a reviewer approves it.
+ */
+function AddAnswer({ ns, result }: { ns: string; result: RetrievalResult }) {
   const qc = useQueryClient()
   const collections = useQuery({ queryKey: [ns, 'collections'], queryFn: () => api.kb.collections(ns) })
   const [open, setOpen] = useState(false)
@@ -151,11 +155,22 @@ function Gap({ ns, result }: { ns: string; result: RetrievalResult }) {
   })
   const top = result.stages.final[0]?.score ?? 0
   return (
-    <section className="max-w-3xl border border-awaiting bg-awaiting-wash px-4 py-3">
-      <h3 className="font-bold text-awaiting">No confident answer</h3>
-      <p className="text-ink-2">
-        The best result scored {score(top)}, under the {GAP} threshold, so this question is logged as a knowledge gap.
-      </p>
+    <section className={cn('max-w-3xl border px-4 py-3', result.gap ? 'border-awaiting bg-awaiting-wash' : 'border-rule')}>
+      {result.gap ? (
+        <>
+          <h3 className="font-bold text-awaiting">No confident answer</h3>
+          <p className="text-ink-2">
+            {result.stages.final.length === 0
+              ? 'Nothing was retrieved, so this question is logged as a knowledge gap.'
+              : `The best result scored ${score(top)}, under the ${GAP} threshold, so this question is logged as a knowledge gap.`}
+          </p>
+        </>
+      ) : (
+        <>
+          <h3 className="font-bold">Do these answer it?</h3>
+          <p className="text-ink-2">If not, add the answer: it goes to the review queue like any other proposal.</p>
+        </>
+      )}
       {add.data?.candidate ? (
         <p role="status" className="mt-2 text-ink">
           Sent to review as{' '}

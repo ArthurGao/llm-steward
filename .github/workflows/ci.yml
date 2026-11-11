@@ -81,3 +81,9 @@ jobs:
           key: playwright-${{ runner.os }}-${{ hashFiles('frontend/pnpm-lock.yaml') }}
       - run: pnpm -C apps/admin exec playwright install --with-deps chromium   # fast when the cache hit
       - run: pnpm e2e   # Playwright against the production build in mock mode
+      - uses: astral-sh/setup-uv@v10.3.3
+        with:
+          version: "0.10.8"
+      - run: uv sync --locked --extra native   # the real backend for the live flows (native engines, fake LLM)
+        working-directory: backend
+      - run: pnpm e2e:live   # the P6 acceptance flows: the live Admin against that backend

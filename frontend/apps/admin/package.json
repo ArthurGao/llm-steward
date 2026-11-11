@@ -10,7 +10,8 @@
     "lint": "eslint .",
     "test": "vitest run",
     "e2e": "playwright test",
-    "generate-client": "openapi-ts"
+    "generate-client": "openapi-ts",
+    "e2e:live": "playwright test -c playwright.live.config.ts"
   },
   "msw": {
     "workerDirectory": [

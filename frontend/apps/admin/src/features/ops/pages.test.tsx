@@ -27,6 +27,16 @@ test('a confident question shows every stage and the assembled context', async (
   expect(screen.getByLabelText('Assembled context')).toHaveTextContent('[KB-0142 v3] Refunds over $1,000')
 })
 
+test('when hits come back the operator still judges them and can add an answer', async () => {
+  renderApp('/acme-support/playground')
+  await userEvent.type(await screen.findByLabelText('Question'), 'refund approval')
+  await userEvent.click(screen.getByRole('button', { name: 'Retrieve' }))
+  expect(await screen.findByRole('heading', { name: 'Do these answer it?' })).toBeInTheDocument()
+  expect(screen.queryByText('No confident answer')).not.toBeInTheDocument()
+  await userEvent.click(screen.getByRole('button', { name: 'Add the missing answer to the KB' }))
+  expect(screen.getByLabelText('Answer')).toBeInTheDocument()
+})
+
 test('the dashboard counts link to their lists', async () => {
   renderApp('/acme-support/dashboard')
   const link = await screen.findByRole('link', { name: /5 awaiting review/ })

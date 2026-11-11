@@ -103,8 +103,8 @@ function Outcome({ ns, candidate: c, result }: { ns: string; candidate: Candidat
           {' '}
           <Link to="/$ns/kb" params={{ ns }} search={{ entry: entry.id }}>
             {entry.key} is now v{entry.version}, {entry.status}
-          </Link>{' '}
-          · sync {entry.sync_status}.
+          </Link>
+          {entry.sync_status === null ? '.' : <> · sync {entry.sync_status}.</>}
         </>
       )}
       {c.decision_note && <> Reason: {c.decision_note}</>}

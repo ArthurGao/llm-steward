@@ -11,6 +11,7 @@
     "lint": "pnpm -r lint",
     "test": "pnpm -r test",
     "build": "pnpm -r build",
-    "e2e": "pnpm -C apps/admin e2e"
+    "e2e": "pnpm -C apps/admin e2e",
+    "e2e:live": "pnpm -C apps/admin e2e:live"
   }
 }

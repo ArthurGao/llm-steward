@@ -51,5 +51,6 @@ In production the Admin build is served by FastAPI; there is no separate fronten
 pnpm install
 pnpm generate-client              # regenerate src/client from the backend OpenAPI spec
 pnpm typecheck && pnpm lint && pnpm test
-pnpm e2e                          # Playwright
+pnpm e2e                          # Playwright, mock mode
+pnpm e2e:live                     # Playwright, live mode against a real backend (native, fake LLM)
 ```
