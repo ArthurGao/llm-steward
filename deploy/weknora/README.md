@@ -16,14 +16,15 @@ WeKnora has no default account, API key or models. After `docker compose --profi
 (and with Ollama running on the host, `bge-m3:567m` pulled):
 
 ```
-set -a; . ./.env; set +a                              # WEKNORA_ADMIN_EMAIL / _PASSWORD
-python deploy/weknora/bootstrap.py >> backend/.env    # gitignored
+# a subshell: exported variables would override .env for later compose runs
+(set -a; . ./.env; python3 deploy/weknora/bootstrap.py)
 ```
 
 It registers the owner (WEKNORA_ADMIN_*), registers the embedding model `bge-m3:567m` (type
 `Embedding`, source `local`, 1024 dimensions — WeKnora pulls it from the host's Ollama through
 `OLLAMA_BASE_URL`) and waits until it is `active`, then creates a full-access workspace API key. It
-prints `STEWARD_WEKNORA_URL`, `STEWARD_WEKNORA_API_KEY` and `STEWARD_WEKNORA_EMBEDDING_MODEL_ID`.
+prints `STEWARD_WEKNORA_URL`, `STEWARD_WEKNORA_API_KEY` and `STEWARD_WEKNORA_EMBEDDING_MODEL_ID`:
+the last two go into the root `.env` (compose) or `backend/.env` (uv runs; there the URL too).
 Running it again finds the owner and the model, and creates one more key (delete the old one in the
 UI or `DELETE /api/v1/tenants/{id}/api-keys/{key_id}`).
 

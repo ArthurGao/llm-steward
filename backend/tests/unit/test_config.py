@@ -50,3 +50,14 @@ def test_rejects_invalid_values(monkeypatch: pytest.MonkeyPatch, key: str, value
     monkeypatch.setenv(key, value)
     with pytest.raises(ValidationError):
         Settings(_env_file=None, database_url=DB)  # type: ignore[call-arg]
+
+
+def test_the_image_bakes_in_the_default_embedding_model() -> None:
+    """The Dockerfile downloads the embedding model at build time; a different default here would
+    make every container download its model on first use again."""
+    from pathlib import Path
+
+    dockerfile = (Path(__file__).parents[2] / "Dockerfile").read_text()
+    [arg] = [line for line in dockerfile.splitlines() if line.startswith("ARG EMBEDDING_MODEL=")]
+    default = Settings(_env_file=None, database_url=DB).embedding_model  # type: ignore[call-arg]
+    assert arg.removeprefix("ARG EMBEDDING_MODEL=") == default

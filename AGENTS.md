@@ -131,7 +131,7 @@ Stack (run from the repo root):
 
 ```
 docker compose --profile native up -d --build      # llm-steward alone, SQLite volume
-docker compose --profile standard up -d --build    # llm-steward + WeKnora, shared PG
+docker compose --profile standard up -d --build    # llm-steward + WeKnora, shared PG (fresh machines: add --profile db)
 python deploy/ragflow/setup.py                     # RAGFlow's own stack (deploy/ragflow/README.md), then
 docker compose --profile docparse up -d --build    # llm-steward + RAGFlow
 ```

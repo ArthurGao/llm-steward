@@ -1,6 +1,7 @@
 # Profiles (design §3):
 #   native    llm-steward alone, SQLite on a volume, native providers.     docker compose --profile native up
-#   standard  llm-steward + WeKnora; governance DB is the shared local PG.  docker compose --profile standard up
+#   standard  llm-steward + WeKnora; governance DB in PostgreSQL + pgvector: add `--profile db` for the
+#             bundled one (steward-db), or set STEWARD_STANDARD_DATABASE_URL to your own.
 #   docparse  llm-steward + RAGFlow (complex documents); RAGFlow is its own stack:
 #             deploy/ragflow/README.md, then  docker compose --profile docparse up
 # Copy .env.example to .env first (engine secrets and keys, and the governance DB URL).
@@ -22,10 +23,12 @@ x-steward-pg: &steward-pg
   <<: *steward
   extra_hosts:
     - "host.docker.internal:host-gateway"
+  volumes:
+    - steward-state:/data  # mem0's history database (the embedding model is in the image)
 
 x-steward-pg-env: &steward-pg-env
-  # Without a password in .env the database check fails loudly in /health.
-  STEWARD_DATABASE_URL: ${STEWARD_STANDARD_DATABASE_URL:-postgresql+asyncpg://llm_steward@host.docker.internal:5432/llm_steward}
+  # Unset: the bundled steward-db (`--profile db`). Without a reachable database /health says so.
+  STEWARD_DATABASE_URL: ${STEWARD_STANDARD_DATABASE_URL:-postgresql+asyncpg://steward:${STEWARD_DB_PASSWORD:-}@steward-db:5432/steward}
   STEWARD_MEMORY_PROVIDER: mem0
   # mem0 extracts through the LLM role layer; without these the service refuses to start.
   # llm-gateway is loopback-only by design, so a container needs a vendor endpoint here.
@@ -34,6 +37,24 @@ x-steward-pg-env: &steward-pg-env
   STEWARD_LLM_MODEL: ${STEWARD_LLM_MODEL:-}
 
 services:
+  # The governance DB for `standard` / `docparse` when you have no PostgreSQL + pgvector of your own.
+  # mem0 creates the `vector` extension on first use (this role owns the database).
+  steward-db:
+    image: pgvector/pgvector:0.8.1-pg17
+    profiles: [db]
+    environment:
+      POSTGRES_USER: steward
+      POSTGRES_PASSWORD: ${STEWARD_DB_PASSWORD:-}  # the image refuses an empty one
+      POSTGRES_DB: steward
+    volumes:
+      - steward-pg:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U steward -d steward"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    restart: unless-stopped
+
   steward-native:
     <<: *steward
     profiles: [native]
@@ -41,7 +62,7 @@ services:
       STEWARD_DATABASE_URL: sqlite+aiosqlite:////data/steward.db
       STEWARD_MEMORY_PROVIDER: native
       STEWARD_KB_PROVIDER: native
-      # The image keeps the local embedding model (~220 MB, downloaded on first use) on this volume.
+      # The SQLite database; the local embedding model is baked into the image.
     volumes:
       - steward-data:/data
 
@@ -57,6 +78,9 @@ services:
     depends_on:
       weknora-app:
         condition: service_healthy
+      steward-db:
+        condition: service_healthy
+        required: false  # only with `--profile db`
 
   steward-docparse:
     <<: *steward-pg
@@ -67,6 +91,12 @@ services:
       # RAGFlow runs as its own compose project, published on the host's 127.0.0.1:8690
       STEWARD_RAGFLOW_URL: http://host.docker.internal:8690
       STEWARD_RAGFLOW_API_KEY: ${STEWARD_RAGFLOW_API_KEY:-}  # deploy/ragflow/bootstrap.py
+    depends_on:
+      steward-db:
+        condition: service_healthy
+        required: false  # only with `--profile db`
 
 volumes:
   steward-data:
+  steward-state:
+  steward-pg:

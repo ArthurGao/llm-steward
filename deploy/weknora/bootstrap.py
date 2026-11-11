@@ -82,8 +82,9 @@ def main() -> None:
             fail(f"register model {MODEL}: HTTP {status}")
         model = created["data"]
     for _ in range(120):  # a local model is pulled from Ollama first ("downloading")
-        _, current = call("GET", f"/models/{model['id']}", token=token)
-        state = current["data"]["status"]
+        # Right after registration WeKnora can answer a poll with an error: not ready yet.
+        status, current = call("GET", f"/models/{model['id']}", token=token)
+        state = (current.get("data") or {}).get("status") or f"HTTP {status}"
         if state == "active":
             break
         if state == "download_failed":

@@ -21,8 +21,8 @@ With Ollama running on the host and `bge-m3:567m` pulled:
 python deploy/ragflow/setup.py
 docker compose -p llm-steward-ragflow -f deploy/ragflow/upstream/docker-compose.yml up -d
 curl -s http://127.0.0.1:8690/api/v1/system/healthz        # {"…","status":"ok"} within a minute
-set -a; . ./.env; set +a                                    # RAGFLOW_ADMIN_EMAIL / _PASSWORD
-uv run --project backend python deploy/ragflow/bootstrap.py >> backend/.env   # gitignored
+# a subshell: exported variables (RAGFLOW_ADMIN_*, the still-empty key) would override .env for compose
+(set -a; . ./.env; uv run --project backend python deploy/ragflow/bootstrap.py >> backend/.env)  # gitignored
 ```
 
 `bootstrap.py` registers the account and logs in (the password travels RSA-encrypted with RAGFlow's

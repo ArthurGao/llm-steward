@@ -87,3 +87,14 @@ jobs:
       - run: uv sync --locked --extra native   # the real backend for the live flows (native engines, fake LLM)
         working-directory: backend
       - run: pnpm e2e:live   # the P6 acceptance flows: the live Admin against that backend
+
+  # The image the compose profiles run. It builds from backend/ alone, so a dependency on a path
+  # outside it (the SDK is one, in the dev group) breaks only here.
+  image:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - run: docker build ./backend
+      - run: |  # as the README does: compose needs a .env, the template is enough to parse
+          cp .env.example .env
+          for p in native standard docparse; do docker compose --profile "$p" --profile db config -q; done
