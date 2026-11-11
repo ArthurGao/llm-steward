@@ -94,7 +94,8 @@ def test_a_document_goes_live_and_retrieval_serves_its_matching_chunk(t: Tenant)
 
     t.c.drain()
     assert get(t, doc["id"])["status"] == "ready"
-    assert stored_files(t) == 0  # the engine has it: the bytes are gone
+    # kept while the document is live: another engine can take it after a switch (resync)
+    assert stored_files(t) == 1
     [hit] = items(t)
     assert (hit["id"], hit["kind"], hit["title"]) == (doc["id"], "document", "Customer policy")
     # its chunks, best first (P4c: up to three per document), never the raw file
@@ -205,9 +206,11 @@ def test_a_deleted_document_leaves_retrieval_at_once_and_the_provider_when_the_w
     collection = t.collection(default_risk="low")
     doc = upload(t, collection).json()["document"]
     t.c.drain()
+    assert stored_files(t) == 1  # parsed, live: its bytes are kept
     assert t.c.http.delete(f"/v1/kb/documents/{doc['id']}", headers=t.host).status_code == 403
     r = t.c.http.delete(f"/v1/kb/documents/{doc['id']}", headers=t.reviewer)
     assert r.status_code == 200, r.text
+    assert stored_files(t) == 0  # taken out: its bytes go with it
     deleted = r.json()
     assert (deleted["state"], deleted["valid_to"] is not None) == ("deprecated", True)
     # the worker has not run: the provider still has it, the safety net keeps it out
@@ -332,7 +335,8 @@ def test_a_document_the_engine_cannot_parse_is_failed_for_good(
     t.c.drain()
     got = get(t, doc["id"])
     assert (got["status"], got["state"], got["error"]) == ("failed", "active", "parsing failed")
-    assert stored_files(t) == 0 and items(t) == []
+    # nothing to retrieve; the bytes stay, so another engine can try it after a switch
+    assert stored_files(t) == 1 and items(t) == []
     assert in_provider(t, doc["collection_id"]) == []  # whatever the engine kept is removed
 
 
@@ -368,7 +372,8 @@ def test_a_document_still_parsing_after_the_deadline_is_given_up(
     t.c.drain()
     got = get(t, doc["id"])
     assert (got["status"], got["error"]) == ("failed", "parsing did not finish in time")
-    assert stored_files(t) == 0 and in_provider(t, doc["collection_id"]) == []
+    # given up and taken out of the engine; the bytes stay for another engine (resync)
+    assert stored_files(t) == 1 and in_provider(t, doc["collection_id"]) == []
 
 
 def test_a_document_deleted_while_it_uploads_is_taken_back_out(

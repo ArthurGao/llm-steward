@@ -24,7 +24,7 @@ from contextlib import asynccontextmanager
 from datetime import datetime, timedelta
 from typing import Any, Literal
 
-from sqlalchemy import delete, select, update
+from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from llm_steward.errors import ProviderUnavailable
@@ -244,7 +244,7 @@ class SyncService:
                 return  # taken out: the remove job owns it
             file = await s.get(KbDocumentFile, document_id)  # the bytes: read only when needed
             if file is None:
-                return  # already handed over
+                return  # nothing to hand over: a URL import whose fetch has not finished
             collection = await s.get(KbCollection, doc.collection_id)
             assert collection is not None
             collection_ext = await self._external_id(
@@ -311,10 +311,8 @@ class SyncService:
                 .where(*_ref_key(ObjectType.KB_DOCUMENT, document_id, provider.name))
                 .values(ref)
             )
-            if status in (DocStatus.READY, DocStatus.FAILED):  # the engine is done with the bytes
-                await s.execute(
-                    delete(KbDocumentFile).where(KbDocumentFile.document_id == document_id)
-                )
+            # the bytes stay while the document is live (another engine can take it after a
+            # switch, `steward resync`); governance drops them when it is taken out
             if status == DocStatus.READY:
                 data = {
                     "document_id": str(doc.id),

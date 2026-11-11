@@ -202,8 +202,9 @@ class KbDocument(IdMixin, TimestampMixin, Base):
 
 
 class KbDocumentFile(Base):
-    """An upload's bytes, kept only until the KB provider has them (or the document is dropped):
-    written with the document row and its outbox job in one transaction."""
+    """An upload's bytes, kept while the document is live (so a new engine can take it after a
+    switch, design §11 P7b) and dropped when it is taken out: written with the document row and
+    its outbox job in one transaction."""
 
     __tablename__ = "kb_document_files"
     document_id: Mapped[uuid.UUID] = mapped_column(

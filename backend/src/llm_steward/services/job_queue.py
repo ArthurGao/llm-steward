@@ -46,6 +46,12 @@ SYNC_JOBS = {
     ObjectType.KB_ENTRY: (JobType.KB_UPSERT, "entry_id"),
     ObjectType.KB_DOCUMENT: (JobType.DOC_INGEST, "document_id"),
 }
+# The job that takes an object's copy out of its engine (same payload key).
+REMOVE_JOBS = {
+    ObjectType.MEMORY: JobType.MEMORY_REMOVE,
+    ObjectType.KB_ENTRY: JobType.KB_REMOVE,
+    ObjectType.KB_DOCUMENT: JobType.DOC_REMOVE,
+}
 
 
 def enqueue(
@@ -263,3 +269,10 @@ async def queue_sync(s: AsyncSession, object_type: ObjectType, obj: Any, provide
     job, key = SYNC_JOBS[object_type]
     await mark_ref(s, object_type, obj, provider, SyncStatus.PENDING)
     enqueue(s, obj.namespace_id, job, {key: str(obj.id)})
+
+
+async def queue_removal(s: AsyncSession, object_type: ObjectType, obj: Any, provider: str) -> None:
+    """Mark the object's ref at `provider` as deleting and queue the removal of its copy."""
+    _, key = SYNC_JOBS[object_type]
+    await mark_ref(s, object_type, obj, provider, SyncStatus.DELETING)
+    enqueue(s, obj.namespace_id, REMOVE_JOBS[object_type], {key: str(obj.id)})

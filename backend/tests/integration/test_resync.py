@@ -9,8 +9,22 @@ from typing import Any
 import pytest
 from sqlalchemy import func, select
 
-from llm_steward.models import ChangeLog, ExternalRef, KbDocumentFile, KbEntry, Memory
-from llm_steward.models.enums import JobType, KbStatus, ObjectType, SyncStatus
+from llm_steward.models import (
+    ChangeLog,
+    ExternalRef,
+    KbDocument,
+    KbDocumentFile,
+    KbEntry,
+    Memory,
+)
+from llm_steward.models.enums import (
+    DocStatus,
+    JobType,
+    KbStatus,
+    MemoryStatus,
+    ObjectType,
+    SyncStatus,
+)
 from llm_steward.services.governance_service import CreateCollection, TransitionKbEntry
 from llm_steward.services.resync import ResyncReport, resync
 from tests.conftest import (
@@ -136,26 +150,39 @@ def test_active_memories_are_queued_for_the_new_memory_engine(app_client: AppCli
     assert c.get(Memory, kept).content == "likes green tea"
 
 
-def test_documents_move_while_their_file_is_held_and_are_reported_otherwise(
+def test_parsed_documents_move_too_and_ones_without_bytes_are_reported(
     app_client: AppClient,
 ) -> None:
-    """The bytes are dropped once the engine has parsed a document (design §5): such a document
-    cannot be handed to another engine, so resync names it instead of pretending."""
+    """A document keeps its bytes while it is live, so a parsed one moves to the new engine. One
+    parsed before that rule (its bytes dropped) cannot be handed over: resync names it."""
+    from sqlalchemy import delete
+
     c = app_client
     t = Tenant(c, "acme")
     collection = t.collection(default_risk="low")
     parsed = t.upload(collection, b"# Refunds\n\nRefunds take five days.", as_reviewer=True)
-    c.settle()  # parsed by the native engine: its file is gone
-    held = t.upload(collection, b"# Shipping\n\nWe ship to Norway.", filename="ship.md")
-    parsed_id, held_id = parsed.json()["document"]["id"], held.json()["document"]["id"]
-    assert c.get(KbDocumentFile, held_id) is not None and c.get(KbDocumentFile, parsed_id) is None
+    legacy = t.upload(collection, b"# Shipping\n\nWe ship to Norway.", filename="ship.md")
+    c.settle()  # both parsed by the native engine
+    parsed_id, legacy_id = parsed.json()["document"]["id"], legacy.json()["document"]["id"]
+    assert c.get(KbDocumentFile, parsed_id) is not None  # kept while live
+
+    async def drop_bytes() -> None:  # as before this rule: dropped once parsed
+        async with c.sessions() as s, s.begin():
+            await s.execute(
+                delete(KbDocumentFile).where(KbDocumentFile.document_id == uuid.UUID(legacy_id))
+            )
+
+    c.call(drop_bytes)
     queued_before = len(c.jobs(JobType.DOC_INGEST))
 
     report = _resync(c, t.ns, memory=False)
 
     assert report.documents == 1
-    assert report.documents_without_file == [uuid.UUID(parsed_id)]
-    assert _payloads(c, JobType.DOC_INGEST, "document_id")[queued_before:] == [held_id]
+    assert report.documents_without_file == [uuid.UUID(legacy_id)]
+    assert _payloads(c, JobType.DOC_INGEST, "document_id")[queued_before:] == [parsed_id]
+    # its parse status was the old engine's: the new engine has not parsed it yet
+    moved = c.get(KbDocument, parsed_id)
+    assert (moved.status, moved.error) == (DocStatus.PENDING, None)
 
 
 def test_a_namespace_with_nothing_effective_queues_nothing(app_client: AppClient) -> None:
@@ -194,13 +221,13 @@ def test_the_cli_resyncs_every_namespace_or_the_ones_named(
     one = runner.invoke(app, ["resync", "--ns", "acme", "--no-memory"])
     assert (one.exit_code, one.output) == (
         0,
-        "acme: queued 1 entries, 0 documents for ragflow\n",
+        "acme: queued 1 entries, 0 documents for ragflow; 0 removals\n",
     )
     every = runner.invoke(app, ["resync"])
     assert every.exit_code == 0, every.output
     assert every.output.splitlines() == [
-        "acme: queued 0 entries, 0 documents for ragflow; 0 memories for native",
-        "beta: queued 1 entries, 0 documents for ragflow; 0 memories for native",
+        "acme: queued 0 entries, 0 documents for ragflow; 0 memories for native; 0 removals",
+        "beta: queued 1 entries, 0 documents for ragflow; 0 memories for native; 0 removals",
     ]
     unknown = runner.invoke(app, ["resync", "--ns", "nope"])
     assert unknown.exit_code == 1 and "nope" in unknown.output
@@ -245,3 +272,63 @@ def test_a_url_import_still_being_fetched_is_neither_queued_nor_reported(
     data = {"collection_id": t.collection(default_risk="low"), "url": "https://example.com/a.md"}
     assert c.http.post("/v1/kb/documents", data=data, headers=t.host).status_code == 202
     assert _resync(c, t.ns, memory=False) == ResyncReport()  # the fetch job is still queued
+
+
+def test_what_was_retired_meanwhile_is_taken_out_of_the_current_engine(
+    app_client: AppClient,
+) -> None:
+    """Switched back to an engine that still holds copies of what was retired while another
+    engine was active: resync queues their removal (only effective knowledge stays in an engine,
+    rule 3), as governance does — a superseded memory is left to the engine, a deleted one goes."""
+    c = app_client
+    h, ns = c.new_tenant("acme")
+    collection = c.apply(CreateCollection(ns, "faq")).id
+    retired = c.apply(kb_entry_op(ns, collection, KbStatus.ACTIVE))
+    kept = c.apply(kb_entry_op(ns, collection, KbStatus.ACTIVE, title="Courier"))
+    deleted = uuid.UUID(post_memory(c, h, "old address", user_id="u1"))
+    superseded = uuid.UUID(post_memory(c, h, "likes black tea", user_id="u1"))
+
+    async def held_by_ragflow_and_mem0() -> None:  # copies made while those engines were active
+        async with c.sessions() as s, s.begin():
+            for object_type, object_id, provider, version in (
+                (ObjectType.KB_ENTRY, retired.id, "ragflow", retired.version),
+                (ObjectType.KB_ENTRY, kept.id, "ragflow", kept.version),
+                (ObjectType.MEMORY, deleted, "mem0", None),
+                (ObjectType.MEMORY, superseded, "mem0", None),
+            ):
+                s.add(
+                    ExternalRef(
+                        namespace_id=ns,
+                        object_type=object_type,
+                        object_id=object_id,
+                        provider=provider,
+                        external_id=f"x/{object_id}",
+                        sync_status=SyncStatus.SYNCED,
+                        synced_version=version,
+                    )
+                )
+
+    c.call(held_by_ragflow_and_mem0)
+
+    async def supersede() -> None:  # as a later fact replaces it (the engine resolves its copy)
+        async with c.sessions() as s, s.begin():
+            memory = await s.get(Memory, superseded)
+            assert memory is not None
+            memory.status = MemoryStatus.SUPERSEDED
+
+    c.call(supersede)
+    c.apply(TransitionKbEntry(ns, retired.id, KbStatus.DEPRECATED))  # while native was active
+    c.http.delete(f"/v1/memories/{deleted}", headers=h)
+    removals = len(c.jobs(JobType.KB_REMOVE)), len(c.jobs(JobType.MEMORY_REMOVE))
+
+    report = _resync(c, ns)
+
+    assert report.removed == 2
+    assert _payloads(c, JobType.KB_REMOVE, "entry_id")[removals[0] :] == [str(retired.id)]
+    assert _payloads(c, JobType.MEMORY_REMOVE, "memory_id")[removals[1] :] == [str(deleted)]
+    assert _refs(c, "ragflow") == {retired.id: SyncStatus.DELETING, kept.id: SyncStatus.SYNCED}
+    assert _refs(c, "mem0") == {
+        deleted: SyncStatus.DELETING,
+        superseded: SyncStatus.SYNCED,  # left to the engine, as governance does
+    }
+    assert _resync(c, ns).removed == 0  # already queued

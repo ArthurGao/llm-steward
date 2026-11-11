@@ -440,8 +440,9 @@ def test_switching_a_namespace_from_weknora_to_ragflow(
     migrated_url: str, weknora_engine: _Engine, ragflow_engine: _Engine
 ) -> None:
     """P7 acceptance (design §11): after the KB engine is switched and `resync` runs, every
-    effective entry is retrievable from the new engine; states, versions and history are the
-    same; a retired entry stays out."""
+    effective entry — and a parsed document, whose bytes are kept while it is live — is
+    retrievable from the new engine; states, versions and history are the same; a retired entry
+    stays out."""
     from llm_steward.models import ChangeLog, KbEntry
     from llm_steward.services.resync import resync
 
@@ -466,7 +467,14 @@ def test_switching_a_namespace_from_weknora_to_ragflow(
             headers=reviewer,
         ).json()["entry"]["id"]
         c.http.post(f"/v1/kb/entries/{retired}/deprecate", headers=reviewer)
-        c.drain()
+        upload = c.http.post(
+            "/v1/kb/documents",
+            data={"collection_id": collection},
+            files={"file": ("policy.md", POLICY, "text/markdown")},
+            headers=reviewer,
+        )
+        document = upload.json()["document"]["id"]
+        _parsed(c, host, document)  # by WeKnora
         assert _retrieved(c, host, "how long do refunds take")[0] == ids["Refund time"]
         before = {i: (c.get(KbEntry, i).status, c.get(KbEntry, i).version) for i in ids.values()}
         history = c.count(ChangeLog)
@@ -477,14 +485,26 @@ def test_switching_a_namespace_from_weknora_to_ragflow(
         report = c.call(
             resync, c.sessions, namespace, kb_provider="ragflow", memory_provider="native"
         )
-        assert report.entries == len(ids)  # the retired one is not moved
-        c.drain()
+        assert (report.entries, report.documents) == (len(ids), 1)  # the retired one stays
+        assert report.documents_without_file == []
+        _parsed(c, host, document)  # by RAGFlow, from the bytes kept here
         for title, content in texts.items():
             assert _retrieved(c, host, content)[0] == ids[title], title  # the best match
         assert retired not in _retrieved(c, host, "refunds 30 days")
+        assert document in _retrieved(c, host, "is shipping free above 50 euros")
         after = {i: (c.get(KbEntry, i).status, c.get(KbEntry, i).version) for i in ids.values()}
         assert after == before
         assert c.count(ChangeLog) == history
+
+
+def _parsed(c: Any, headers: dict[str, str], document_id: str) -> None:
+    """Run the worker (polls included) until the engine has parsed the document."""
+    deadline = time.monotonic() + 120
+    while (state := _document(c, headers, document_id))["status"] != "ready":
+        assert state["status"] != "failed" and time.monotonic() < deadline, state
+        c.make_jobs_due()
+        c.drain()
+        time.sleep(0.5)
 
 
 def _retrieved(c: Any, headers: dict[str, str], query: str) -> list[str]:

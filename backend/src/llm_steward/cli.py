@@ -225,6 +225,7 @@ def resync_command(
             )
         if memory:
             parts.append(f"{report.memories} memories for {settings.memory_provider}")
+        parts.append(f"{report.removed} removals")  # copies of what was retired meanwhile
         typer.echo(f"{slug}: queued {'; '.join(parts)}")
         if report.documents_without_file:
             ids = " ".join(str(i) for i in report.documents_without_file)

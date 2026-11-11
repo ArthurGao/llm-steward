@@ -59,7 +59,7 @@ def test_a_url_is_fetched_by_the_worker_then_ingested(t: Tenant, web: Web) -> No
     stored = _doc(t, doc["id"])
     assert stored.source_uri == "https://docs.example.com/policies/refunds.md"
     assert (stored.status, stored.size_bytes) == (DocStatus.READY, len(PAGE))
-    assert t.c.get(KbDocumentFile, doc["id"]) is None  # handed over, the bytes are gone
+    assert t.c.get(KbDocumentFile, doc["id"]) is not None  # kept while live (resync)
     assert web.calls == ["docs.example.com/policies/refunds.md"]
 
 
