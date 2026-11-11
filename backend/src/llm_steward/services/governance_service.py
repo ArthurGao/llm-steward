@@ -172,6 +172,9 @@ class RecordProviderMemory:
     agent_id: str | None = None
     session_id: str | None = None
     source_episode_id: uuid.UUID | None = None
+    # Chosen by the caller when a later operation of the same batch must name this memory (it
+    # supersedes another: SupersedeMemory(by=id)). None: one is made.
+    id: uuid.UUID | None = None
 
 
 @dataclass(frozen=True)
@@ -585,6 +588,7 @@ class GovernanceService:
         self, s: AsyncSession, op: RecordProviderMemory, actor: Actor
     ) -> Memory:
         memory = Memory(
+            **({"id": op.id} if op.id is not None else {}),
             namespace_id=op.namespace_id,
             user_id=op.user_id,
             agent_id=op.agent_id,

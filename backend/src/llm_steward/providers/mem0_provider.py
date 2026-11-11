@@ -175,6 +175,7 @@ class Mem0Provider:
         *,
         infer: bool = True,
         metadata: dict[str, Any] | None = None,
+        idempotency_key: str | None = None,  # not honoured: no such guarantee here
     ) -> list[MemoryEvent]:
         memory = await self._engine()
         result = await memory.add(

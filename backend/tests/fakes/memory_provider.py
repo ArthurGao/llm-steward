@@ -57,6 +57,7 @@ class FakeMemoryProvider:
         *,
         infer: bool = True,
         metadata: dict[str, Any] | None = None,
+        idempotency_key: str | None = None,  # not honoured: no such guarantee here
     ) -> list[MemoryEvent]:
         self.add_calls += 1
         metadata = metadata or {}

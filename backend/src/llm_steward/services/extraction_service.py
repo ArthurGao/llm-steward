@@ -17,6 +17,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from llm_steward.errors import Unprocessable
+from llm_steward.ids import uuid7
 from llm_steward.llm.client import LLM
 from llm_steward.models import Episode, ExternalRef, Memory
 from llm_steward.models.enums import ActorType, MemoryOrigin, MemoryStatus, ObjectType
@@ -25,6 +26,7 @@ from llm_steward.pipeline.extract import extract_facts
 from llm_steward.providers.base import (
     EXTRACT,
     RESOLVES_CONFLICTS,
+    MemoryEvent,
     MemoryProvider,
     Message,
     Scope,
@@ -110,36 +112,85 @@ class ExtractionService:
         if self.mode == "steward":
             return await self._finish(scope, await self._extract_here(scope, said, last.id))
         messages = [Message(m["role"], m["content"]) for m in said]
-        added = [
-            e
-            for e in await self._provider.add(messages, scope, infer=True)
-            if e.op == "ADD" and e.content
-        ]
-        if not added:
+        # The batch's last episode keys the engine's write: a retry after a timeout replays it
+        # (an engine that honours keys) instead of extracting again.
+        events = await self._provider.add(messages, scope, infer=True, idempotency_key=str(last.id))
+        added = [e for e in events if e.op == "ADD" and e.content]
+        retired = [e for e in events if e.op == "DELETE"]
+        if not added and not retired:
             return []
         # Provenance of extraction (rule 10): the role and model that produced the facts.
-        produced_by = {e.produced_by for e in added} - {None}
+        produced_by = {e.produced_by for e in added + retired} - {None}
         actor = (
             Actor(ActorType.AI, produced_by.pop())
             if len(produced_by) == 1
             else Actor(ActorType.PROVIDER, self._provider.name)
         )
-        created: list[Memory] = await self._governance.apply_all(
-            [
-                RecordProviderMemory(
-                    namespace_id=namespace_id,
-                    external_id=e.external_id,
-                    content=e.content or "",
-                    user_id=scope.user_id,
-                    agent_id=scope.agent_id,
-                    session_id=scope.session_id,
-                    source_episode_id=last.id,
-                )
-                for e in added
-            ],
-            actor,
-        )
+        held = {e.replaces for e in added if e.replaces} | {e.external_id for e in retired}
+        mirrors = await self._mirrors(namespace_id, held)
+        ops = self._mirroring(scope, last.id, added, retired, mirrors)
+        results = await self._governance.apply_all(ops, actor)
+        created: list[Memory] = [
+            r for r, op in zip(results, ops, strict=True) if isinstance(op, RecordProviderMemory)
+        ]
         return await self._finish(scope, created)
+
+    def _mirroring(
+        self,
+        scope: Scope,
+        episode_id: uuid.UUID,
+        added: list[MemoryEvent],
+        retired: list[MemoryEvent],
+        mirrors: dict[str, uuid.UUID],
+    ) -> list[Operation]:
+        """One batch of governance ops for an engine's events: each new fact is recorded; a fact
+        that replaces one (an engine that resolves conflicts) supersedes its mirror with `by=` the
+        new memory, and a retired one supersedes its mirror with no successor. An id with no
+        active mirror is skipped: llm-steward never had it, or already invalidated it."""
+        ns = scope.namespace_id
+        ops: list[Operation] = []
+        for e in added:
+            new = uuid7()
+            ops.append(
+                RecordProviderMemory(
+                    namespace_id=ns, external_id=e.external_id, content=e.content or "",
+                    user_id=scope.user_id, agent_id=scope.agent_id, session_id=scope.session_id,
+                    source_episode_id=episode_id, id=new,
+                )
+            )  # fmt: skip
+            if e.replaces in mirrors:
+                ops.append(SupersedeMemory(ns, mirrors[e.replaces], new, "UPDATE: by the engine"))
+            elif e.replaces is not None:
+                log.warning("engine replaced %s, which has no active mirror", e.replaces)
+        for e in retired:
+            if e.external_id in mirrors:
+                ops.append(
+                    SupersedeMemory(ns, mirrors[e.external_id], None, "DELETE: by the engine")
+                )
+            else:
+                log.warning("engine retired %s, which has no active mirror", e.external_id)
+        return ops
+
+    async def _mirrors(
+        self, namespace_id: uuid.UUID, external_ids: set[str]
+    ) -> dict[str, uuid.UUID]:
+        """The active memories that mirror these engine ids."""
+        if not external_ids:
+            return {}
+        async with self._sessions() as s:
+            rows = await s.execute(
+                select(ExternalRef.external_id, Memory.id)
+                .join(Memory, Memory.id == ExternalRef.object_id)
+                .where(
+                    ExternalRef.namespace_id == namespace_id,
+                    ExternalRef.object_type == ObjectType.MEMORY,
+                    ExternalRef.provider == self._provider.name,
+                    ExternalRef.external_id.in_(external_ids),
+                    Memory.namespace_id == namespace_id,
+                    Memory.status == MemoryStatus.ACTIVE,
+                )
+            )
+            return {str(external_id): memory_id for external_id, memory_id in rows.all()}
 
     async def _extract_here(
         self, scope: Scope, messages: list[dict[str, str]], last: uuid.UUID

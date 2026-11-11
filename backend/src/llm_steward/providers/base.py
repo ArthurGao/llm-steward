@@ -55,10 +55,15 @@ class Message:
 
 @dataclass(frozen=True)
 class MemoryEvent:
+    """One change an engine reports for an add. An engine that resolves conflicts itself
+    (RESOLVES_CONFLICTS) reports its decisions: an ADD that `replaces` the memory it supersedes,
+    or a DELETE of a memory that no longer holds; the extraction mirror applies both."""
+
     op: Literal["ADD", "UPDATE", "DELETE"]
     external_id: str
     content: str | None = None
     produced_by: str | None = None  # `role:model` when an LLM produced it (extraction)
+    replaces: str | None = None  # ADD: the external id this memory supersedes
 
 
 @dataclass(frozen=True)
@@ -160,7 +165,11 @@ class MemoryProvider(HealthProbe, Protocol):
         *,
         infer: bool = True,
         metadata: dict[str, Any] | None = None,
-    ) -> list[MemoryEvent]: ...
+        idempotency_key: str | None = None,
+    ) -> list[MemoryEvent]:
+        """`idempotency_key`: an engine that honours it writes once per key and replays the
+        result on a retry (lite-mem); others ignore it."""
+        ...
 
     async def search(
         self, query: str, scope: Scope, *, top_k: int, filters: dict[str, Any] | None = None
