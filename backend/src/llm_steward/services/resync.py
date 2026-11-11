@@ -10,7 +10,7 @@ import uuid
 from dataclasses import dataclass, field
 from typing import Any
 
-from sqlalchemy import ColumnElement, and_, exists, not_, or_, select
+from sqlalchemy import ColumnElement, and_, exists, func, not_, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from llm_steward.models import ExternalRef, KbDocument, KbDocumentFile, KbEntry, Memory
@@ -30,6 +30,9 @@ class ResyncReport:
     memories: int = 0
     documents: int = 0
     removed: int = 0  # copies of retired objects queued for removal
+    # retired objects another (no longer configured) engine still holds: the Syncer cannot reach
+    # it, so clear or drop that engine (`steward resync` names the count)
+    left_elsewhere: int = 0
     documents_without_file: list[uuid.UUID] = field(default_factory=list)  # re-upload these
 
 
@@ -68,7 +71,7 @@ async def resync(
     transaction for the namespace."""
     counts: dict[ObjectType, int] = {}
     without_file: list[uuid.UUID] = []
-    removed = 0
+    removed = left_elsewhere = 0
     kinds = [(k, kb_provider) for k in (ENTRIES, DOCUMENTS) if kb]
     kinds += [(MEMORIES, memory_provider)] if memory else []
     async with sessions() as s, s.begin():
@@ -88,11 +91,13 @@ async def resync(
                     await queue_removal(s, kind.object_type, obj, provider)
             counts[kind.object_type] = len(objects)
             removed += len(stale)
+            left_elsewhere += await _left_elsewhere(s, kind, namespace_id, provider)
     return ResyncReport(
         entries=counts.get(ObjectType.KB_ENTRY, 0),
         memories=counts.get(ObjectType.MEMORY, 0),
         documents=counts.get(ObjectType.KB_DOCUMENT, 0),
         removed=removed,
+        left_elsewhere=left_elsewhere,
         documents_without_file=without_file,
     )
 
@@ -135,6 +140,23 @@ async def _still_held(
     )
     query = select(kind.model).where(kind.model.namespace_id == namespace_id, retired, held)
     return list(await s.scalars(query.order_by(kind.model.id)))
+
+
+async def _left_elsewhere(
+    s: AsyncSession, kind: _Kind, namespace_id: uuid.UUID, provider: str
+) -> int:
+    """Retired objects with a copy at an engine other than `provider` that was never taken out
+    (synced, failed, or a removal queued there that cannot run)."""
+    retired = kind.retired if kind.retired is not None else not_(kind.effective)
+    ref = ExternalRef
+    elsewhere = exists().where(
+        ref.object_type == kind.object_type,
+        ref.object_id == kind.model.id,
+        ref.provider != provider,
+        ref.sync_status.in_((SyncStatus.SYNCED, SyncStatus.FAILED, SyncStatus.DELETING)),
+    )
+    query = select(func.count()).where(kind.model.namespace_id == namespace_id, retired, elsewhere)
+    return int(await s.scalar(query.select_from(kind.model)) or 0)
 
 
 async def _with_file(s: AsyncSession, ids: list[uuid.UUID]) -> set[uuid.UUID]:

@@ -146,7 +146,7 @@ async def test_effective_changes_queue_upserts_and_retirement_queues_removal(sta
         (JobType.KB_UPSERT, ref),
         (JobType.KB_UPSERT, ref),
         (JobType.KB_UPSERT, ref),
-        (JobType.KB_REMOVE, ref),
+        (JobType.KB_REMOVE, {**ref, "provider": "native"}),  # the engine holding the copy
     ]
 
 

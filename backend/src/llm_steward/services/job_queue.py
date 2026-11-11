@@ -271,7 +271,8 @@ async def queue_sync(s: AsyncSession, object_type: ObjectType, obj: Any, provide
 
 
 async def queue_removal(s: AsyncSession, object_type: ObjectType, obj: Any, provider: str) -> None:
-    """Mark the object's ref at `provider` as deleting and queue the removal of its copy."""
+    """Mark the object's ref at `provider` as deleting and queue the removal of its copy there
+    (the job names the engine: it may no longer be the configured one when the job runs)."""
     jobs = SYNC_JOBS[object_type]
     await mark_ref(s, object_type, obj, provider, SyncStatus.DELETING)
-    enqueue(s, obj.namespace_id, jobs.remove, {jobs.key: str(obj.id)})
+    enqueue(s, obj.namespace_id, jobs.remove, {jobs.key: str(obj.id), "provider": provider})

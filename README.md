@@ -198,7 +198,9 @@ docker compose exec steward-standard steward resync                # after switc
 ```
 
 Switching a namespace's KB engine (say WeKnora → RAGFlow) is a config change plus `steward resync`;
-llm-steward is the source of truth for knowledge and pushes what the new engine lacks.
+llm-steward is the source of truth for knowledge and pushes what the new engine lacks. The old
+engine keeps its copies and is no longer reachable: removals still queued for it fail (visible in
+`steward jobs failed`), and resync names retired objects it still holds. Clear or drop it.
 
 The Admin (reviews, memories, knowledge, gaps, jobs) is a separate SPA in `frontend/apps/admin`. It
 has no accounts: it connects to a backend with the static `STEWARD_ADMIN_TOKEN`.

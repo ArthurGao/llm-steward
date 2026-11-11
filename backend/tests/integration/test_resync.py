@@ -19,6 +19,7 @@ from llm_steward.models import (
 )
 from llm_steward.models.enums import (
     DocStatus,
+    JobStatus,
     JobType,
     KbStatus,
     MemoryStatus,
@@ -332,3 +333,83 @@ def test_what_was_retired_meanwhile_is_taken_out_of_the_current_engine(
         superseded: SyncStatus.SYNCED,  # left to the engine, as governance does
     }
     assert _resync(c, ns).removed == 0  # already queued
+
+
+def test_a_copy_left_in_an_engine_that_is_no_longer_configured_is_not_dropped_silently(
+    app_client: AppClient,
+) -> None:
+    """A removal queued for one engine runs after a switch to another: the Syncer cannot reach
+    the old engine, so the job fails visibly (and the ref stays `deleting`) instead of being
+    marked done against the engine of the day. Resync reports such copies."""
+    c = app_client  # configured engine: native
+    _, ns = c.new_tenant("acme")
+    collection = c.apply(CreateCollection(ns, "faq")).id
+    entry = c.apply(kb_entry_op(ns, collection, KbStatus.ACTIVE))
+    c.drain()
+
+    async def held_by_weknora() -> None:  # a copy made while WeKnora was the engine
+        async with c.sessions() as s, s.begin():
+            s.add(
+                ExternalRef(
+                    namespace_id=ns,
+                    object_type=ObjectType.KB_ENTRY,
+                    object_id=entry.id,
+                    provider="weknora",
+                    external_id="kb/old",
+                    sync_status=SyncStatus.SYNCED,
+                    synced_version=entry.version,
+                )
+            )
+
+    c.call(held_by_weknora)
+    c.apply(TransitionKbEntry(ns, entry.id, KbStatus.DEPRECATED))
+
+    report = _resync(c, ns, kb_provider="native")
+    assert report.left_elsewhere == 1  # weknora still holds it, and is not configured
+
+    removal = c.call(resync, c.sessions, ns, kb_provider="weknora", memory_provider="native")
+    assert removal.removed == 1
+    c.drain()
+    assert _refs(c, "native")[entry.id] == SyncStatus.DELETED
+    assert _refs(c, "weknora") == {entry.id: SyncStatus.DELETING}  # not marked gone
+    [to_weknora] = [j for j in c.jobs(JobType.KB_REMOVE) if j.payload.get("provider") == "weknora"]
+    assert to_weknora.status != JobStatus.DONE
+    assert "weknora" in (to_weknora.error or "")
+
+
+def test_the_cli_names_copies_left_in_an_engine_no_longer_configured(
+    cli_db: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from typer.testing import CliRunner
+
+    from llm_steward.cli import app
+
+    with running_app(cli_db) as c:
+        _, ns = c.new_tenant("acme")
+        collection = c.apply(CreateCollection(ns, "faq")).id
+        entry = c.apply(kb_entry_op(ns, collection, KbStatus.ACTIVE))
+
+        async def held_by_weknora() -> None:
+            async with c.sessions() as s, s.begin():
+                s.add(
+                    ExternalRef(
+                        namespace_id=ns,
+                        object_type=ObjectType.KB_ENTRY,
+                        object_id=entry.id,
+                        provider="weknora",
+                        external_id="kb/old",
+                        sync_status=SyncStatus.SYNCED,
+                    )
+                )
+
+        c.call(held_by_weknora)
+        c.apply(TransitionKbEntry(ns, entry.id, KbStatus.DEPRECATED))
+    monkeypatch.setenv("STEWARD_KB_PROVIDER", "native")
+    monkeypatch.setenv("STEWARD_MEMORY_PROVIDER", "native")
+
+    out = CliRunner().invoke(app, ["resync", "--no-memory"])
+    assert out.exit_code == 0, out.output
+    assert out.output.splitlines()[-1] == (
+        "acme: 1 retired object(s) still have a copy in an engine that is no longer "
+        "configured: clear or drop that engine"
+    )

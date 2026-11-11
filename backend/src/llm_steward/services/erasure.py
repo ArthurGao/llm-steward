@@ -49,11 +49,17 @@ async def erase_user(s: AsyncSession, namespace_id: uuid.UUID, user_id: str) -> 
             ExternalRef.object_type == ObjectType.MEMORY,
             ExternalRef.object_id.in_(memory_ids),
         )
-        .returning(ExternalRef.object_id, ExternalRef.external_id, ExternalRef.sync_status)
+        .returning(
+            ExternalRef.object_id,
+            ExternalRef.external_id,
+            ExternalRef.sync_status,
+            ExternalRef.provider,
+        )
     )
-    for memory_id, external_id, status in copies.all():
+    for memory_id, external_id, status, provider in copies.all():
         if external_id is not None and status != SyncStatus.DELETED:  # an engine copy
             payload = {"memory_id": str(memory_id), "external_id": external_id}
+            payload["provider"] = provider  # the engine holding it, configured or not
             enqueue(s, ns, JobType.MEMORY_REMOVE, payload)
     await s.execute(
         delete(ChangeLog).where(

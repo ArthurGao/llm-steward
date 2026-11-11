@@ -230,6 +230,11 @@ def resync_command(
         if report.documents_without_file:
             ids = " ".join(str(i) for i in report.documents_without_file)
             typer.echo(f"{slug}: re-upload (the old engine holds their only copy): {ids}")
+        if report.left_elsewhere:
+            typer.echo(
+                f"{slug}: {report.left_elsewhere} retired object(s) still have a copy in an "
+                "engine that is no longer configured: clear or drop that engine"
+            )
 
 
 @app.command()

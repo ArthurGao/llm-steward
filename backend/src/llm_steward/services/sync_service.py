@@ -55,7 +55,7 @@ from llm_steward.providers.base import (
     Scope,
     document_parser,
 )
-from llm_steward.services.job_queue import ClaimedJob, describe_error, enqueue, mark_ref
+from llm_steward.services.job_queue import SYNC_JOBS, ClaimedJob, describe_error, enqueue, mark_ref
 from llm_steward.services.webhook_service import queue_event
 
 # retired: a removal job is queued; gone: the object row itself was deleted (nothing to queue on)
@@ -77,6 +77,9 @@ def _ref_key(object_type: ObjectType, object_id: uuid.UUID, provider: str) -> An
     )
 
 
+REMOVALS = frozenset(jobs.remove for jobs in SYNC_JOBS.values())
+
+
 class SyncService:
     JOB_TYPES = (
         JobType.MEMORY_UPSERT,
@@ -93,6 +96,8 @@ class SyncService:
         self._providers = providers
 
     async def handle(self, job: ClaimedJob) -> None:
+        if job.type in REMOVALS:
+            self._check_engine(job.type, job.payload.get("provider"))
         match job.type:
             case JobType.MEMORY_UPSERT:
                 await self._memory_upsert(uuid.UUID(job.payload["memory_id"]))
@@ -111,6 +116,19 @@ class SyncService:
                 await self._doc_remove(uuid.UUID(job.payload["document_id"]))
             case _:
                 raise ValueError(f"not a sync job: {job.type!r}")
+
+    def _check_engine(self, job_type: JobType, provider: str | None) -> None:
+        """A removal is for the engine that holds the copy; after a switch that may not be the
+        configured one, which the Syncer cannot reach. Fail (visibly, `steward jobs failed`)
+        rather than mark the copy gone. Older jobs name no engine: the configured one."""
+        configured = (
+            self._providers.memory if job_type == JobType.MEMORY_REMOVE else self._providers.kb
+        ).name
+        if provider is not None and provider != configured:
+            raise ProviderUnavailable(
+                f"the copy to remove is at {provider!r}, not the configured engine "
+                f"{configured!r}: clear it there (or switch back and run steward resync)"
+            )
 
     # memories
 
@@ -278,7 +296,8 @@ class SyncService:
                 payload = {"document_id": str(document_id), "since": utcnow().isoformat()}
                 enqueue(s, doc.namespace_id, JobType.DOC_STATUS, payload)  # first poll at once
             else:  # taken out while it was uploading: a removal that retries until it is gone
-                enqueue(s, doc.namespace_id, JobType.DOC_REMOVE, {"document_id": str(doc.id)})
+                payload = {"document_id": str(doc.id), "provider": provider.name}
+                enqueue(s, doc.namespace_id, JobType.DOC_REMOVE, payload)
 
     async def _doc_status(self, document_id: uuid.UUID, payload: dict[str, Any]) -> None:
         provider, parser = self._providers.kb, self._parser()
@@ -322,7 +341,8 @@ class SyncService:
                 }
                 await queue_event(s, doc.namespace_id, "document.ready", data)
             if status == DocStatus.FAILED:  # final: take the engine's copy out too
-                enqueue(s, doc.namespace_id, JobType.DOC_REMOVE, {"document_id": str(doc.id)})
+                payload = {"document_id": str(doc.id), "provider": provider.name}
+                enqueue(s, doc.namespace_id, JobType.DOC_REMOVE, payload)
             elif status != DocStatus.READY:
                 polls = int(payload.get("polls", 0)) + 1
                 delay = min(FIRST_POLL * 2 ** (polls - 1), MAX_POLL)
@@ -363,7 +383,7 @@ class SyncService:
             key = "memory_id" if model is Memory else "entry_id"
             remove = JobType.MEMORY_REMOVE if model is Memory else JobType.KB_REMOVE
             if obj is None:  # the row itself was erased: the job carries the copy to remove
-                payload = {key: str(object_id), "external_id": external_id}
+                payload = {key: str(object_id), "external_id": external_id, "provider": provider}
                 enqueue(s, namespace_id, remove, payload)
                 return "gone"
             if not _effective(obj):  # record the copy and queue its removal, atomically
@@ -372,7 +392,7 @@ class SyncService:
                     .where(*_ref_key(object_type, object_id, provider))
                     .values(external_id=external_id, sync_status=SyncStatus.DELETING)
                 )
-                enqueue(s, obj.namespace_id, remove, {key: str(object_id)})
+                enqueue(s, obj.namespace_id, remove, {key: str(object_id), "provider": provider})
                 return "retired"
             if version is not None and obj.version != version:
                 # still pending, but the engine holds a copy now: record its id so the retry

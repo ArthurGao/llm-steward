@@ -42,15 +42,15 @@ If a change must contradict the design, update the design in the same change and
 
 ## Current stage
 
-**P7 — RAGFlow and wrap-up — next** (P0–P6 closed out; P6 closed out 2026-11-11). The owner's own RAG engine **lite-rag**
+**All stages P0–P7 are closed out** (P7, RAGFlow and wrap-up, closed out 2026-11-11). v1 follow-ups and open owner decisions are recorded in design §11. The owner's own RAG engine **lite-rag**
 (`~/Code/AI/lite-rag`) was built first and plugged in as `LiteRagProvider` (S9, 2026-11-09). P3 slices: P3a
 governance core, P3b LLM steps, P3c `WeKnoraProvider` and P3d documents are done; P4 (joint retrieval: scoring,
 MMR, budget, rerank, documents' passages, retrieval log, feedback, hit counts; recall@8 baseline 0.960 on the
 synthetic eval, `uv run pytest -m eval`) is done; P5 (config as code, user tokens, erasure, rate limit, idempotency,
 webhooks, SSRF guard, URL import, MCP, Python SDK) is done; P6 (the Admin: `/admin/v1` behind a static
 `STEWARD_ADMIN_TOKEN`, the SPA in mock mode for the demo and live mode over the generated client, acceptance flows
-against a real backend with `pnpm e2e:live`) is done. Each stage's close-out and deferred follow-ups are recorded in
-design §11. Track the checklist in design §11 (ticked items are done and verified). `docparse` (RAGFlow) is P7.
+against a real backend with `pnpm e2e:live`) is done; P7 (`RAGFlowProvider` and the `docparse` profile, `steward resync`, `@llm-steward/widget`, feedback-driven review flags, README and a deploy path verified from scratch) is done. Each stage's close-out and deferred follow-ups are recorded in
+design §11. Track the checklist in design §11 (ticked items are done and verified).
 
 Decided (2026-11-08): default backends mem0 (in-process Python library) + WeKnora v0.9.0; native and mem0
 embeddings are local fastembed MiniLM (multilingual, 384-d); API keys arrive in P1 (user tokens / admin JWT
