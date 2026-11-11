@@ -8,7 +8,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from llm_steward.errors import Unprocessable
 from llm_steward.models import ChangeLog, ExternalRef, Memory
-from llm_steward.models.enums import MemoryStatus, ObjectType, SyncStatus
+from llm_steward.models.enums import RESERVED_KEY_PREFIX, MemoryStatus, ObjectType, SyncStatus
 from llm_steward.providers.base import EXTRACT, MemoryProvider, Scope
 from llm_steward.services.erasure import Erased
 from llm_steward.services.governance_service import (
@@ -212,6 +212,10 @@ class MemoryService:
         return {object_id: SyncStatus(status) for object_id, status in refs}
 
 
+# What the assistant may recall about a user: not llm-steward's own state kept in their name.
+RECALLABLE = or_(Memory.key.is_(None), Memory.key.not_like(f"{RESERVED_KEY_PREFIX}%"))
+
+
 async def core_memories(s: AsyncSession, scope: Scope) -> list[Memory]:
     """Active pinned memories and profile values this scope sees (own or shared), most important
     first: straight from the mirror, no provider call (design §6 step 8)."""
@@ -221,6 +225,7 @@ async def core_memories(s: AsyncSession, scope: Scope) -> list[Memory]:
             *visible(Memory, scope, session=False),
             Memory.status == MemoryStatus.ACTIVE,
             or_(Memory.pinned.is_(True), Memory.key.is_not(None)),
+            RECALLABLE,
         )
         .order_by(Memory.importance.desc(), Memory.id)
         .limit(CORE_MAX)

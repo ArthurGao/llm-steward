@@ -24,6 +24,8 @@ class KbStatus(StrEnum):
 
 
 EFFECTIVE_KB_STATUSES = frozenset({KbStatus.ACTIVE, KbStatus.VERIFIED})
+# Profile keys llm-steward writes itself (e.g. a user's stop rule); no client may set one.
+RESERVED_KEY_PREFIX = "steward."
 
 
 class RiskLevel(StrEnum):

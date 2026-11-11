@@ -2395,7 +2395,7 @@
                 "type": "null"
               }
             ],
-            "description": "Profile key (e.g. user.city): one current value per user (and agent); a new value supersedes the old one. Not allowed together with session_id.",
+            "description": "Profile key (e.g. user.city): one current value per user (and agent); a new value supersedes the old one. Not allowed together with session_id. Keys starting with `steward.` are llm-steward's own.",
             "title": "Key"
           },
           "memory_type": {
@@ -4405,7 +4405,7 @@
     },
     "/admin/v1/ns/{slug}/candidates/{candidate_id}/reject": {
       "post": {
-        "description": "A reviewer's rejection says why (design \u00a79): `note` is required here.",
+        "description": "A rejection from the review queue says why (design \u00a79; governance requires `note`).",
         "operationId": "reject_admin_v1_ns__slug__candidates__candidate_id__reject_post",
         "parameters": [
           {

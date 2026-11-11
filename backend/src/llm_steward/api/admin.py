@@ -407,10 +407,8 @@ async def accept(
 async def reject(
     ns: Ns, candidate_id: uuid.UUID, services: ServicesDep, body: Decision | None = None
 ) -> DecisionOut:
-    """A reviewer's rejection says why (design §9): `note` is required here."""
+    """A rejection from the review queue says why (design §9; governance requires `note`)."""
     decision = body or Decision()
-    if not (decision.note or "").strip():
-        raise Unprocessable("a rejection needs a reason (note)")
     return await decide(services, ns.id, candidate_id, CandidateStatus.REJECTED, decision, ADMIN)
 
 

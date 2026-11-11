@@ -12,6 +12,7 @@
     "test": "pnpm -r test",
     "build": "pnpm -r build",
     "e2e": "pnpm -C apps/admin e2e",
-    "e2e:live": "pnpm -C apps/admin e2e:live"
+    "e2e:live": "pnpm -C apps/admin e2e:live",
+    "generate-client": "pnpm -r generate-client"
   }
 }

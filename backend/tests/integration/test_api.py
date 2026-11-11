@@ -185,7 +185,8 @@ def test_retrieve_returns_memories_and_kb_with_citations(app_client: AppClient) 
     }
     assert body["degraded"] == []
     assert f"[mem:{memory['id']}]" in body["context"]
-    assert f"[kb:{entry.id}] Refund time" in body["context"] and "已验证" in body["context"]
+    assert f"[kb:{entry.id}] Refund time" in body["context"]
+    assert "(verified)" in body["context"]  # in the query's language (English here)
 
 
 def test_users_only_see_their_own_and_shared_memories(app_client: AppClient) -> None:

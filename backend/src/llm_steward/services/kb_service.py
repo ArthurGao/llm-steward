@@ -22,6 +22,7 @@ from llm_steward.models import Candidate, KbCollection, KbEntry, Memory
 from llm_steward.models.base import utcnow
 from llm_steward.models.enums import (
     EFFECTIVE_KB_STATUSES,
+    RESERVED_KEY_PREFIX,
     ActorType,
     AuthorType,
     CandidateStage,
@@ -66,7 +67,7 @@ DRAFTS_AT_ONCE = 4  # concurrent kb.draft calls in one suggest job
 # A user's "stop suggesting" (design §5, per user: extracted facts carry no finer category yet):
 # a procedural memory under this profile key (one active per user), deleting it undoes it.
 PROCEDURAL = "procedural"
-STOP_KEY = "stop_suggestions"
+STOP_KEY = f"{RESERVED_KEY_PREFIX}stop_suggestions"  # only llm-steward writes it
 # Feedback-driven review (design §5 maintenance; v1 constants, a namespace setting later)
 REVIEW_MIN_HITS = 5  # answers since the last review, at least
 REVIEW_UNHELPFUL_PERCENT = 30  # of the ratings since then, unhelpful, at least
@@ -587,6 +588,7 @@ class KbService:
             user_id=user,
             memory_type=PROCEDURAL,
             key=STOP_KEY,
+            internal=True,
         )
 
 
@@ -599,6 +601,7 @@ async def _stopped(s: AsyncSession, namespace_id: uuid.UUID, users: set[str]) ->
             Memory.namespace_id == namespace_id,
             Memory.user_id.in_(users),
             Memory.key == STOP_KEY,
+            Memory.memory_type == PROCEDURAL,  # with the reserved key: belt and braces
             Memory.status == MemoryStatus.ACTIVE,
         )
     )

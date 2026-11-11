@@ -20,6 +20,7 @@ from collections import Counter
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import datetime
+from functools import partial
 from typing import Any, Literal, cast
 
 from jinja2 import Environment, PackageLoader
@@ -53,13 +54,14 @@ from llm_steward.ranking import (
     IMPORTANCE_BOOST,
     estimate_tokens,
     fit_budget,
+    has_cjk,
     mmr,
     rrf_scores,
     similarity_terms,
     weigh,
 )
 from llm_steward.services.governance_service import load_owned
-from llm_steward.services.memory_service import core_memories
+from llm_steward.services.memory_service import RECALLABLE, core_memories
 from llm_steward.services.scoping import visible
 
 log = logging.getLogger(__name__)
@@ -100,6 +102,8 @@ class Scoring:
     trust: dict[str, float] = field(default_factory=lambda: dict(TRUST))
     importance_boost: float = IMPORTANCE_BOOST
     half_lives: dict[str, float] = field(default_factory=lambda: dict(HALF_LIVES))
+    min_relevance: float | None = None  # after a rerank only
+    context_language: str = "auto"
 
     @classmethod
     def from_config(cls, config: NamespaceConfig) -> "Scoring":
@@ -116,6 +120,8 @@ class Scoring:
             ),
             half_lives=default.half_lives
             | {t.name: t.half_life_days for t in config.memory.types if t.half_life_days},
+            min_relevance=retrieval.min_relevance,
+            context_language=retrieval.context_language,
         )
 
     def memory_weight(self, m: Memory, now: datetime) -> float:
@@ -286,8 +292,11 @@ class RetrievalService:
         ranked = [i for i in _fuse(rankings) if i.id not in seen]
         reranked_by = None
         if rerank and self._reranker is not None and ranked:
-            ranked, reranked_by = await self._rerank(req.query, ranked, degraded, latency_ms)
-        cost = _line_cost if req.with_context else _text_cost
+            ranked, reranked_by = await self._rerank(
+                req.query, ranked, degraded, latency_ms, scoring.min_relevance
+            )
+        language = _context_language(scoring.context_language, req.query)
+        cost = partial(_line_cost, language=language) if req.with_context else _text_cost
         budget = req.token_budget or scoring.token_budget
         items, left_out = _select(pinned, ranked, top_k, budget, cost)
         ranks = {i.id: rank for r in rankings for rank, i in enumerate(r, start=1)}
@@ -296,7 +305,7 @@ class RetrievalService:
             retrieval_id = self._log(
                 s, namespace_id, req, items, left_out, ranks, timing, degraded, reranked_by
             )
-        context = _render(items) if req.with_context else None
+        context = _render(items, language) if req.with_context else None
         return RetrieveResult(retrieval_id, items, degraded, context)
 
     async def feedback(
@@ -413,10 +422,12 @@ class RetrievalService:
         ranked: list[RetrievedItem],
         degraded: list[Degraded],
         latency_ms: dict[str, int],
+        floor: float | None,
     ) -> tuple[list[RetrievedItem], str | None]:
         """Design §6 step 5: the cross-encoder re-scores the best RERANK_TOP_N fused items; its
         relevance (in [0, 1]) replaces their fused one, still times their weight; the rest
-        follow in fused order. Failing or out of time: the fused order stands, `degraded` says
+        follow in fused order. With a `floor`, only re-scored items at or above it are kept (the
+        rest were not rated). Failing or out of time: the fused order stands, `degraded` says
         so. Returns the order and the model that set it (None: it did not)."""
         reranker = self._reranker
         assert reranker is not None  # checked by the caller
@@ -432,10 +443,10 @@ class RetrievalService:
             return ranked, None
         finally:
             latency_ms["rerank"] = int((time.perf_counter() - started) * 1000)
-        rescored = [
-            dataclasses.replace(item, score=r * item.weight)
-            for item, r in zip(head, relevance, strict=True)
-        ]
+        rated = list(zip(head, relevance, strict=True))
+        if floor is not None:  # what falls short goes, and so does the unrated tail
+            rated, tail = [(i, r) for i, r in rated if r >= floor], []
+        rescored = [dataclasses.replace(item, score=r * item.weight) for item, r in rated]
         return sorted(rescored, key=lambda i: (-i.score, i.id)) + tail, reranker.model
 
     async def _timed(self, search: Any) -> tuple[Any, int]:
@@ -529,6 +540,7 @@ class RetrievalService:
         provider = self._providers.memory.name
         query = self._hits_of(Memory, ObjectType.MEMORY, provider, namespace_id, hits).where(
             *visible(Memory, scope, session=True),
+            RECALLABLE,  # a copy synced before such state stayed home
             Memory.status.in_(_MEMORY_HISTORY if req.as_of else _MEMORY_CURRENT),
             Memory.valid_from <= now,
             or_(Memory.valid_to.is_(None), Memory.valid_to > now),
@@ -728,16 +740,32 @@ def _text_cost(item: RetrievedItem) -> int:
     return estimate_tokens(_text(item))
 
 
-def _line_cost(item: RetrievedItem) -> int:
+def _line_cost(item: RetrievedItem, *, language: str) -> int:
     """For format=context: the item as rendered (its heading included, so a context can never
     exceed the budget: the full render shares headings)."""
-    return estimate_tokens(_render([item]))
+    return estimate_tokens(_render([item], language))
 
 
-def _render(items: list[RetrievedItem]) -> str:
+_LABELS = {  # the context's headings and marks per language
+    "zh": dict(user="关于用户", kb="知识库", sep="：", yes="（已验证）", no="（未验证）"),
+    "en": dict(
+        user="About the user", kb="Knowledge base", sep=": ", yes=" (verified)", no=" (unverified)"
+    ),
+}
+
+
+def _context_language(setting: str, query: str) -> str:
+    """The namespace's fixed language, or the query's: the context joins the same prompt."""
+    if setting != "auto":
+        return setting
+    return "zh" if has_cjk(query) else "en"
+
+
+def _render(items: list[RetrievedItem], language: str) -> str:
     return _CONTEXT.render(
         memories=[i for i in items if i.source == "memory"],
         kb=[i for i in items if i.source == "kb"],
+        t=_LABELS[language],
     ).strip()
 
 

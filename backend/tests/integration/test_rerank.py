@@ -165,3 +165,31 @@ def test_the_cross_encoder_reads_a_bounded_text_per_item(
     _retrieve(client, h, sources=["memory"], rerank=True, token_budget=100_000)
     [(_, texts)] = reranker.calls
     assert texts[0].startswith(" refund") and len(texts[0]) <= 2000
+
+
+def test_a_relevance_floor_drops_what_the_cross_encoder_finds_unrelated(
+    client: AppClient, reranker: FakeReranker, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`retrieval.min_relevance` (off by default) applies to the cross-encoder's relevance, the
+    one calibrated score: below it an item is dropped; nothing left is a gap. Without a rerank
+    (off, failed, out of time) there is nothing calibrated to compare, so nothing is dropped."""
+    from llm_steward.models import RetrievalLog
+
+    h, ns = client.new_tenant("acme")
+    weak = post_memory(client, h, "the weather is nice")  # relevance sigmoid(-2) = 0.12
+    strong = post_memory(client, h, "refund delay explained")  # sigmoid(0) = 0.5
+    client.drain()
+    fix_order(monkeypatch, client.services.providers.memory, [weak, strong])
+    client.set_config(ns, {"retrieval": {"rerank": True, "min_relevance": 0.3}})
+
+    body = _retrieve(client, h, sources=["memory"])
+    assert [i["id"] for i in body["items"]] == [strong]
+    nothing = _retrieve(client, h, sources=["memory"], query="parcel tracking")  # both 0.12
+    assert nothing["items"] == []
+    assert client.get(RetrievalLog, nothing["retrieval_id"]).hit_count == 0  # a gap
+
+    unranked = _retrieve(client, h, sources=["memory"], rerank=False)
+    assert [i["id"] for i in unranked["items"]] == [weak, strong]
+    reranker.error = RuntimeError("model down")
+    failed = _retrieve(client, h, sources=["memory"])
+    assert failed["degraded"] == ["rerank"] and len(failed["items"]) == 2

@@ -1,8 +1,9 @@
 {# Prompt context for format=context (design §6). Every item carries a citation id so the model can
-   cite it and feedback can find it; unverified knowledge is marked as such. A document's further
+   cite it and feedback can find it; unverified knowledge is marked as such. Labels (`t`) come in the
+   query's language (retrieval_service._LABELS). A document's further
    passages are indented under its line. #}
 {% if memories %}
-## 关于用户
+## {{ t.user }}
 {% for m in memories %}
 - [mem:{{ m.id }}] {{ m.content }}
 {% endfor %}
@@ -11,9 +12,9 @@
 
 {% endif %}
 {% if kb %}
-## 知识库
+## {{ t.kb }}
 {% for k in kb %}
-- [kb:{{ k.id }}] {{ k.title }}：{{ k.passages[0] if k.passages else k.content }}（{{ "已验证" if k.verified else "未验证" }}）
+- [kb:{{ k.id }}] {{ k.title }}{{ t.sep }}{{ k.passages[0] if k.passages else k.content }}{{ t.yes if k.verified else t.no }}
 {% for p in k.passages[1:] %}
   - {{ p }}
 {% endfor %}

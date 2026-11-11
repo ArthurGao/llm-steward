@@ -18,7 +18,7 @@ from llm_steward.storage.db import engine_scope
 from tests.conftest import TEST_SCHEMA
 from tests.fakes.embedder import FakeEmbedder
 
-HEAD = "0014"
+HEAD = "0015"
 
 
 def _state(url: str) -> tuple[tuple[str, ...], bool]:
@@ -118,6 +118,71 @@ def test_0012_backfills_hit_counts_from_the_results(db_url: str) -> None:
     asyncio.run(seed())
     command.upgrade(cfg, "0012")
     assert asyncio.run(counts()) == {gap: 0, answered: 2}
+
+
+def test_0015_moves_stop_rules_to_the_reserved_key(db_url: str) -> None:
+    """Stop rules (procedural, `stop_suggestions`) move to `steward.stop_suggestions`; an app's
+    own profile memory under the old name is the app's and stays."""
+    cfg = alembic_config(db_url, TEST_SCHEMA)
+    command.upgrade(cfg, "0014")
+    ns, rule, apps = (uuid.uuid4() for _ in range(3))
+    now = datetime.now(UTC)
+    namespaces = sa.table(
+        "namespaces",
+        sa.column("id", sa.Uuid),
+        *(sa.column(c) for c in ("slug", "name", "created_at")),
+        sa.column("config", sa.JSON),
+    )
+    memories = sa.table(
+        "memories",
+        sa.column("id", sa.Uuid),
+        sa.column("namespace_id", sa.Uuid),
+        *(sa.column(c) for c in ("user_id", "memory_type", "key", "content", "status", "origin")),
+        *(sa.column(c) for c in ("pinned", "importance", "confidence", "access_count")),
+        *(sa.column(c) for c in ("valid_from", "created_at", "updated_at", "content_hash")),
+        sa.column("tags", sa.JSON),
+        sa.column("metadata", sa.JSON),
+    )
+
+    async def seed() -> None:
+        async with engine_scope(db_url, schema=TEST_SCHEMA) as engine, engine.begin() as conn:
+            await conn.execute(
+                sa.insert(namespaces).values(id=ns, slug="m", name="m", config={}, created_at=now)
+            )
+            for memory_id, memory_type in ((rule, "procedural"), (apps, "profile")):
+                await conn.execute(
+                    sa.insert(memories).values(
+                        id=memory_id,
+                        namespace_id=ns,
+                        user_id="u1" if memory_type == "procedural" else "u2",
+                        memory_type=memory_type,
+                        key="stop_suggestions",
+                        content="c",
+                        status="active",
+                        origin="direct",
+                        pinned=False,
+                        importance=0.5,
+                        confidence=0.8,
+                        access_count=0,
+                        valid_from=now,
+                        created_at=now,
+                        updated_at=now,
+                        content_hash="h",
+                        tags=[],
+                        metadata={},
+                    )
+                )
+
+    async def keys() -> dict[uuid.UUID, str]:
+        async with engine_scope(db_url, schema=TEST_SCHEMA) as engine, engine.connect() as conn:
+            rows = await conn.execute(sa.text("SELECT id, key FROM memories"))
+            return {uuid.UUID(str(i)): k for i, k in rows.all()}
+
+    asyncio.run(seed())
+    command.upgrade(cfg, "0015")
+    assert asyncio.run(keys()) == {rule: "steward.stop_suggestions", apps: "stop_suggestions"}
+    command.downgrade(cfg, "0014")
+    assert asyncio.run(keys()) == {rule: "stop_suggestions", apps: "stop_suggestions"}
 
 
 # Marks the public.alembic_version this test plants, so it only ever drops its own table.

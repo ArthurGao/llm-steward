@@ -1229,7 +1229,7 @@ export type MemoryCreate = {
     /**
      * Key
      *
-     * Profile key (e.g. user.city): one current value per user (and agent); a new value supersedes the old one. Not allowed together with session_id.
+     * Profile key (e.g. user.city): one current value per user (and agent); a new value supersedes the old one. Not allowed together with session_id. Keys starting with `steward.` are llm-steward's own.
      */
     key?: string | null;
     /**
@@ -1763,6 +1763,8 @@ export type RetrievedItemOut = {
      */
     verified: boolean;
 };
+
+export type ReviewFilter = 'due' | 'verify';
 
 /**
  * RiskLevel
@@ -2538,7 +2540,7 @@ export type ListEntriesAdminV1NsSlugKbEntriesGetData = {
         /**
          * Review
          */
-        review?: 'due' | 'verify' | null;
+        review?: ReviewFilter | null;
         /**
          * Cursor
          */

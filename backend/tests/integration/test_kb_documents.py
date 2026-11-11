@@ -192,7 +192,7 @@ def test_a_rejected_document_drops_its_bytes_and_stays_out(t: Tenant) -> None:
     collection = t.collection(default_risk="high")
     r = upload(t, collection)
     candidate, doc = r.json()["candidate"], r.json()["document"]
-    r = t.post(f"/v1/candidates/{candidate['id']}/reject", as_reviewer=True)
+    r = t.post(f"/v1/candidates/{candidate['id']}/reject", {"note": "outdated"}, as_reviewer=True)
     assert r.status_code == 200, r.text
     assert get(t, doc["id"])["state"] == "rejected"
     assert stored_files(t) == 0

@@ -75,6 +75,11 @@ class RetrievalConfig(_Section):
         default_factory=dict
     )
     importance_boost: Annotated[float, Field(ge=0)] | None = None
+    # Drop items the cross-encoder rates below this (0-1); applies only when a rerank ran, the
+    # one calibrated relevance. None: keep everything (the default).
+    min_relevance: Annotated[float, Field(ge=0, le=1)] | None = None
+    # Headings of `format=context`: the query's language (CJK -> zh, else en), or fixed.
+    context_language: Literal["auto", "en", "zh"] = "auto"
 
 
 class Limits(_Section):

@@ -96,6 +96,11 @@ def mmr[K: Hashable](
 _CJK_CHAR = re.compile(r"[\u3400-\u9fff]")
 
 
+def has_cjk(text: str) -> bool:
+    """Any CJK ideograph: Chinese text, as far as headings and token estimates are concerned."""
+    return _CJK_CHAR.search(text) is not None
+
+
 def estimate_tokens(text: str) -> int:
     """Rough and cheap, rounded up (a budget must not under-count): a CJK character is about one
     token, other text about four characters. Shared by the episode buffer and retrieval."""

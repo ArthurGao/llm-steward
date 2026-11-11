@@ -470,3 +470,22 @@ async def test_every_reason_written_to_history_is_redacted(kb: KbStack) -> None:
         )
     assert logged is not None
     assert logged == "asked by [REDACTED:email] on [REDACTED:phone]"
+
+
+async def test_a_reviewers_rejection_says_why_an_end_users_no_need_not(kb: KbStack) -> None:
+    """Rejecting from the review queue is a reviewer's call and stays explained in the history
+    (design §9), whichever route it comes through; an end user's "no thanks" on their own card
+    needs no reason."""
+    in_review = await kb.submit(RiskLevel.HIGH)
+    for blank in (None, "   "):
+        with pytest.raises(Unprocessable, match="reason"):
+            await kb.decide(in_review, REVIEWER, CandidateStatus.REJECTED, note=blank)
+    assert (
+        await kb.decide(in_review, REVIEWER, CandidateStatus.REJECTED, note="wrong")
+    ).status == (CandidateStatus.REJECTED)
+    card = await kb.submit(RiskLevel.MEDIUM, user="alice")
+    assert card.stage == CandidateStage.AWAITING_USER
+    with pytest.raises(Unprocessable, match="reason"):  # a reviewer stepping in explains too
+        await kb.decide(card, REVIEWER, CandidateStatus.REJECTED)
+    no_thanks = await kb.decide(card, ALICE, CandidateStatus.REJECTED)
+    assert no_thanks.status == CandidateStatus.REJECTED and no_thanks.decision_note is None

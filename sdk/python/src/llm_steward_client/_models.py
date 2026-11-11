@@ -229,7 +229,7 @@ class Key(RootModel[str]):
     root: Annotated[
         str,
         Field(
-            description="Profile key (e.g. user.city): one current value per user (and agent); a new value supersedes the old one. Not allowed together with session_id.",
+            description="Profile key (e.g. user.city): one current value per user (and agent); a new value supersedes the old one. Not allowed together with session_id. Keys starting with `steward.` are llm-steward's own.",
             max_length=200,
             title="Key",
         ),
@@ -251,7 +251,7 @@ class MemoryCreate(BaseModel):
     key: Annotated[
         Key | None,
         Field(
-            description="Profile key (e.g. user.city): one current value per user (and agent); a new value supersedes the old one. Not allowed together with session_id.",
+            description="Profile key (e.g. user.city): one current value per user (and agent); a new value supersedes the old one. Not allowed together with session_id. Keys starting with `steward.` are llm-steward's own.",
             title="Key",
         ),
     ] = None

@@ -33,6 +33,7 @@ from llm_steward.models import (
 from llm_steward.models.base import Base, utcnow
 from llm_steward.models.enums import (
     EFFECTIVE_KB_STATUSES,
+    RESERVED_KEY_PREFIX,
     ActorType,
     AuthorType,
     CandidateOp,
@@ -155,6 +156,9 @@ class CreateMemory:
     source_episode_id: uuid.UUID | None = None
     # Profile memories: one current value per (scope, key); a new value supersedes the old one.
     key: str | None = None
+    # llm-steward's own state kept as the user's memory (a `steward.` key, e.g. their stop rule):
+    # only it may write one, and it never goes to the memory engine (not a fact to recall)
+    internal: bool = False
 
 
 @dataclass(frozen=True)
@@ -526,6 +530,8 @@ class GovernanceService:
     # memories
 
     async def _create_memory(self, s: AsyncSession, op: CreateMemory, actor: Actor) -> Memory:
+        if op.key and op.key.startswith(RESERVED_KEY_PREFIX) and not op.internal:
+            raise Unprocessable(f"keys starting with {RESERVED_KEY_PREFIX!r} are llm-steward's own")
         if op.key and op.session_id:
             raise Unprocessable(
                 "a profile value (key) belongs to a user, not a session: drop session_id"
@@ -558,7 +564,8 @@ class GovernanceService:
         if previous is not None:
             reason = f"profile key {op.key!r} has a new value"
             self._superseded(s, previous, memory.id, before, actor, reason)
-        await queue_sync(s, ObjectType.MEMORY, memory, self._memory_provider)
+        if not op.internal:
+            await queue_sync(s, ObjectType.MEMORY, memory, self._memory_provider)
         return memory
 
     @staticmethod
@@ -1137,6 +1144,11 @@ class GovernanceService:
         before = snapshot(candidate)
         _check(CANDIDATE_TRANSITIONS, "candidate", candidate.status, op.to)
         _check_decider(candidate, actor, op.to)
+        reviewing = candidate.stage == CandidateStage.AWAITING_REVIEW or actor.is_reviewer
+        if op.to == CandidateStatus.REJECTED and reviewing and not (op.note or "").strip():
+            # a reviewer's rejection stays explained in the history (design §9), via any route;
+            # an end user's "no thanks" on their own card needs no reason
+            raise Unprocessable("a reviewer's rejection needs a reason (note)")
         note = redact_pii(op.note) if op.note else None  # free text: no personal data in history
         accepted = op.to == CandidateStatus.ACCEPTED
         if accepted and candidate.target_type != CandidateTarget.MEMORY:

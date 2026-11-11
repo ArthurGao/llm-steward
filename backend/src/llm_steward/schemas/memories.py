@@ -2,9 +2,9 @@ import uuid
 from datetime import datetime
 from typing import Any
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
-from llm_steward.models.enums import MemoryOrigin, MemoryStatus, SyncStatus
+from llm_steward.models.enums import RESERVED_KEY_PREFIX, MemoryOrigin, MemoryStatus, SyncStatus
 from llm_steward.schemas.bounds import Fact, MemoryType, UserId, Weight
 from llm_steward.services.memory_service import MemoryView
 
@@ -20,7 +20,8 @@ class MemoryCreate(BaseModel):
         max_length=200,
         description=(
             "Profile key (e.g. user.city): one current value per user (and agent); a new value "
-            "supersedes the old one. Not allowed together with session_id."
+            "supersedes the old one. Not allowed together with session_id. Keys starting "
+            "with `steward.` are llm-steward's own."
         ),
     )
     tags: list[str] = Field(default_factory=list, max_length=50)
@@ -32,6 +33,13 @@ class MemoryCreate(BaseModel):
         default=False,
         description="Let the memory provider extract facts. Needs the 'extract' capability (P2).",
     )
+
+    @field_validator("key")
+    @classmethod
+    def _not_reserved(cls, key: str | None) -> str | None:
+        if key is not None and key.startswith(RESERVED_KEY_PREFIX):
+            raise ValueError(f"keys starting with {RESERVED_KEY_PREFIX!r} are llm-steward's own")
+        return key
 
 
 class SourceRef(BaseModel):

@@ -368,3 +368,69 @@ def test_a_card_asked_of_no_user_has_no_suggestions_to_stop(app: AppClient) -> N
     assert app.http.get("/v1/candidates", headers=reviewer).json()["items"][0]["status"] == (
         "pending"
     )  # refused before anything was decided
+
+
+def test_only_llm_steward_writes_its_own_keys(app: AppClient) -> None:
+    """The stop rule lives in the reserved `steward.` key space: an app cannot set it (or a key
+    like it) by hand, and an app's own profile key of the same name stops nothing."""
+    h = app.new_key("acme")
+    reserved = {"content": "x", "user_id": "u1", "key": "steward.stop_suggestions"}
+    r = app.http.post("/v1/memories", json={**reserved, "infer": False}, headers=h)
+    assert r.status_code == 422, r.text
+    own = {"content": "Prefers no upsell", "user_id": "u1", "key": "stop_suggestions"}
+    assert app.http.post("/v1/memories", json={**own, "infer": False}, headers=h).status_code == 201
+    _episode(app, h, "Refunds take 5 business days.")
+    app.drain()
+    assert len(_cards(app, h)) == 1  # still asked: that key is the app's, not the rule
+
+
+def test_the_stop_rule_uses_the_reserved_key(app: AppClient) -> None:
+    h = app.new_key("acme")
+    _episode(app, h, "Refunds take 5 business days.")
+    app.drain()
+    [card] = _cards(app, h)
+    _reject(app, h, card, stop_suggestions=True)
+    [rule] = [m for m in _memories(app, h) if m["memory_type"] == "procedural"]
+    from llm_steward.models import Memory
+
+    assert app.get(Memory, rule["id"]).key == "steward.stop_suggestions"
+
+
+def test_the_stop_rule_is_governance_state_not_something_the_assistant_recalls(
+    app: AppClient,
+) -> None:
+    """The user sees (and can delete) the rule among their memories, but it is not a fact about
+    them: not in their profile, not in a retrieval's context, never pushed to the memory engine."""
+    from llm_steward.models.enums import JobType
+
+    h = app.new_key("acme")
+    _episode(app, h, "Refunds take 5 business days.")
+    app.drain()
+    [card] = _cards(app, h)
+    upserts = len(app.jobs(JobType.MEMORY_UPSERT))
+    _reject(app, h, card, stop_suggestions=True)
+    assert [m["memory_type"] for m in _memories(app, h)].count("procedural") == 1  # visible
+    assert len(app.jobs(JobType.MEMORY_UPSERT)) == upserts  # not pushed to the engine
+    profile = app.http.get("/v1/profile?user_id=u1", headers=h).json()
+    assert not [k for k in profile["values"] if k.startswith("steward.")]
+    body = app.retrieve(
+        h, query="suggest sharing with the team", scope={"user_id": "u1"}, format="context"
+    )
+    assert "suggest" not in (body["context"] or "")
+
+
+def test_governance_refuses_a_reserved_key_from_anyone_but_llm_steward(app: AppClient) -> None:
+    import uuid as _uuid
+
+    import pytest as _pytest
+
+    from llm_steward.errors import Unprocessable
+    from llm_steward.services.governance_service import CreateMemory
+
+    _, ns = app.new_tenant("beta")
+    rule = CreateMemory(ns, "x", user_id="u1", memory_type="procedural", key="steward.anything")
+    with _pytest.raises(Unprocessable, match="steward"):
+        app.apply(rule)
+    from dataclasses import replace
+
+    assert isinstance(app.apply(replace(rule, internal=True)).id, _uuid.UUID)

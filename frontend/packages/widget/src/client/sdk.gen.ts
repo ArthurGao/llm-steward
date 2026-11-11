@@ -90,7 +90,7 @@ export const acceptAdminV1NsSlugCandidatesCandidateIdAcceptPost = <ThrowOnError 
 /**
  * Reject
  *
- * A reviewer's rejection says why (design §9): `note` is required here.
+ * A rejection from the review queue says why (design §9; governance requires `note`).
  */
 export const rejectAdminV1NsSlugCandidatesCandidateIdRejectPost = <ThrowOnError extends boolean = false>(options: Options<RejectAdminV1NsSlugCandidatesCandidateIdRejectPostData, ThrowOnError>): RequestResult<RejectAdminV1NsSlugCandidatesCandidateIdRejectPostResponses, RejectAdminV1NsSlugCandidatesCandidateIdRejectPostErrors, ThrowOnError> => (options.client ?? client).post<RejectAdminV1NsSlugCandidatesCandidateIdRejectPostResponses, RejectAdminV1NsSlugCandidatesCandidateIdRejectPostErrors, ThrowOnError>({
     security: [{
@@ -173,8 +173,6 @@ export const listDocumentsAdminV1NsSlugKbDocumentsGet = <ThrowOnError extends bo
 
 /**
  * List Entries
- *
- * `review=due`: flagged for review (feedback); `review=verify`: active and well rated.
  */
 export const listEntriesAdminV1NsSlugKbEntriesGet = <ThrowOnError extends boolean = false>(options: Options<ListEntriesAdminV1NsSlugKbEntriesGetData, ThrowOnError>): RequestResult<ListEntriesAdminV1NsSlugKbEntriesGetResponses, ListEntriesAdminV1NsSlugKbEntriesGetErrors, ThrowOnError> => (options.client ?? client).get<ListEntriesAdminV1NsSlugKbEntriesGetResponses, ListEntriesAdminV1NsSlugKbEntriesGetErrors, ThrowOnError>({
     security: [{
