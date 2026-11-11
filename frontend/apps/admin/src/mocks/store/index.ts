@@ -26,6 +26,7 @@ import type {
   RetrievalLog,
   RetrievalRequest,
   RetrievalResult,
+  ReviewFilter,
   Stats,
   SyncRef,
   UserDetail,
@@ -100,6 +101,7 @@ export interface EntryQuery extends PageQuery {
   collection_id?: string
   status?: KbEntry['status']
   risk_level?: KbEntry['risk_level']
+  review?: ReviewFilter
   q?: string
 }
 export interface CandidateQuery extends PageQuery {
@@ -382,6 +384,7 @@ export class Store {
       .entries.filter((e) => (q.collection_id ? e.collection_id === q.collection_id : true))
       .filter((e) => (q.status ? e.status === q.status : true))
       .filter((e) => (q.risk_level ? e.risk_level === q.risk_level : true))
+      .filter((e) => (q.review ? reviewMatches(e, q.review) : true))
       .filter((e) => matches(q.q, e.title, e.content, e.key))
       .sort(byNewest((e) => e.updated_at))
     return paginate(items, q)
@@ -689,4 +692,11 @@ export class Store {
 
 export function createStore(): Store {
   return new Store()
+}
+
+/** The backend's review lists (backend kb_service VERIFY_*), as far as the demo's data goes: it
+ * has helpful rates, not vote counts. */
+function reviewMatches(e: KbEntry, review: ReviewFilter): boolean {
+  if (review === 'due') return e.review_due_at !== null
+  return e.status === 'active' && (e.helpful_rate ?? 0) >= 0.8
 }

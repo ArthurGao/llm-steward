@@ -42,3 +42,22 @@ test('a historic version walks forward to the version that obsoleted it', async 
   expect(await screen.findByText('Refunds over $1,000 need a team lead to approve them.', { selector: 'p' })).toBeInTheDocument()
   expect(screen.getByRole('navigation', { name: 'Open documents' })).toHaveTextContent('KB-0142 v1')
 })
+
+test('the review filter lists the knowledge flagged for review', async () => {
+  const { router } = renderApp('/acme-support/kb')
+  const table = await screen.findByRole('table')
+  expect(within(table).getAllByRole('row').length).toBeGreaterThan(3)
+  await userEvent.selectOptions(screen.getByLabelText('Review'), 'due')
+  await within(table).findByText('Refund approval threshold')
+  const keys = within(screen.getByRole('table')).getAllByRole('row').slice(1).map((r) => within(r).getAllByRole('cell')[0]?.textContent)
+  expect(keys).toEqual(['KB-0142', 'KB-0301']) // the two the demo flagged
+  expect(router.state.location.search).toMatchObject({ review: 'due' })
+})
+
+test('worth verifying lists the well rated active knowledge', async () => {
+  renderApp('/acme-support/kb?review=verify')
+  const table = await screen.findByRole('table')
+  await within(table).findByText('Chargeback ownership')
+  const keys = within(table).getAllByRole('row').slice(1).map((r) => within(r).getAllByRole('cell')[0]?.textContent)
+  expect(keys).toEqual(['KB-0144']) // active, 85% helpful; verified ones are already there
+})

@@ -1,8 +1,8 @@
 import { useQuery } from '@tanstack/react-query'
 import { createFileRoute, useNavigate } from '@tanstack/react-router'
 import { api } from '@/api/endpoints'
-import { str } from '@/lib/search'
-import type { KbDocument, KbEntry } from '@/api/types'
+import { oneOf, str } from '@/lib/search'
+import type { KbDocument, KbEntry, ReviewFilter } from '@/api/types'
 import { DataTable, type Column } from '@/components/DataTable'
 import { DocumentStack } from '@/components/DocumentStack'
 import { EmptyState, ErrorNote, Loading, Mono, NOT_IN_DEMO, PageTitle } from '@/components/misc'
@@ -23,9 +23,13 @@ interface Search {
   doc?: string
   status?: KbEntry['status']
   risk?: KbEntry['risk_level']
+  review?: ReviewFilter
   q?: string
   cursor?: string
 }
+
+// The entry filters; "Clear filters" sets them all back.
+const CLEARED = { status: undefined, risk: undefined, review: undefined, q: undefined }
 
 export const Route = createFileRoute('/$ns/kb')({
   validateSearch: (s: Record<string, unknown>): Search => ({
@@ -35,6 +39,7 @@ export const Route = createFileRoute('/$ns/kb')({
     doc: str(s.doc),
     status: str(s.status) as Search['status'],
     risk: str(s.risk) as Search['risk'],
+    review: oneOf(['due', 'verify'] as const)(s.review),
     q: str(s.q),
     cursor: str(s.cursor),
   }),
@@ -86,7 +91,7 @@ function KnowledgeBase() {
 }
 
 function Entries({ ns, search, set }: { ns: string; search: Search; set: (p: Partial<Search>) => void }) {
-  const query = { collection_id: search.collection, status: search.status, risk_level: search.risk, q: search.q, cursor: search.cursor }
+  const query = { collection_id: search.collection, status: search.status, risk_level: search.risk, review: search.review, q: search.q, cursor: search.cursor }
   const list = useQuery({ queryKey: [ns, 'entries', query], queryFn: () => api.kb.entries(ns, query) })
   const columns: Column<KbEntry>[] = [
     { key: 'key', header: 'Key', cell: (e) => <Mono className="text-ink-2">{e.key}</Mono> },
@@ -97,7 +102,7 @@ function Entries({ ns, search, set }: { ns: string; search: Search; set: (p: Par
     { key: 'hits', header: 'Hits', align: 'right', cell: (e) => <Mono>{e.hits}</Mono>, wide: true },
     { key: 'sync', header: 'Sync', cell: (e) => <StatusBadge status={e.sync_status} />, wide: true },
   ]
-  const filtered = !!(search.status || search.risk || search.q)
+  const filtered = Object.keys(CLEARED).some((k) => search[k as keyof Search])
   const open = list.data?.items.find((x) => x.id === search.entry)
   return (
     <>
@@ -111,6 +116,11 @@ function Entries({ ns, search, set }: { ns: string; search: Search; set: (p: Par
           <option value="high">High</option>
           <option value="medium">Medium</option>
           <option value="low">Low</option>
+        </Select>
+        <Select aria-label="Review" value={search.review ?? ''} onChange={(e) => set({ review: (e.target.value || undefined) as Search['review'] })}>
+          <option value="">Any review state</option>
+          <option value="due">Due for review</option>
+          <option value="verify">Worth verifying</option>
         </Select>
         <SearchBox aria-label="Search entries" placeholder="Search" value={search.q} onCommit={(v) => set({ q: v })} />
       </div>
@@ -130,7 +140,7 @@ function Entries({ ns, search, set }: { ns: string; search: Search; set: (p: Par
                 rowKey={(e) => e.id}
                 selectedKey={search.entry}
                 onOpen={(e) => set({ entry: e.id })}
-                empty={<EmptyState title={filtered ? 'No entries match' : 'No entries yet'} action={filtered ? <button type="button" className="text-link" onClick={() => set({ status: undefined, risk: undefined, q: undefined })}>Clear filters</button> : undefined} />}
+                empty={<EmptyState title={filtered ? 'No entries match' : 'No entries yet'} action={filtered ? <button type="button" className="text-link" onClick={() => set(CLEARED)}>Clear filters</button> : undefined} />}
               />
             )}
             {list.data && <Pager cursor={search.cursor ?? null} next={list.data.next_cursor} total={list.data.total} shown={list.data.items.length} onChange={(cursor) => set({ cursor: cursor ?? undefined, entry: search.entry })} />}

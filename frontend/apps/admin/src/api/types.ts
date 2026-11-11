@@ -26,6 +26,9 @@ export type JobStatus = gen.JobStatus
 export type ObjectType = gen.ObjectType | 'user'
 export type ChangeOp = gen.ChangeOp | 'delete' | 'erase'
 
+/** The Admin's review lists: flagged for review, or active and well rated (worth verifying). */
+export type ReviewFilter = 'due' | 'verify'
+
 export interface Page<T> {
   items: T[]
   next_cursor: string | null

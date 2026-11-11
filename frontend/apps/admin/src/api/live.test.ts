@@ -76,6 +76,19 @@ test('an entry carries its hit count and helpful rate; per-object sync state is 
   expect(e).toMatchObject({ key: 'KB-0e0001', hits: 7, helpful_rate: 0.75, sync_status: null, review_due_at: null })
 })
 
+test('an entry flagged for review carries when, and the list asks the backend to filter', async () => {
+  let review: string | null = null
+  server.use(
+    http.get(`${B}/kb/entries`, ({ request }) => {
+      review = new URL(request.url).searchParams.get('review')
+      return HttpResponse.json({ items: [{ ...entryOut, review_due_at: T }], next_cursor: null })
+    }),
+  )
+  const [e] = (await liveApi.kb.entries('acme', { review: 'due' })).items
+  expect(review).toBe('due')
+  expect(e?.review_due_at).toBe(T)
+})
+
 test('a list from the backend has a cursor but no total', async () => {
   server.use(http.get(`${B}/kb/entries`, ({ request }) => {
     expect(new URL(request.url).searchParams.get('status')).toBe('verified')

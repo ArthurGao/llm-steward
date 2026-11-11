@@ -15,11 +15,13 @@ from typing import Any, Literal
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from llm_steward.errors import Unprocessable
+from llm_steward.errors import NotFound, Unprocessable
 from llm_steward.llm.client import LLM
 from llm_steward.llm.roles import Provenance
 from llm_steward.models import Candidate, KbCollection, KbEntry, Memory
+from llm_steward.models.base import utcnow
 from llm_steward.models.enums import (
+    EFFECTIVE_KB_STATUSES,
     ActorType,
     AuthorType,
     CandidateStage,
@@ -45,6 +47,7 @@ from llm_steward.services.governance_service import (
     CreateCollection,
     CreateMemory,
     DecideCandidate,
+    FlagKbEntryForReview,
     GovernanceService,
     Operation,
     PatchMemory,
@@ -64,6 +67,18 @@ DRAFTS_AT_ONCE = 4  # concurrent kb.draft calls in one suggest job
 # a procedural memory under this profile key (one active per user), deleting it undoes it.
 PROCEDURAL = "procedural"
 STOP_KEY = "stop_suggestions"
+# Feedback-driven review (design §5 maintenance; v1 constants, a namespace setting later)
+REVIEW_MIN_HITS = 5  # answers since the last review, at least
+REVIEW_UNHELPFUL_PERCENT = 30  # of the ratings since then, unhelpful, at least
+VERIFY_MIN_HELPFUL = 5  # helpful ratings, at least, to be worth verifying
+VERIFY_HELPFUL_PERCENT = 80  # of all ratings, helpful, at least
+
+type ReviewFilter = Literal["due", "verify"]
+
+
+def _share_at_least(part: Any, whole: Any, percent: int) -> Any:
+    """`part / whole >= percent%`, in integers (the same on SQLite and PostgreSQL)."""
+    return part * 100 >= whole * percent
 
 
 @dataclass(frozen=True)
@@ -82,6 +97,9 @@ class Submitted:
 class EntryFilter:
     collection_id: uuid.UUID | None = None
     status: KbStatus | None = None
+    # `due`: flagged for review (effective, its date reached); `verify`: active and well rated,
+    # worth a reviewer's verification
+    review: ReviewFilter | None = None
 
 
 @dataclass(frozen=True)
@@ -455,8 +473,43 @@ class KbService:
             query = query.where(KbEntry.collection_id == filters.collection_id)
         if filters.status is not None:
             query = query.where(KbEntry.status == filters.status)
+        if filters.review == "due":
+            query = query.where(KbEntry.review_due_at <= utcnow())  # retiring clears it
+        elif filters.review == "verify":
+            rated = KbEntry.helpful_count + KbEntry.unhelpful_count
+            query = query.where(
+                KbEntry.status == KbStatus.ACTIVE,
+                KbEntry.helpful_count >= VERIFY_MIN_HELPFUL,
+                _share_at_least(KbEntry.helpful_count, rated, VERIFY_HELPFUL_PERCENT),
+            )
         async with self._sessions() as s:
             return await page(s, query, KbEntry, cursor, limit)
+
+    async def flag_for_review(self) -> int:
+        """Flag effective knowledge often rated unhelpful since its last review (a daily worker
+        tick, every namespace), each in its own transaction; returns how many were flagged."""
+        unhelpful = KbEntry.unhelpful_count - KbEntry.reviewed_unhelpful
+        rated = unhelpful + KbEntry.helpful_count - KbEntry.reviewed_helpful
+        async with self._sessions() as s:
+            due = (
+                await s.execute(
+                    select(KbEntry.namespace_id, KbEntry.id).where(
+                        KbEntry.status.in_(EFFECTIVE_KB_STATUSES),
+                        KbEntry.review_due_at.is_(None),
+                        KbEntry.hit_count - KbEntry.reviewed_hits >= REVIEW_MIN_HITS,
+                        rated > 0,
+                        _share_at_least(unhelpful, rated, REVIEW_UNHELPFUL_PERCENT),
+                    )
+                )
+            ).all()
+        flagged = 0
+        for namespace_id, entry_id in due:
+            try:
+                await self._governance.apply(FlagKbEntryForReview(namespace_id, entry_id), SYSTEM)
+            except NotFound:
+                continue  # gone between the scan and now (erasure): not the whole sweep
+            flagged += 1
+        return flagged
 
     async def list_candidates(
         self,

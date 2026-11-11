@@ -74,7 +74,7 @@ from llm_steward.services.governance_service import (
     TransitionKbEntry,
 )
 from llm_steward.services.health_service import check_health
-from llm_steward.services.kb_service import CandidateFilter, EntryFilter, Submitted
+from llm_steward.services.kb_service import CandidateFilter, EntryFilter, ReviewFilter, Submitted
 from llm_steward.services.memory_service import MemoryFilter
 from llm_steward.services.paging import MAX_PAGE
 
@@ -277,11 +277,12 @@ async def list_entries(
     services: ServicesDep,
     collection_id: uuid.UUID | None = None,
     status: KbStatus | None = None,
+    review: ReviewFilter | None = None,
     cursor: uuid.UUID | None = None,
     limit: Limit = 50,
 ) -> EntryPage:
     rows, next_cursor = await services.kb.list_entries(
-        ns.id, EntryFilter(collection_id, status), cursor=cursor, limit=limit
+        ns.id, EntryFilter(collection_id, status, review), cursor=cursor, limit=limit
     )
     return EntryPage(items=[EntryOut.model_validate(e) for e in rows], next_cursor=next_cursor)
 

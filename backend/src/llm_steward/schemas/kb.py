@@ -95,6 +95,7 @@ class EntryOut(BaseModel):
     hit_count: int = 0  # times returned by retrieval (counted in batches, design §6 step 9)
     helpful_count: int = 0  # feedback on those answers
     unhelpful_count: int = 0
+    review_due_at: datetime | None = None  # flagged for review (feedback, maintenance)
 
 
 class EntryPage(BaseModel):

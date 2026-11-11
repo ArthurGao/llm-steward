@@ -77,7 +77,7 @@ function entry(e: gen.EntryOut): ui.KbEntry {
     sync_status: null, // per-object sync state is on the Providers page
     hits: e.hit_count ?? 0,
     helpful_rate: rated ? (e.helpful_count ?? 0) / rated : null,
-    review_due_at: null,
+    review_due_at: e.review_due_at ?? null, // flagged for review (feedback)
   }
 }
 
@@ -176,7 +176,7 @@ export const liveApi: typeof mockApi = {
       items: (await call(sdk.collectionsAdminV1NsSlugKbCollectionsGet(at(slug)))).items.map((c) => ({ ...c, review_policy: c.review_policy ?? {} })),
     }),
     entries: async (slug, q) =>
-      page(await call(sdk.listEntriesAdminV1NsSlugKbEntriesGet({ ...at(slug), query: { collection_id: str(q, 'collection_id'), status: str(q, 'status') as gen.KbStatus | undefined, ...paging(q) } })), entry),
+      page(await call(sdk.listEntriesAdminV1NsSlugKbEntriesGet({ ...at(slug), query: { collection_id: str(q, 'collection_id'), status: str(q, 'status') as gen.KbStatus | undefined, review: str(q, 'review') as ui.ReviewFilter | undefined, ...paging(q) } })), entry),
     entry: async (slug, id) => entry(await call(sdk.getEntryAdminV1NsSlugKbEntriesEntryIdGet(at(slug, { entry_id: id })))),
     history: async (slug, id) => {
       const h = await call(sdk.entryHistoryAdminV1NsSlugKbEntriesEntryIdHistoryGet(at(slug, { entry_id: id })))

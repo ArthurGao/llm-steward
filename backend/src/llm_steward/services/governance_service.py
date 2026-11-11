@@ -297,6 +297,15 @@ class TransitionKbEntry:
 
 
 @dataclass(frozen=True)
+class FlagKbEntryForReview:
+    """Set `review_due_at` (maintenance, P7d): not a new version, nothing changes in the engine.
+    A reviewer's new version or verification clears it (`_mark_reviewed`)."""
+
+    namespace_id: uuid.UUID
+    entry_id: uuid.UUID
+
+
+@dataclass(frozen=True)
 class SubmitKbDocument:
     """An uploaded document, governed as a whole by its collection (design §4): risk = max(the
     caller's estimate, the rules on its title, the collection's default). A reviewer's upload is
@@ -408,6 +417,7 @@ Operation = (
     | ReviseKbEntry
     | UpdateKbEntry
     | TransitionKbEntry
+    | FlagKbEntryForReview
     | SubmitKbDocument
     | RetireKbDocument
     | AttachDocumentFile
@@ -499,6 +509,8 @@ class GovernanceService:
                 return await self._update_kb_entry(s, op, actor)
             case TransitionKbEntry():
                 return await self._transition_kb_entry(s, op, actor)
+            case FlagKbEntryForReview():
+                return await self._flag_for_review(s, op, actor)
             case SubmitKbDocument():
                 return await self._submit_kb_document(s, op, actor)
             case AttachDocumentFile():
@@ -806,6 +818,7 @@ class GovernanceService:
             return entry  # nothing changed: no new version, no log, no sync
         entry.content_hash = new_hash
         entry.version += 1
+        _mark_reviewed(entry)  # a new version is the review
         if risk is not None:
             entry.risk_level = max_risk(entry.risk_level, risk)
         await s.flush()
@@ -819,6 +832,22 @@ class GovernanceService:
     ) -> KbEntry:
         entry = await load_owned(s, KbEntry, op.namespace_id, op.entry_id, "KB entry")
         return await self._transition(s, entry, op.to, op.reason, actor)
+
+    async def _flag_for_review(
+        self, s: AsyncSession, op: FlagKbEntryForReview, actor: Actor
+    ) -> KbEntry:
+        _require_reviewer_or_system(actor, "flag knowledge for review")
+        entry = await load_owned(s, KbEntry, op.namespace_id, op.entry_id, "KB entry")
+        if entry.status not in EFFECTIVE_KB_STATUSES or entry.review_due_at is not None:
+            return entry  # retired meanwhile, or already due: nothing to log
+        before = snapshot(entry)
+        entry.review_due_at = utcnow()
+        await s.flush()
+        unhelpful = entry.unhelpful_count - entry.reviewed_unhelpful
+        rated = unhelpful + entry.helpful_count - entry.reviewed_helpful
+        reason = f"feedback since the last review: {unhelpful} of {rated} ratings unhelpful"
+        self._log(s, ObjectType.KB_ENTRY, entry, ChangeOp.UPDATE, before, actor, reason)
+        return entry
 
     async def _transition(
         self, s: AsyncSession, entry: KbEntry, to: KbStatus, reason: str | None, actor: Actor
@@ -834,8 +863,10 @@ class GovernanceService:
         entry.status = to
         if to == KbStatus.VERIFIED:
             entry.verified_by, entry.verified_at = actor.id, now
+            _mark_reviewed(entry)  # a reviewer has looked at it
         if to in (KbStatus.DEPRECATED, KbStatus.REJECTED):
             entry.valid_to = now
+            entry.review_due_at = None  # out: nothing left to review
         await s.flush()
         self._log(s, ObjectType.KB_ENTRY, entry, ChangeOp.TRANSITION, before, actor, reason)
         if to in EFFECTIVE_KB_STATUSES:
@@ -1249,6 +1280,15 @@ class GovernanceService:
                 reason=redact_pii(reason) if reason else None,
             )
         )
+
+
+def _mark_reviewed(entry: KbEntry) -> None:
+    """A reviewer acted on the entry: any review flag is done, and the feedback check starts
+    counting afresh from here."""
+    entry.review_due_at = None
+    entry.reviewed_hits = entry.hit_count
+    entry.reviewed_helpful = entry.helpful_count
+    entry.reviewed_unhelpful = entry.unhelpful_count
 
 
 async def _retire(s: AsyncSession, memory: Memory) -> dict[str, Any]:

@@ -856,6 +856,10 @@ export type EntryOut = {
      */
     id: string;
     origin: KbOrigin;
+    /**
+     * Review Due At
+     */
+    review_due_at?: string | null;
     risk_level: RiskLevel;
     /**
      * Source Refs
@@ -2531,6 +2535,10 @@ export type ListEntriesAdminV1NsSlugKbEntriesGetData = {
          * Status
          */
         status?: KbStatus | null;
+        /**
+         * Review
+         */
+        review?: 'due' | 'verify' | null;
         /**
          * Cursor
          */

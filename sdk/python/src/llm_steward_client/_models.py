@@ -411,6 +411,10 @@ class RetrievedItemOut(BaseModel):
     verified: Annotated[bool, Field(title="Verified")]
 
 
+class ReviewFilter(RootModel[Literal["due", "verify"]]):
+    root: Literal["due", "verify"]
+
+
 class SettingsIn(BaseModel):
     yaml: Annotated[str, Field(max_length=200000, title="Yaml")]
 
@@ -708,6 +712,7 @@ class EntryOut(BaseModel):
         Literal["manual", "import", "promoted_memory", "user_suggestion", "extraction"],
         Field(title="KbOrigin"),
     ]
+    review_due_at: Annotated[AwareDatetime | None, Field(title="Review Due At")] = None
     risk_level: Annotated[Literal["low", "medium", "high"], Field(title="RiskLevel")]
     source_refs: Annotated[list[dict[str, Any]], Field(title="Source Refs")]
     status: Annotated[

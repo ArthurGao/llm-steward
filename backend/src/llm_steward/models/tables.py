@@ -159,6 +159,11 @@ class KbEntry(IdMixin, TimestampMixin, Base):
     hit_count: Mapped[int] = mapped_column(default=0)
     helpful_count: Mapped[int] = mapped_column(default=0)
     unhelpful_count: Mapped[int] = mapped_column(default=0)
+    # the counters at the last review (a new version or a verification): the feedback check
+    # counts only what came after (P7d)
+    reviewed_hits: Mapped[int] = mapped_column(default=0)
+    reviewed_helpful: Mapped[int] = mapped_column(default=0)
+    reviewed_unhelpful: Mapped[int] = mapped_column(default=0)
     version: Mapped[int] = mapped_column(default=1)
     tags: Mapped[list[str]] = mapped_column(default=list)
     meta: Mapped[dict[str, Any]] = mapped_column("metadata", default=dict)

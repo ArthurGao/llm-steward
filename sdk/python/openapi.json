@@ -1692,6 +1692,18 @@
           "origin": {
             "$ref": "#/components/schemas/KbOrigin"
           },
+          "review_due_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Review Due At"
+          },
           "risk_level": {
             "$ref": "#/components/schemas/RiskLevel"
           },
@@ -3383,6 +3395,13 @@
         "title": "RetrievedItemOut",
         "type": "object"
       },
+      "ReviewFilter": {
+        "enum": [
+          "due",
+          "verify"
+        ],
+        "type": "string"
+      },
       "RiskLevel": {
         "enum": [
           "low",
@@ -4881,6 +4900,22 @@
                 }
               ],
               "title": "Status"
+            }
+          },
+          {
+            "in": "query",
+            "name": "review",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "$ref": "#/components/schemas/ReviewFilter"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Review"
             }
           },
           {

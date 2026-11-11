@@ -9,6 +9,7 @@ import { StoreError, type Actor, type Store } from './store'
 const memoryStatus = oneOf(['active', 'superseded', 'deleted'] as const)
 const kbStatus = oneOf(['draft', 'active', 'verified', 'deprecated', 'rejected'] as const)
 const risk = oneOf(['low', 'medium', 'high'] as const)
+const review = oneOf(['due', 'verify'] as const)
 const stage = oneOf(['awaiting_user', 'awaiting_review'] as const)
 const candidateStatus = oneOf(['pending', 'accepted', 'rejected', 'expired', 'all'] as const)
 const origin = oneOf(['extraction', 'promote', 'user_suggestion', 'api'] as const)
@@ -82,7 +83,7 @@ export function createHandlers(store: Store) {
     http.get(`${BASE}/ns/:ns/kb/collections`, route(({ params }) => ({ items: store.listCollections(ns(params)) }))),
     http.get(`${BASE}/ns/:ns/kb/entries`, route(({ params, url }) => {
       const q = query(url)
-      return store.listEntries(ns(params), { ...q, status: kbStatus(q.status), risk_level: risk(q.risk_level) })
+      return store.listEntries(ns(params), { ...q, status: kbStatus(q.status), risk_level: risk(q.risk_level), review: review(q.review) })
     })),
     http.get(`${BASE}/ns/:ns/kb/entries/:id`, route(({ params }) => store.getEntry(ns(params), params.id ?? ''))),
     http.get(`${BASE}/ns/:ns/kb/entries/:id/history`, route(({ params }) => store.entryHistory(ns(params), params.id ?? ''))),

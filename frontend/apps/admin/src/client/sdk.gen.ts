@@ -173,6 +173,8 @@ export const listDocumentsAdminV1NsSlugKbDocumentsGet = <ThrowOnError extends bo
 
 /**
  * List Entries
+ *
+ * `review=due`: flagged for review (feedback); `review=verify`: active and well rated.
  */
 export const listEntriesAdminV1NsSlugKbEntriesGet = <ThrowOnError extends boolean = false>(options: Options<ListEntriesAdminV1NsSlugKbEntriesGetData, ThrowOnError>): RequestResult<ListEntriesAdminV1NsSlugKbEntriesGetResponses, ListEntriesAdminV1NsSlugKbEntriesGetErrors, ThrowOnError> => (options.client ?? client).get<ListEntriesAdminV1NsSlugKbEntriesGetResponses, ListEntriesAdminV1NsSlugKbEntriesGetErrors, ThrowOnError>({
     security: [{

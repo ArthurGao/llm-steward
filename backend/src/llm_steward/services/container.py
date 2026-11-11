@@ -52,6 +52,7 @@ Handler = Callable[[ClaimedJob], Awaitable[Any]]
 
 log = logging.getLogger(__name__)
 IDLE_FLUSH_EVERY_S = 60.0
+REVIEW_EVERY_S = 24 * 3600.0  # feedback-driven review flags (design §5 maintenance)
 EXPIRE_EVERY_S = 24 * 3600.0  # candidates expire after days (governance CANDIDATE_TTL)
 HITS_EVERY_S = 30.0  # hit counts lag retrievals by at most this (design §6 step 9)
 PURGE_IDEMPOTENCY_EVERY_S = 3600.0  # keys are kept a day; an hour late is harmless
@@ -158,6 +159,7 @@ def build_services(
             Tick("flush idle episode buffers", IDLE_FLUSH_EVERY_S, lambda: episodes.flush_idle()),
             Tick("expire unanswered candidates", EXPIRE_EVERY_S, governance.expire_candidates),
             Tick("count retrieval hits", HITS_EVERY_S, retrieval.count_hits),
+            Tick("flag knowledge for review", REVIEW_EVERY_S, kb.flag_for_review),
             Tick("forget old idempotency keys", PURGE_IDEMPOTENCY_EVERY_S, idempotency.purge),
             Tick(
                 "schedule reconcile",

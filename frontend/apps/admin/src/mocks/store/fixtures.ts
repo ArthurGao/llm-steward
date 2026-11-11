@@ -148,7 +148,7 @@ const ENTRY_SEEDS: EntrySeed[] = [
   [98, 'col_billing', 'Refund approval (2024 policy)', 'All refunds require approval from a team lead.', 'deprecated', 'high', 2, 300 * D, { superseded_by: FIX.refundEntry, valid_to: ago(150 * D), sync_status: 'deleted' }],
   [142, 'col_billing', 'Refund approval threshold', 'Refunds over $1,000 require approval from a team lead.', 'verified', 'high', 3, 150 * D, { hits: 412, helpful_rate: 0.91, review_due_at: ago(-20 * D) }],
   [143, 'col_billing', 'Invoice currency', 'Invoices are issued in the currency of the billing address; AUD, USD, EUR and GBP are supported.', 'verified', 'medium', 1, 110 * D, { hits: 133, helpful_rate: 0.88 }],
-  [144, 'col_billing', 'Chargeback ownership', 'Chargebacks are opened by finance; support only links the ticket.', 'active', 'medium', 1, 40 * D, { hits: 21, helpful_rate: 0.7 }],
+  [144, 'col_billing', 'Chargeback ownership', 'Chargebacks are opened by finance; support only links the ticket.', 'active', 'medium', 1, 40 * D, { hits: 21, helpful_rate: 0.85 }],
   [145, 'col_billing', 'Proration on upgrade', 'Upgrades mid-cycle are prorated to the day; downgrades apply at the next renewal.', 'verified', 'medium', 2, 95 * D, { hits: 207, helpful_rate: 0.86 }],
   [146, 'col_billing', 'Subsidiary invoicing', 'An invoice can be addressed to a subsidiary when the parent account owner approves it in writing.', 'draft', 'high', 1, 2 * D],
   [201, 'col_product', 'Enterprise single sign-on', 'The Enterprise plan includes SSO via SAML 2.0.', 'verified', 'medium', 2, 80 * D, { hits: 188, helpful_rate: 0.84 }],
