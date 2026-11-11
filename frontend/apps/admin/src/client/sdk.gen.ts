@@ -538,6 +538,8 @@ export const retrySyncAdminV1NsSlugSyncRefIdRetryPost = <ThrowOnError extends bo
 
 /**
  * Users
+ *
+ * Most recently active first. `cursor` is the previous page's `next_cursor` (opaque).
  */
 export const usersAdminV1NsSlugUsersGet = <ThrowOnError extends boolean = false>(options: Options<UsersAdminV1NsSlugUsersGetData, ThrowOnError>): RequestResult<UsersAdminV1NsSlugUsersGetResponses, UsersAdminV1NsSlugUsersGetErrors, ThrowOnError> => (options.client ?? client).get<UsersAdminV1NsSlugUsersGetResponses, UsersAdminV1NsSlugUsersGetErrors, ThrowOnError>({
     security: [{

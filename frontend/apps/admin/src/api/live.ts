@@ -166,10 +166,8 @@ export const liveApi: typeof mockApi = {
   },
 
   users: {
-    list: async (slug) => {
-      const r = await call(sdk.usersAdminV1NsSlugUsersGet(at(slug)))
-      return { items: r.items, next_cursor: null, total: null } // capped by the backend, not counted
-    },
+    // Keyset pages (most recently active first); the backend does not count them.
+    list: async (slug, q) => page(await call(sdk.usersAdminV1NsSlugUsersGet({ ...at(slug), query: paging(q) })), (u) => u),
     get: async (slug, userId) => call(sdk.userAdminV1NsSlugUsersUserIdGet(at(slug, { user_id: userId }))),
   },
 

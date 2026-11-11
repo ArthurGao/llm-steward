@@ -10,6 +10,7 @@ comes from `AdminService`. Not here, by design: anything that writes to an engin
 import hmac
 import uuid
 from dataclasses import asdict, replace
+from datetime import datetime
 from typing import Annotated
 
 import yaml
@@ -218,9 +219,25 @@ async def erase_user(
 
 
 @router.get("/ns/{slug}/users")
-async def users(ns: Ns, services: ServicesDep, limit: Limit = 100) -> out.UserPage:
-    found = await services.admin.users(ns.id, limit=limit)
-    return out.UserPage(items=[out.UserSummaryOut.model_validate(asdict(u)) for u in found])
+async def users(
+    ns: Ns, services: ServicesDep, cursor: str | None = None, limit: Limit = 100
+) -> out.UserPage:
+    """Most recently active first. `cursor` is the previous page's `next_cursor` (opaque)."""
+    found, last = await services.admin.users(ns.id, after=_user_cursor(cursor), limit=limit)
+    return out.UserPage(
+        items=[out.UserSummaryOut.model_validate(asdict(u)) for u in found],
+        next_cursor=f"{last[0].isoformat()}|{last[1]}" if last else None,
+    )
+
+
+def _user_cursor(cursor: str | None) -> tuple[datetime, str] | None:
+    if cursor is None:
+        return None
+    at, _, user = cursor.partition("|")  # an ISO time has no "|"; a user id may
+    try:
+        return datetime.fromisoformat(at), user
+    except ValueError:
+        raise HTTPException(422, "cursor is not one this endpoint returned") from None
 
 
 @router.get("/ns/{slug}/users/{user_id}")

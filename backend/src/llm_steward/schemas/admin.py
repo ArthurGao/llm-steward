@@ -57,6 +57,7 @@ class UserSummaryOut(BaseModel):
 
 class UserPage(BaseModel):
     items: list[UserSummaryOut]
+    next_cursor: str | None = None
 
 
 class UserDetailOut(UserSummaryOut):

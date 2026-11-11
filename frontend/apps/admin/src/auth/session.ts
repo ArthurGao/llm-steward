@@ -43,8 +43,24 @@ function emit() {
   for (const l of listeners) l()
 }
 
+/**
+ * The backend's base URL as the admin token may be sent to it: http(s), no credentials, query or
+ * fragment; a trailing slash dropped. Anything else throws, so the token never leaves for it.
+ */
+export function backendUrl(raw: string): string {
+  let url: URL
+  try {
+    url = new URL(raw.trim())
+  } catch {
+    throw new Error('Not a URL')
+  }
+  if (url.protocol !== 'http:' && url.protocol !== 'https:') throw new Error('The backend URL must be http or https')
+  if (url.username || url.password || url.search || url.hash) throw new Error('The backend URL takes no credentials, query or fragment')
+  return `${url.origin}${url.pathname}`.replace(/\/+$/, '')
+}
+
 export function connect(baseUrl: string, token: string): void {
-  const session: Session = { mode: 'live', baseUrl: baseUrl.replace(/\/+$/, ''), token }
+  const session: Session = { mode: 'live', baseUrl: backendUrl(baseUrl), token }
   memoryFallback = session
   try {
     window.sessionStorage.setItem(KEY, JSON.stringify(session))

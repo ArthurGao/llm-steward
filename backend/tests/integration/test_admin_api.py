@@ -116,6 +116,22 @@ def test_retrieval_logs_carry_the_total_latency_and_what_degraded(
     assert get(c, "/ns/acme/stats")["retrieval_p95_ms"] >= 60
 
 
+def test_users_page_by_last_activity_without_gaps_or_repeats(c: AppClient, t: Tenant) -> None:
+    for user in ("u1", "u2", "u3", "u4", "u5"):
+        post_memory(c, t.host, f"{user} likes tea", user_id=user)
+    everyone = [u["user_id"] for u in get(c, "/ns/acme/users")["items"]]
+    assert everyone[0] == "u5"  # most recently active first
+    seen: list[str] = []
+    cursor = None
+    while True:
+        page = get(c, "/ns/acme/users", limit=2, **({"cursor": cursor} if cursor else {}))
+        seen += [u["user_id"] for u in page["items"]]
+        cursor = page["next_cursor"]
+        if cursor is None:
+            break
+    assert seen == everyone and len(seen) == 5
+
+
 def test_users_roll_up_and_can_be_erased(c: AppClient, t: Tenant) -> None:
     post_memory(c, t.host, "u1 likes tea", user_id="u1", pinned=True)
     post_memory(c, t.host, "u1 lives in Oslo", user_id="u1")

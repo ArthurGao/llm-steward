@@ -1986,6 +1986,10 @@ export type UserPage = {
      * Items
      */
     items: Array<UserSummaryOut>;
+    /**
+     * Next Cursor
+     */
+    next_cursor?: string | null;
 };
 
 /**
@@ -3410,6 +3414,10 @@ export type UsersAdminV1NsSlugUsersGetData = {
         slug: string;
     };
     query?: {
+        /**
+         * Cursor
+         */
+        cursor?: string | null;
         /**
          * Limit
          */

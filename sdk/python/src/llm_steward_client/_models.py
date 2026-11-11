@@ -930,6 +930,7 @@ class UserDetailOut(BaseModel):
 
 class UserPage(BaseModel):
     items: Annotated[list[UserSummaryOut], Field(title="Items")]
+    next_cursor: Annotated[str | None, Field(title="Next Cursor")] = None
 
 
 class Written(BaseModel):

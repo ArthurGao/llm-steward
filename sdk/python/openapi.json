@@ -3774,6 +3774,17 @@
             },
             "title": "Items",
             "type": "array"
+          },
+          "next_cursor": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Next Cursor"
           }
         },
         "required": [
@@ -6494,6 +6505,7 @@
     },
     "/admin/v1/ns/{slug}/users": {
       "get": {
+        "description": "Most recently active first. `cursor` is the previous page's `next_cursor` (opaque).",
         "operationId": "users_admin_v1_ns__slug__users_get",
         "parameters": [
           {
@@ -6503,6 +6515,22 @@
             "schema": {
               "title": "Slug",
               "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "cursor",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Cursor"
             }
           },
           {

@@ -12,7 +12,7 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta
 from typing import Any
 
-from sqlalchemy import case, func, select
+from sqlalchemy import case, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from llm_steward.errors import Conflict
@@ -185,9 +185,19 @@ class AdminService:
 
     # --- users -------------------------------------------------------------------------------
 
-    async def users(self, namespace_id: uuid.UUID, *, limit: int = 100) -> list[UserSummary]:
-        """End users with memories here (any status), most recently active first."""
-        return await self._summaries(Memory.namespace_id == namespace_id, limit)
+    async def users(
+        self,
+        namespace_id: uuid.UUID,
+        *,
+        after: tuple[datetime, str] | None = None,
+        limit: int = 100,
+    ) -> tuple[list[UserSummary], tuple[datetime, str] | None]:
+        """End users with memories here (any status), most recently active first (ties by id).
+        Keyset paging on (last activity, user id): `after` is the last row of the previous page."""
+        found = await self._summaries(Memory.namespace_id == namespace_id, limit + 1, after)
+        more = len(found) > limit
+        rows = found[:limit]
+        return rows, ((rows[-1].last_active_at, rows[-1].user_id) if more else None)
 
     async def user(self, namespace_id: uuid.UUID, user_id: str) -> UserSummary | None:
         found = await self._summaries(
@@ -195,19 +205,25 @@ class AdminService:
         )
         return found[0] if found else None
 
-    async def _summaries(self, where: Any, limit: int) -> list[UserSummary]:
+    async def _summaries(
+        self, where: Any, limit: int, after: tuple[datetime, str] | None = None
+    ) -> list[UserSummary]:
         pinned = case(
             (Memory.pinned.is_(True) & (Memory.status == MemoryStatus.ACTIVE), 1), else_=0
         )
         last = func.max(Memory.updated_at)
+        query = (
+            select(Memory.user_id, func.count(), func.sum(pinned), last)
+            .where(where, Memory.user_id.is_not(None))
+            .group_by(Memory.user_id)
+            .order_by(last.desc(), Memory.user_id.desc())
+            .limit(limit)
+        )
+        if after is not None:
+            at, user = after
+            query = query.having(or_(last < at, (last == at) & (Memory.user_id < user)))
         async with self._sessions() as s:
-            rows = await s.execute(
-                select(Memory.user_id, func.count(), func.sum(pinned), last)
-                .where(where, Memory.user_id.is_not(None))
-                .group_by(Memory.user_id)
-                .order_by(last.desc())
-                .limit(limit)
-            )
+            rows = await s.execute(query)
             return [
                 UserSummary(str(user), int(count), int(pins or 0), when)
                 for user, count, pins, when in rows.all()

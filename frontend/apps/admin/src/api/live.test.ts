@@ -121,3 +121,14 @@ test('an added answer without a collection leaves the choice to the backend', as
   expect(sent).toEqual({ title: 'Retention', content: 'Kept 30 days.' })
   expect(w.candidate?.key).toBe('C-00c0de')
 })
+
+test('users page with the backend\'s cursor and no total', async () => {
+  let asked: string | null = null
+  server.use(http.get(`${B}/users`, ({ request }) => {
+    asked = new URL(request.url).searchParams.get('cursor')
+    return HttpResponse.json({ items: [{ user_id: 'u1', memory_count: 2, pinned_count: 0, last_active_at: T }], next_cursor: `${T}|u1` })
+  }))
+  const p = await liveApi.users.list('acme', { cursor: '2026-11-10T09:01:00Z|u2' })
+  expect(asked).toBe('2026-11-10T09:01:00Z|u2')
+  expect(p).toEqual({ items: [{ user_id: 'u1', memory_count: 2, pinned_count: 0, last_active_at: T }], next_cursor: `${T}|u1`, total: null })
+})
