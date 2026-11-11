@@ -44,15 +44,10 @@ from llm_steward.models.enums import (
 from llm_steward.providers.base import Providers
 from llm_steward.services.governance_service import load_owned
 from llm_steward.services.health_service import HealthReport
-from llm_steward.services.job_queue import enqueue, requeued
+from llm_steward.services.job_queue import SYNC_JOBS, enqueue, requeued
 from llm_steward.services.paging import page
 
 WEEK = 7
-SYNC_JOBS = {
-    ObjectType.MEMORY: (JobType.MEMORY_UPSERT, "memory_id"),
-    ObjectType.KB_ENTRY: (JobType.KB_UPSERT, "entry_id"),
-    ObjectType.KB_DOCUMENT: (JobType.DOC_INGEST, "document_id"),
-}
 
 
 @dataclass(frozen=True)

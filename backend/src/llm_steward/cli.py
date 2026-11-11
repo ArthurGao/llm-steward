@@ -24,9 +24,11 @@ from llm_steward.config import Settings
 from llm_steward.errors import StewardError
 from llm_steward.models import Job
 from llm_steward.models.enums import ApiScope
+from llm_steward.services.admin_service import AdminService
 from llm_steward.services.container import runtime
 from llm_steward.services.job_queue import JobQueue
 from llm_steward.services.namespace_service import DEFAULT_SCOPES, NamespaceService
+from llm_steward.services.resync import ResyncReport, resync
 from llm_steward.storage.db import engine_scope, session_factory
 
 app = typer.Typer(no_args_is_help=True, add_completion=False)
@@ -180,6 +182,53 @@ def jobs_retry(
     typer.echo(f"requeued {count} job(s)")
     if job_ids and count < len(job_ids):
         typer.echo("note: only failed jobs are requeued; the others were left alone", err=True)
+
+
+@app.command("resync")
+def resync_command(
+    namespaces: Annotated[
+        list[str] | None, typer.Option("--ns", help="Namespace slug; repeatable; default: all")
+    ] = None,
+    kb: Annotated[bool, typer.Option("--kb/--no-kb")] = True,
+    memory: Annotated[bool, typer.Option("--memory/--no-memory")] = True,
+) -> None:
+    """After switching STEWARD_KB_PROVIDER or STEWARD_MEMORY_PROVIDER: queue every effective
+    object the configured engines do not hold yet; the worker pushes them (run it, or serve).
+    Governance state and history do not change. A parsed document's file is gone (its engine has
+    it), so such documents are listed for re-upload instead."""
+    settings = Settings()
+
+    async def run(sessions: async_sessionmaker[AsyncSession]) -> list[tuple[str, ResyncReport]]:
+        service = NamespaceService(sessions)
+        if namespaces:
+            chosen = [await service.get_namespace(slug) for slug in namespaces]
+        else:
+            chosen = await AdminService(sessions).namespaces()  # by slug
+        reports = []
+        for n in chosen:
+            report = await resync(
+                sessions,
+                n.id,
+                kb_provider=settings.kb_provider,
+                memory_provider=settings.memory_provider,
+                kb=kb,
+                memory=memory,
+            )
+            reports.append((n.slug, report))
+        return reports
+
+    for slug, report in _with_sessions(run):
+        parts = []
+        if kb:
+            parts.append(
+                f"{report.entries} entries, {report.documents} documents for {settings.kb_provider}"
+            )
+        if memory:
+            parts.append(f"{report.memories} memories for {settings.memory_provider}")
+        typer.echo(f"{slug}: queued {'; '.join(parts)}")
+        if report.documents_without_file:
+            ids = " ".join(str(i) for i in report.documents_without_file)
+            typer.echo(f"{slug}: re-upload (the old engine holds their only copy): {ids}")
 
 
 @app.command()

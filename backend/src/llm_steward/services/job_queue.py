@@ -17,9 +17,9 @@ from sqlalchemy import and_, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from llm_steward.errors import NotFound, StewardError
-from llm_steward.models import Job
+from llm_steward.models import ExternalRef, Job
 from llm_steward.models.base import utcnow
-from llm_steward.models.enums import JobStatus, JobType
+from llm_steward.models.enums import JobStatus, JobType, ObjectType, SyncStatus
 from llm_steward.pipeline.risk import redact_pii
 
 ERROR_MAX_CHARS = 500
@@ -38,6 +38,14 @@ class ClaimedJob:
     def last_attempt(self) -> bool:
         """A handler that settles its own object on giving up (e.g. a failed document) asks."""
         return self.attempts >= self.max_attempts
+
+
+# The job that pushes an object to its engine, and the payload key naming it.
+SYNC_JOBS = {
+    ObjectType.MEMORY: (JobType.MEMORY_UPSERT, "memory_id"),
+    ObjectType.KB_ENTRY: (JobType.KB_UPSERT, "entry_id"),
+    ObjectType.KB_DOCUMENT: (JobType.DOC_INGEST, "document_id"),
+}
 
 
 def enqueue(
@@ -211,3 +219,47 @@ def requeued() -> dict[str, Any]:
 
 def _still_ours(job: ClaimedJob) -> tuple[Any, ...]:
     return (Job.id == job.id, Job.status == JobStatus.RUNNING, Job.attempts == job.attempts)
+
+
+async def mark_ref(
+    s: AsyncSession,
+    object_type: ObjectType,
+    obj: Any,
+    provider: str,
+    status: SyncStatus,
+    external_id: str | None = None,
+) -> None:
+    """Open (or re-open) the object's `external_refs` row; the Syncer records the outcome on it.
+    With `external_id`, the provider already holds version 1 (status SYNCED)."""
+    ref = await s.scalar(
+        select(ExternalRef).where(
+            ExternalRef.object_type == object_type,
+            ExternalRef.object_id == obj.id,
+            ExternalRef.provider == provider,
+        )
+    )
+    if ref is None:
+        s.add(
+            ExternalRef(
+                namespace_id=obj.namespace_id,
+                object_type=object_type,
+                object_id=obj.id,
+                provider=provider,
+                sync_status=status,
+                **(
+                    {"external_id": external_id, "synced_version": 1, "last_synced_at": utcnow()}
+                    if external_id
+                    else {}
+                ),
+            )
+        )
+    else:
+        ref.sync_status = status
+
+
+async def queue_sync(s: AsyncSession, object_type: ObjectType, obj: Any, provider: str) -> None:
+    """Open (or re-open) the object's ref at `provider` as pending and queue its push: the outbox
+    half of a sync, for callers that change no governed state (admin retry, resync)."""
+    job, key = SYNC_JOBS[object_type]
+    await mark_ref(s, object_type, obj, provider, SyncStatus.PENDING)
+    enqueue(s, obj.namespace_id, job, {key: str(obj.id)})

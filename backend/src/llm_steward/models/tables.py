@@ -194,6 +194,12 @@ class KbDocument(IdMixin, TimestampMixin, Base):
     valid_to: Mapped[datetime | None]
     error: Mapped[str | None] = mapped_column(String(200))
 
+    @property
+    def fetch_pending(self) -> bool:
+        """Imported by URL and not fetched yet: no bytes to hand to an engine; the fetch queues
+        the ingest itself (`AttachDocumentFile`)."""
+        return self.source_uri is not None and self.content_hash == ""
+
 
 class KbDocumentFile(Base):
     """An upload's bytes, kept only until the KB provider has them (or the document is dropped):

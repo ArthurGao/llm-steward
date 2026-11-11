@@ -121,6 +121,7 @@ uv run steward ns create <slug>    # a namespace (no HTTP route creates one)
 uv run steward key create <slug>   # prints an API key once: Authorization: Bearer stw_<prefix>_<secret>
 uv run steward ns apply -f ns.yaml # create/update a namespace and its config (validated; design §8)
 uv run steward jobs failed         # jobs out of attempts; `steward jobs retry <id>… | --all-failed`
+uv run steward resync              # after switching STEWARD_KB_PROVIDER / _MEMORY_PROVIDER: queue what the new engine lacks
 uv run steward serve               # http://127.0.0.1:8600 (+ outbox worker unless STEWARD_RUN_WORKER=false)
 uv run steward worker              # the outbox worker on its own
 STEWARD_API_KEY=stw_… uv run steward mcp --stdio [--user-id u]   # MCP for a local agent (HTTP: /mcp)

@@ -435,14 +435,82 @@ def test_documents_through_governance(migrated_url: str, real_engine: _Engine) -
         assert c.call(kb.search, "refunds", [ext], top_k=5) == []
 
 
+@pytest.mark.contract
+def test_switching_a_namespace_from_weknora_to_ragflow(
+    migrated_url: str, weknora_engine: _Engine, ragflow_engine: _Engine
+) -> None:
+    """P7 acceptance (design §11): after the KB engine is switched and `resync` runs, every
+    effective entry is retrievable from the new engine; states, versions and history are the
+    same; a retired entry stays out."""
+    from llm_steward.models import ChangeLog, KbEntry
+    from llm_steward.services.resync import resync
+
+    texts = {
+        "Refund time": "Refunds take 3 to 5 business days.",
+        "Courier": "Parcels ship by courier within two days.",
+        "Invoices": "Invoices are emailed on the first business day of each month.",
+    }
+    with _engine_app(migrated_url, weknora_engine) as (c, host, reviewer):
+        collection = c.http.post(
+            "/v1/kb/collections", json={"name": "faq", "default_risk": "low"}, headers=reviewer
+        ).json()["id"]
+        ids = {}
+        for title, content in texts.items():
+            body = {"collection_id": collection, "title": title, "content": content}
+            ids[title] = c.http.post("/v1/kb/entries", json=body, headers=reviewer).json()["entry"][
+                "id"
+            ]
+        retired = c.http.post(
+            "/v1/kb/entries",
+            json={"collection_id": collection, "title": "Old rule", "content": "Refunds: 30 days."},
+            headers=reviewer,
+        ).json()["entry"]["id"]
+        c.http.post(f"/v1/kb/entries/{retired}/deprecate", headers=reviewer)
+        c.drain()
+        assert _retrieved(c, host, "how long do refunds take")[0] == ids["Refund time"]
+        before = {i: (c.get(KbEntry, i).status, c.get(KbEntry, i).version) for i in ids.values()}
+        history = c.count(ChangeLog)
+        namespace = c.get(KbEntry, ids["Refund time"]).namespace_id
+
+    with _engine_client(migrated_url, ragflow_engine) as c:
+        assert _retrieved(c, host, "how long do refunds take") == []  # RAGFlow holds nothing yet
+        report = c.call(
+            resync, c.sessions, namespace, kb_provider="ragflow", memory_provider="native"
+        )
+        assert report.entries == len(ids)  # the retired one is not moved
+        c.drain()
+        for title, content in texts.items():
+            assert _retrieved(c, host, content)[0] == ids[title], title  # the best match
+        assert retired not in _retrieved(c, host, "refunds 30 days")
+        after = {i: (c.get(KbEntry, i).status, c.get(KbEntry, i).version) for i in ids.values()}
+        assert after == before
+        assert c.count(ChangeLog) == history
+
+
+def _retrieved(c: Any, headers: dict[str, str], query: str) -> list[str]:
+    r = c.http.post("/v1/retrieve", json={"query": query, "sources": ["kb"]}, headers=headers)
+    assert r.status_code == 200 and r.json()["degraded"] == [], r.text
+    return [i["id"] for i in r.json()["items"]]
+
+
 @contextmanager
 def _engine_app(migrated_url: str, engine: _Engine) -> Iterator[Any]:
     """The app on a real engine, with a host-app key (read/write) and a reviewer key (review
     scope)."""
+    from tests.conftest import Tenant
+
+    with _engine_client(migrated_url, engine) as c:
+        t = Tenant(c, "acme")
+        yield t.c, t.host, t.reviewer
+
+
+@contextmanager
+def _engine_client(migrated_url: str, engine: _Engine) -> Iterator[Any]:
+    """The app on a real engine, on whatever the database already holds."""
     from fastapi.testclient import TestClient
 
     from llm_steward.main import create_app
-    from tests.conftest import AppClient, Tenant, test_settings
+    from tests.conftest import AppClient, test_settings
 
     settings = test_settings(
         migrated_url,
@@ -452,8 +520,7 @@ def _engine_app(migrated_url: str, engine: _Engine) -> Iterator[Any]:
     )
     app = create_app(settings, embedder=FakeEmbedder())
     with TestClient(app) as client:
-        t = Tenant(AppClient(client, app.state.services), "acme")
-        yield t.c, t.host, t.reviewer
+        yield AppClient(client, app.state.services)
 
 
 def _document(c: Any, headers: dict[str, str], document_id: str) -> dict[str, Any]:

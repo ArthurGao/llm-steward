@@ -24,7 +24,6 @@ from llm_steward.models import (
     Candidate,
     ChangeLog,
     Episode,
-    ExternalRef,
     KbCollection,
     KbDocument,
     KbDocumentFile,
@@ -57,7 +56,7 @@ from llm_steward.namespace_config import read_config
 from llm_steward.pipeline.risk import Assessment, RiskPolicy, assess, redact_pii
 from llm_steward.providers.base import Scope
 from llm_steward.services.erasure import Erased, erase_user
-from llm_steward.services.job_queue import enqueue
+from llm_steward.services.job_queue import enqueue, mark_ref
 from llm_steward.services.scoping import exact
 from llm_steward.services.webhook_service import candidate_event, entry_event, queue_event
 
@@ -548,7 +547,7 @@ class GovernanceService:
         if previous is not None:
             reason = f"profile key {op.key!r} has a new value"
             self._superseded(s, previous, memory.id, before, actor, reason)
-        await _mark_ref(s, ObjectType.MEMORY, memory, self._memory_provider, SyncStatus.PENDING)
+        await mark_ref(s, ObjectType.MEMORY, memory, self._memory_provider, SyncStatus.PENDING)
         enqueue(s, op.namespace_id, JobType.MEMORY_UPSERT, {"memory_id": str(memory.id)})
         return memory
 
@@ -587,7 +586,7 @@ class GovernanceService:
         await s.flush()
         self._log(s, ObjectType.MEMORY, memory, ChangeOp.CREATE, None, actor)
         # the provider already holds it: the ref is synced from the start, no upsert job
-        await _mark_ref(
+        await mark_ref(
             s, ObjectType.MEMORY, memory, self._memory_provider, SyncStatus.SYNCED, op.external_id
         )
         return memory
@@ -652,7 +651,7 @@ class GovernanceService:
         memory.valid_to = utcnow()
         await s.flush()
         self._log(s, ObjectType.MEMORY, memory, ChangeOp.TRANSITION, before, actor, op.reason)
-        await _mark_ref(s, ObjectType.MEMORY, memory, self._memory_provider, SyncStatus.DELETING)
+        await mark_ref(s, ObjectType.MEMORY, memory, self._memory_provider, SyncStatus.DELETING)
         enqueue(s, op.namespace_id, JobType.MEMORY_REMOVE, {"memory_id": str(memory.id)})
         return memory
 
@@ -675,7 +674,7 @@ class GovernanceService:
         s.add(collection)
         await s.flush()
         self._log(s, ObjectType.KB_COLLECTION, collection, ChangeOp.CREATE, None, actor)
-        await _mark_ref(
+        await mark_ref(
             s, ObjectType.KB_COLLECTION, collection, self._kb_provider, SyncStatus.PENDING
         )
         return collection
@@ -1068,7 +1067,7 @@ class GovernanceService:
             await s.execute(delete(KbDocumentFile).where(KbDocumentFile.document_id == doc.id))
         await s.flush()
         self._log(s, ObjectType.KB_DOCUMENT, doc, ChangeOp.TRANSITION, before, actor, reason)
-        if to in EFFECTIVE_KB_STATUSES and not was_live and _has_bytes(doc):
+        if to in EFFECTIVE_KB_STATUSES and not was_live and not doc.fetch_pending:
             await self._queue_kb(s, doc, JobType.DOC_INGEST)
         elif was_live and to not in EFFECTIVE_KB_STATUSES:
             await self._queue_kb(s, doc, JobType.DOC_REMOVE)
@@ -1221,7 +1220,7 @@ class GovernanceService:
             if isinstance(obj, KbDocument)
             else (ObjectType.KB_ENTRY, "entry_id")
         )
-        await _mark_ref(s, object_type, obj, self._kb_provider, status)
+        await mark_ref(s, object_type, obj, self._kb_provider, status)
         enqueue(s, obj.namespace_id, job, {key: str(obj.id)})
 
     # change log
@@ -1260,42 +1259,6 @@ async def _retire(s: AsyncSession, memory: Memory) -> dict[str, Any]:
     memory.status, memory.valid_to = MemoryStatus.SUPERSEDED, utcnow()
     await s.flush()
     return before
-
-
-async def _mark_ref(
-    s: AsyncSession,
-    object_type: ObjectType,
-    obj: Any,
-    provider: str,
-    status: SyncStatus,
-    external_id: str | None = None,
-) -> None:
-    """Open (or re-open) the object's `external_refs` row; the Syncer records the outcome on it.
-    With `external_id`, the provider already holds version 1 (status SYNCED)."""
-    ref = await s.scalar(
-        select(ExternalRef).where(
-            ExternalRef.object_type == object_type,
-            ExternalRef.object_id == obj.id,
-            ExternalRef.provider == provider,
-        )
-    )
-    if ref is None:
-        s.add(
-            ExternalRef(
-                namespace_id=obj.namespace_id,
-                object_type=object_type,
-                object_id=obj.id,
-                provider=provider,
-                sync_status=status,
-                **(
-                    {"external_id": external_id, "synced_version": 1, "last_synced_at": utcnow()}
-                    if external_id
-                    else {}
-                ),
-            )
-        )
-    else:
-        ref.sync_status = status
 
 
 async def load_owned[T: Base](
@@ -1351,12 +1314,6 @@ def _draft(op: SubmitKbEntry, checked: Assessment) -> dict[str, Any]:
         "source_refs": list(op.source_refs),
         "tags": list(checked.tags),
     }
-
-
-def _has_bytes(doc: KbDocument) -> bool:
-    """False for a document imported by URL whose fetch has not finished: it has nothing to hand
-    to the engine yet, and the fetch queues the ingest itself (`AttachDocumentFile`)."""
-    return doc.source_uri is None or doc.content_hash != ""
 
 
 async def _same_file(

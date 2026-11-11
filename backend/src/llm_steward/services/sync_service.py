@@ -55,7 +55,7 @@ from llm_steward.providers.base import (
     Scope,
     document_parser,
 )
-from llm_steward.services.job_queue import ClaimedJob, describe_error, enqueue
+from llm_steward.services.job_queue import ClaimedJob, describe_error, enqueue, mark_ref
 from llm_steward.services.webhook_service import queue_event
 
 # retired: a removal job is queued; gone: the object row itself was deleted (nothing to queue on)
@@ -220,6 +220,11 @@ class SyncService:
         ext = await provider.ensure_collection(
             KbCollectionRef(collection.id, collection.namespace_id, collection.name)
         )
+        # Governance opens a collection's ref for the engine of the day; after a switch the new
+        # engine has none, and a collection has no governed state to wait for: open it here.
+        async with self._sessions() as s, s.begin():
+            ref = (ObjectType.KB_COLLECTION, collection, provider.name, SyncStatus.PENDING)
+            await mark_ref(s, *ref)
         await self._set(ObjectType.KB_COLLECTION, collection.id, provider.name, synced=ext)
         return ext
 
