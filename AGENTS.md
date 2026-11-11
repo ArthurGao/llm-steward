@@ -36,7 +36,8 @@ OpenAPI spec (frontend generates its client from it with `@hey-api/openapi-ts`).
    - Engine facts and quirks, per pinned version and shared across projects: `global/mem0/`, `global/weknora/`,
      `global/ragflow/`. Read the engine's page before using, deploying or upgrading it.
    - Project KB `projects/llm-steward/` — decisions and lessons specific to llm-steward. Read it before
-     architecture or "which component does X" questions. Empty as of 2026-11-08.
+     architecture or "which component does X" questions. Its README holds the owner's decisions in one
+     table, `reference/lessons.md` the traps met while building (since 2026-11-11).
 
 If a change must contradict the design, update the design in the same change and say why in the commit.
 
