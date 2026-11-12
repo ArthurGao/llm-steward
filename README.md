@@ -244,6 +244,19 @@ llm-steward is the source of truth for knowledge and pushes what the new engine 
 engine keeps its copies and is no longer reachable: removals still queued for it fail (visible in
 `steward jobs failed`), and resync names retired objects it still holds. Clear or drop it.
 
+The memory engine switches the same way, in either direction between lite-mem (default) and mem0:
+
+```sh
+# in .env: STEWARD_MEMORY_PROVIDER=mem0   (or litemem; mem0 also needs STEWARD_LLM_*)
+docker compose --profile standard up -d --wait                     # restart with the new engine
+docker compose exec steward-standard steward resync                # give it the memories it lacks
+```
+
+Governance keeps every memory, so nothing is lost: resync queues only the active memories the
+engine does not hold yet (after a switch back, only those written meanwhile), and retrieval finds
+them once the worker has pushed them. Both directions run on the real engines in
+`tests/contract/test_memory_engine_switch.py`.
+
 The Admin (reviews, memories, knowledge, gaps, jobs) is a separate SPA in `frontend/apps/admin`. It
 has no accounts: it connects to a backend with the static `STEWARD_ADMIN_TOKEN`.
 
