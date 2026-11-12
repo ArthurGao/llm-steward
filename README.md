@@ -17,6 +17,7 @@ llm-steward does not re-implement a memory or RAG engine. It drives mature ones 
 | [mem0](https://github.com/mem0ai/mem0) 2.2.1 | memory, extracting facts itself; llm-steward resolves conflicts (`STEWARD_MEMORY_PROVIDER=mem0`) | `standard`, `docparse` |
 | [WeKnora](https://github.com/Tencent/WeKnora) v0.9.0 | knowledge base, documents | `standard` |
 | [RAGFlow](https://github.com/infiniflow/ragflow) v1.0.0 | knowledge base, complex documents | `docparse` |
+| [lite-rag](https://github.com/ArthurGao/lite-rag) (the owner's engine, pinned to a commit) | knowledge base: BM25 + vector + RRF, optional rerank (`STEWARD_KB_PROVIDER=literag`, HTTP or in-process) | any profile, by configuration |
 | built-in `native` (SQLite or PostgreSQL, sqlite-vec / pgvector, local embeddings) | both; for memory, llm-steward extracts the facts (`STEWARD_MEMORY_LLM=true`) | `native`, or the memory engine of any profile |
 
 Apps connect over REST, the [Python SDK](sdk/python/README.md) or MCP; end users answer
@@ -27,6 +28,33 @@ confirmation cards in the [widget](frontend/packages/widget/README.md); reviewer
  end user ─────widget──────────▶  (screening, review,          ◀──joint retrieval──
  reviewer ─────Admin───────────▶   versions, audit log)
 ```
+
+## How it works
+
+- **llm-steward's own database is the source of truth.** It holds every memory, KB entry and
+  document with its state, versions, provenance, review record and audit log (`change_log`). The
+  engines hold copies of what is currently effective: drafts and pending candidates never leave.
+- **One write path.** Every change goes through `GovernanceService.apply()`, which writes the object,
+  its `change_log` row and an outbox job in one transaction. The outbox worker (the Syncer) pushes to
+  the engines later, with retries; a request never waits on an engine. `external_refs` maps each
+  object to its id in an engine, with its sync status.
+- **Capabilities, not engine names.** Each engine declares what it can do. A conversation goes to
+  the memory engine to extract facts:
+  - **lite-mem** (default) also resolves conflicts: "moved to Auckland" supersedes "lives in
+    Wellington" inside lite-mem, which reports the replacement; llm-steward mirrors that decision as
+    its own supersede in the same transaction as the new memory. The call carries the episode id
+    as an idempotency key, so a retry after a timeout replays the result instead of extracting again.
+  - **mem0** only adds facts, so llm-steward runs its own conflict check (`memory.resolve`) on each
+    new memory.
+  - **native** cannot extract; with `STEWARD_MEMORY_LLM=true` llm-steward extracts the facts itself.
+- **Joint retrieval.** `/v1/retrieve` searches the memory and KB engines in parallel, maps every hit
+  back through `external_refs`, drops anything not currently effective (even if an engine lags),
+  fuses the lists with RRF, weights by trust, importance and age, removes near-duplicates (MMR) and
+  fits the result into a token budget.
+- **Engines are swappable.** Switching the memory or KB engine is configuration plus
+  `steward resync`, which gives the new engine what it lacks ([Operations](#operations)).
+
+The full design is [docs/llm-steward-design.md](docs/llm-steward-design.md).
 
 ## Try it in two minutes (`native`)
 
