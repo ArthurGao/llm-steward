@@ -11,6 +11,7 @@ from sqlalchemy import func, select
 
 from llm_steward.errors import Forbidden
 from llm_steward.models import Job, KbDocumentFile
+from llm_steward.models.base import utcnow
 from llm_steward.models.enums import DocStatus, JobStatus, JobType
 from llm_steward.providers.base import ENTRY_UPSERT
 from llm_steward.services.retrieval_service import CHUNK_SEPARATOR
@@ -374,6 +375,38 @@ def test_a_document_still_parsing_after_the_deadline_is_given_up(
     assert (got["status"], got["error"]) == ("failed", "parsing did not finish in time")
     # given up and taken out of the engine; the bytes stay for another engine (resync)
     assert stored_files(t) == 1 and in_provider(t, doc["collection_id"]) == []
+
+
+def test_a_long_parse_keeps_polling_once_a_minute(
+    t: Tenant, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Found in the contract run of 2026-11-12 (WeKnora without its embedding model): the delay was
+    computed as 2 s x 2^polls before the one-minute cap, so around the 47th poll the timedelta
+    overflowed, the job failed and the document was never polled again."""
+
+    async def status(external_id: str) -> DocStatus:
+        return DocStatus.PROCESSING
+
+    monkeypatch.setattr(t.c.services.providers.kb, "document_status", status)
+    doc = upload(t, t.collection(default_risk="low")).json()["document"]
+    t.c.drain()
+
+    def pending_poll() -> Any:
+        return next(j for j in t.c.jobs(JobType.DOC_STATUS) if j.status == JobStatus.PENDING)
+
+    async def many_polls_later(job_id: uuid.UUID) -> None:
+        async with t.c.sessions() as s, s.begin():
+            job = await s.get(Job, job_id)
+            assert job is not None
+            job.payload = {**job.payload, "polls": 60}
+
+    t.c.call(many_polls_later, pending_poll().id)
+    t.c.make_jobs_due()
+    t.c.drain()
+    assert get(t, doc["id"])["status"] == "processing"
+    poll = pending_poll()
+    polls, wait = poll.payload["polls"], poll.run_after - utcnow()
+    assert polls == 61 and 50 < wait.total_seconds() <= 60  # capped at a minute
 
 
 def test_a_document_deleted_while_it_uploads_is_taken_back_out(

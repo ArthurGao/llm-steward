@@ -18,6 +18,7 @@ ready or failed. The parse status and the waiting bytes are sync state, recorded
 `external_refs`; the document's governed state changes only through GovernanceService.
 """
 
+import math
 import uuid
 from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import asynccontextmanager
@@ -64,6 +65,8 @@ Outcome = Literal["synced", "retired", "gone", "outdated"]
 # half an hour is given up as failed (and removed from the engine).
 FIRST_POLL = timedelta(seconds=2)
 MAX_POLL = timedelta(minutes=1)
+# Doublings until FIRST_POLL passes MAX_POLL: the exponent stops there (2 s x 2^n overflows).
+MAX_POLL_DOUBLINGS = math.ceil(math.log2(MAX_POLL / FIRST_POLL))
 PARSE_DEADLINE = timedelta(minutes=30)
 PARSE_FAILED = "parsing failed"
 PARSE_TIMED_OUT = "parsing did not finish in time"
@@ -346,7 +349,7 @@ class SyncService:
                 enqueue(s, doc.namespace_id, JobType.DOC_REMOVE, payload)
             elif status != DocStatus.READY:
                 polls = int(payload.get("polls", 0)) + 1
-                delay = min(FIRST_POLL * 2 ** (polls - 1), MAX_POLL)
+                delay = min(FIRST_POLL * 2 ** min(polls - 1, MAX_POLL_DOUBLINGS), MAX_POLL)
                 again = {**payload, "polls": polls}
                 enqueue(s, doc.namespace_id, JobType.DOC_STATUS, again, delay=delay)
 
