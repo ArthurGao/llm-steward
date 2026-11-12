@@ -49,7 +49,7 @@ literag = [
 # `STEWARD_LITEMEM_MODE=inprocess`); the default HTTP mode needs nothing. Pinned to a commit:
 # upgrading requires the contract tests (`pytest -m contract`) to pass first.
 litemem = [
-    "lite-mem[server,sqlite] @ git+https://github.com/ArthurGao/lite-mem@e9d4f0d1659beccb06f0012712006cd19c942266",
+    "lite-mem[server,sqlite] @ git+https://github.com/ArthurGao/lite-mem@7491e360d73d759e0bed5baedd634ef3f3b1a041",
 ]
 
 [project.scripts]

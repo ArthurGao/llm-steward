@@ -56,6 +56,15 @@ async def engine_scope(database_url: str | URL, *, schema: str) -> AsyncIterator
         await engine.dispose()
 
 
+def libpq_url(database_url: str | URL) -> str | None:
+    """The governance URL as a plain libpq URL, for engines that open their own psycopg
+    connections to the same database (mem0, lite-mem); None when it is not PostgreSQL."""
+    url = make_url(database_url)
+    if url.get_backend_name() != "postgresql":
+        return None
+    return url.set(drivername="postgresql").render_as_string(hide_password=False)
+
+
 def session_factory(engine: AsyncEngine) -> async_sessionmaker[AsyncSession]:
     """Objects stay readable after commit, so services can return what they just wrote."""
     return async_sessionmaker(engine, expire_on_commit=False)

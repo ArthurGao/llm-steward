@@ -6,15 +6,16 @@ through ASGI). Marked `contract`: `uv run pytest -m contract`."""
 
 import uuid
 from collections.abc import Iterator
+from pathlib import Path
 from typing import Any
 
 import httpx2
 import pytest
-from sqlalchemy.engine import make_url
 
 from llm_steward.errors import ProviderUnavailable
 from llm_steward.providers.base import Message, Scope
 from llm_steward.providers.litemem import HttpTransport, InProcessTransport, LiteMemProvider
+from llm_steward.storage.db import libpq_url
 from tests.conftest import _pg_url
 
 pytestmark = pytest.mark.contract
@@ -34,7 +35,8 @@ def lite() -> Iterator[Any]:
     from lite_mem.stores.pg import PgStore
     from lite_mem.testing import FakeEmbedder, FakeLLM, update_when, user_lines
 
-    url = make_url(_pg_url()).set(drivername="postgresql").render_as_string(hide_password=False)
+    url = libpq_url(_pg_url())
+    assert url is not None
     drop = f'DROP SCHEMA IF EXISTS "{SCHEMA}" CASCADE'
     with psycopg.connect(url, autocommit=True) as conn:
         conn.execute(drop)
@@ -189,3 +191,33 @@ def test_lite_mem_end_to_end_through_governance(migrated_url: str, lite: Any) ->
         found = client.post("/v1/retrieve", json=body, headers=h).json()
         assert found["degraded"] == []
         assert [i["content"] for i in found["items"]] == ["我搬到上海了"]
+
+
+async def test_in_process_lite_mem_creates_its_own_tables(tmp_path: Path) -> None:
+    """lite-mem became the default engine (2026-11-12) and compose runs it in-process on the shared
+    PostgreSQL. Its tables are its own (backend rule 9: a provider creates them, never an Alembic
+    migration), so building the provider migrates a fresh schema — no manual `litemem migrate`.
+    Its database is the governance one unless lite-mem's own settings name another."""
+    import psycopg
+
+    from llm_steward.providers.registry import build_litemem
+    from tests.conftest import test_settings
+
+    url = libpq_url(_pg_url())
+    assert url is not None
+    drop = f'DROP SCHEMA IF EXISTS "{SCHEMA}" CASCADE'
+    with psycopg.connect(url, autocommit=True) as conn:
+        conn.execute(drop)
+    own = tmp_path / "litemem.env"  # lite-mem's own settings; a known size: no embedding call
+    own.write_text(f"LITEMEM_DB_SCHEMA={SCHEMA}\nLITEMEM_EMBEDDING__DIM=16\n")
+    settings = test_settings(
+        _pg_url(), memory_provider="litemem", litemem_mode="inprocess", litemem_config=str(own)
+    )
+    async with httpx2.AsyncClient() as http:
+        provider = build_litemem(settings, http)
+        try:
+            assert await provider.list(Scope(NS, "u1")) == []
+        finally:
+            await provider.aclose()
+    with psycopg.connect(url, autocommit=True) as conn:
+        conn.execute(drop)

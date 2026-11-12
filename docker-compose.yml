@@ -18,29 +18,42 @@ x-steward: &steward
     - "127.0.0.1:8600:8600"
   restart: unless-stopped
 
-# llm-steward on the shared PG with mem0 (`standard`, `docparse`); only the KB engine differs.
+# llm-steward on the shared PG with its memory engine (`standard`, `docparse`): lite-mem in-process by
+# default (schema lite_mem), or mem0 (schema mem0); only the KB engine differs.
 x-steward-pg: &steward-pg
   <<: *steward
   extra_hosts:
     - "host.docker.internal:host-gateway"
   volumes:
-    - steward-state:/data  # mem0's history database (the embedding model is in the image)
+    - steward-state:/data  # mem0's history database, when mem0 is the engine (the embedding model is in the image)
 
 x-steward-pg-env: &steward-pg-env
   # Unset: the bundled steward-db (`--profile db`). Without a reachable database /health says so.
   STEWARD_DATABASE_URL: ${STEWARD_STANDARD_DATABASE_URL:-postgresql+asyncpg://steward:${STEWARD_DB_PASSWORD:-}@steward-db:5432/steward}
-  # The memory engine: mem0 (extracts itself), or native with STEWARD_MEMORY_LLM=true (llm-steward
-  # extracts). Either way extraction goes through the LLM role layer; without these the service
-  # refuses to start. llm-gateway is loopback-only by design, so a container needs a vendor endpoint.
-  STEWARD_MEMORY_PROVIDER: ${STEWARD_MEMORY_PROVIDER:-mem0}
+  # The memory engine: litemem (default; extracts and resolves conflicts itself), mem0 (extracts;
+  # llm-steward compensates conflicts through the LLM role layer, which then must be set or the
+  # service refuses to start), or native with STEWARD_MEMORY_LLM=true (llm-steward extracts).
+  # llm-gateway is loopback-only by design, so a container needs a vendor endpoint or the host's Ollama.
+  STEWARD_MEMORY_PROVIDER: ${STEWARD_MEMORY_PROVIDER:-litemem}
   STEWARD_MEMORY_LLM: ${STEWARD_MEMORY_LLM:-false}
   STEWARD_LLM_BASE_URL: ${STEWARD_LLM_BASE_URL:-}
   STEWARD_LLM_API_KEY: ${STEWARD_LLM_API_KEY:-}
   STEWARD_LLM_MODEL: ${STEWARD_LLM_MODEL:-}
+  # lite-mem in-process: the same database (schema lite_mem, migrated at start); its models are
+  # the LLM endpoint above (else qwen3:8b on the host's Ollama) and bge-m3:567m embeddings on the
+  # host's Ollama, the model WeKnora uses.
+  # Or a lite-mem service of its own: STEWARD_LITEMEM_MODE=http, _URL and _API_KEY.
+  STEWARD_LITEMEM_MODE: ${STEWARD_LITEMEM_MODE:-inprocess}
+  STEWARD_LITEMEM_URL: ${STEWARD_LITEMEM_URL:-http://host.docker.internal:8710}
+  STEWARD_LITEMEM_API_KEY: ${STEWARD_LITEMEM_API_KEY:-}
+  LITEMEM_EMBEDDING__BASE_URL: ${LITEMEM_EMBEDDING_URL:-http://host.docker.internal:11434}
+  LITEMEM_LLM__BASE_URL: ${STEWARD_LLM_BASE_URL:-http://host.docker.internal:11434/v1}
+  LITEMEM_LLM__API_KEY: ${STEWARD_LLM_API_KEY:-}
+  LITEMEM_LLM__MODEL: ${STEWARD_LLM_MODEL:-qwen3:8b}
 
 services:
   # The governance DB for `standard` / `docparse` when you have no PostgreSQL + pgvector of your own.
-  # mem0 creates the `vector` extension on first use (this role owns the database).
+  # lite-mem and mem0 create the `vector` extension on first use (this role owns the database).
   steward-db:
     image: pgvector/pgvector:0.8.1-pg17
     profiles: [db]

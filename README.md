@@ -13,7 +13,8 @@ llm-steward does not re-implement a memory or RAG engine. It drives mature ones 
 
 | Engine | Role | Profile |
 | --- | --- | --- |
-| [mem0](https://github.com/mem0ai/mem0) 2.2.1 | memory, extracting facts itself (default; optional) | `standard`, `docparse` |
+| [lite-mem](https://github.com/ArthurGao/lite-mem) (the owner's engine, pinned to a commit) | memory (default): extracts facts and resolves conflicts itself, in-process | `standard`, `docparse` |
+| [mem0](https://github.com/mem0ai/mem0) 2.2.1 | memory, extracting facts itself; llm-steward resolves conflicts (`STEWARD_MEMORY_PROVIDER=mem0`) | `standard`, `docparse` |
 | [WeKnora](https://github.com/Tencent/WeKnora) v0.9.0 | knowledge base, documents | `standard` |
 | [RAGFlow](https://github.com/infiniflow/ragflow) v1.0.0 | knowledge base, complex documents | `docparse` |
 | built-in `native` (SQLite or PostgreSQL, sqlite-vec / pgvector, local embeddings) | both; for memory, llm-steward extracts the facts (`STEWARD_MEMORY_LLM=true`) | `native`, or the memory engine of any profile |
@@ -22,7 +23,7 @@ Apps connect over REST, the [Python SDK](sdk/python/README.md) or MCP; end users
 confirmation cards in the [widget](frontend/packages/widget/README.md); reviewers work in the Admin.
 
 ```
- app / agent ──REST · SDK · MCP──▶ llm-steward ──outbox worker──▶ mem0 · WeKnora · RAGFlow · native
+ app / agent ──REST · SDK · MCP──▶ llm-steward ──outbox worker──▶ lite-mem · mem0 · WeKnora · RAGFlow · native
  end user ─────widget──────────▶  (screening, review,          ◀──joint retrieval──
  reviewer ─────Admin───────────▶   versions, audit log)
 ```
@@ -44,15 +45,15 @@ export KEY=stw_...  REVIEW_KEY=stw_...                          # each key is pr
 Then the [first write and retrieve](#first-write-and-retrieve) below. The first call downloads the
 local embedding model (about 240 MB) into the container's volume.
 
-## Deploy `standard` (mem0 + WeKnora)
+## Deploy `standard` (lite-mem + WeKnora)
 
 About 15 minutes on a fresh machine, most of it image downloads (about 5 minutes once the images
 are pulled).
 
 **You need:** Docker with Compose v2.20 or later; [Ollama](https://ollama.com) on the host with the
-embedding model WeKnora uses (`ollama pull bge-m3:567m`); Python 3 on the host (standard library
-only, for the bootstrap script); an OpenAI-compatible LLM endpoint for memory extraction (base URL,
-key, model).
+embedding model WeKnora and lite-mem use (`ollama pull bge-m3:567m`); Python 3 on the host (standard
+library only, for the bootstrap script); an LLM for memory extraction: an OpenAI-compatible endpoint
+(base URL, key, model), or leave those unset and `ollama pull qwen3:8b` for lite-mem on the host.
 
 1. **Configure.** Copy the template and fill in the secrets:
 
@@ -65,12 +66,12 @@ key, model).
    | `STEWARD_DB_PASSWORD`, `WEKNORA_DB_PASSWORD`, `WEKNORA_REDIS_PASSWORD`, `WEKNORA_SYSTEM_AES_KEY` | `openssl rand -hex 16` each (keep the AES key: losing it makes WeKnora's encrypted fields unreadable) |
    | `WEKNORA_JWT_SECRET` | `openssl rand -hex 32` |
    | `WEKNORA_ADMIN_PASSWORD` | 8–32 letters and digits (WeKnora's owner account) |
-   | `STEWARD_LLM_BASE_URL`, `STEWARD_LLM_API_KEY`, `STEWARD_LLM_MODEL` | your LLM endpoint, e.g. `https://api.openai.com/v1`, a key, `gpt-4.1-mini` |
-   | `STEWARD_MEMORY_PROVIDER`, `STEWARD_MEMORY_LLM` | the memory engine: `mem0` / `false` (default), or `native` / `true` to run without mem0 (llm-steward extracts the facts), or `litemem` with `STEWARD_LITEMEM_URL` / `STEWARD_LITEMEM_API_KEY` ([lite-mem](https://github.com/ArthurGao/lite-mem), which also resolves conflicts itself) |
+   | `STEWARD_LLM_BASE_URL`, `STEWARD_LLM_API_KEY`, `STEWARD_LLM_MODEL` | your LLM endpoint, e.g. `https://api.openai.com/v1`, a key, `gpt-4.1-mini` (unset: lite-mem uses `qwen3:8b` on the host's Ollama; mem0 needs them) |
+   | `STEWARD_MEMORY_PROVIDER`, `STEWARD_MEMORY_LLM` | the memory engine: `litemem` / `false` (default: [lite-mem](https://github.com/ArthurGao/lite-mem) in-process, which extracts and resolves conflicts itself), `mem0` / `false` (mem0 2.2.1; llm-steward compensates conflicts), or `native` / `true` (llm-steward extracts the facts). Switching an existing deployment: `steward resync` afterwards |
 
-   `--profile db` below runs a bundled PostgreSQL + pgvector for llm-steward and mem0. To use your
-   own instead, set `STEWARD_STANDARD_DATABASE_URL` (as seen from inside a container) and leave
-   out `--profile db`.
+   `--profile db` below runs a bundled PostgreSQL + pgvector for llm-steward and its memory engine
+   (lite-mem in schema `lite_mem`, or mem0 in `mem0`). To use your own instead, set
+   `STEWARD_STANDARD_DATABASE_URL` (as seen from inside a container) and leave out `--profile db`.
 
 2. **Start the stack.**
 
@@ -78,9 +79,9 @@ key, model).
    docker compose --profile standard --profile db up -d --build --wait
    ```
 
-   llm-steward migrates its database on start. WeKnora's first start takes a minute or two.
-   llm-steward's first start downloads the local embedding model (about 240 MB, kept in a volume);
-   until it is in, `/health` reports the memory provider as `timeout`.
+   llm-steward migrates its database (and lite-mem's schema) on start. WeKnora's first start takes
+   a minute or two. lite-mem's first call loads `bge-m3:567m` into Ollama; until Ollama answers,
+   `/health` reports the memory provider as an error.
 
 3. **Bootstrap WeKnora.** It has no default account, API key or model. This registers the owner,
    registers `bge-m3:567m` from your Ollama, waits until it is active and creates an API key:

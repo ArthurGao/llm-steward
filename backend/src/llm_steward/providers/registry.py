@@ -19,6 +19,7 @@ from llm_steward.providers.base import (
 from llm_steward.providers.native.embedding import Embedder, FastEmbedEmbedder
 from llm_steward.providers.ragflow import RAGFlowProvider
 from llm_steward.providers.weknora import WeKnoraProvider
+from llm_steward.storage.db import libpq_url
 
 
 def uses_native(settings: Settings) -> bool:
@@ -103,7 +104,7 @@ LITEMEM_CONCURRENCY = 4
 def build_litemem(settings: Settings, http: httpx2.AsyncClient) -> MemoryProvider:
     """lite-mem over its HTTP API (default), or in-process: its components (store, embedding
     model, LLM clients) are built here, once, from lite-mem's own configuration (and fail here,
-    at startup, when that is wrong)."""
+    at startup, when that is wrong), after lite-mem's own migrations on PostgreSQL."""
     from llm_steward.providers.litemem import (
         HttpTransport,
         InProcessTransport,
@@ -114,9 +115,18 @@ def build_litemem(settings: Settings, http: httpx2.AsyncClient) -> MemoryProvide
     transport: Transport
     if settings.litemem_mode == "inprocess":
         from lite_mem.config import Settings as LiteMemSettings
-        from lite_mem.factory import Engines, open_components
+        from lite_mem.db import connect, migrate
+        from lite_mem.factory import Engines, is_sqlite, open_components
 
         own = LiteMemSettings(_env_file=settings.litemem_config)
+        if own.database_url is None:  # the governance database (schema lite_mem), or a file
+            data = Path(settings.data_dir)
+            data.mkdir(parents=True, exist_ok=True)
+            database_url = libpq_url(settings.database_url) or f"sqlite:///{data / 'litemem.db'}"
+            own = own.model_copy(update={"database_url": database_url})
+        if not is_sqlite(own.database_url):  # its tables are its own (rule 9); SQLite makes them
+            with connect(own.database_url) as conn:
+                migrate(conn, own.db_schema)
         components = open_components(own, max_size=LITEMEM_CONCURRENCY)
         engines = Engines(components, max_namespaces=own.server.max_namespaces)
         transport = InProcessTransport(components, engines, LITEMEM_CONCURRENCY)

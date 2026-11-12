@@ -15,7 +15,8 @@ def _clean_env(monkeypatch: pytest.MonkeyPatch) -> None:
 def test_defaults() -> None:
     s = Settings(_env_file=None, database_url=DB)  # type: ignore[call-arg]
     assert s.db_schema == "steward"
-    assert (s.memory_provider, s.kb_provider) == ("mem0", "weknora")
+    # lite-mem is the default memory engine since 2026-11-12 (owner); mem0 and native stay choices
+    assert (s.memory_provider, s.kb_provider) == ("litemem", "weknora")
     assert s.weknora_url == "http://localhost:8680"
     assert s.provider_timeout_ms == 800
 
@@ -61,3 +62,9 @@ def test_the_image_bakes_in_the_default_embedding_model() -> None:
     [arg] = [line for line in dockerfile.splitlines() if line.startswith("ARG EMBEDDING_MODEL=")]
     default = Settings(_env_file=None, database_url=DB).embedding_model  # type: ignore[call-arg]
     assert arg.removeprefix("ARG EMBEDDING_MODEL=") == default
+
+
+@pytest.mark.parametrize("engine", ["mem0", "native", "litemem"])
+def test_every_memory_engine_stays_a_choice(monkeypatch: pytest.MonkeyPatch, engine: str) -> None:
+    monkeypatch.setenv("STEWARD_MEMORY_PROVIDER", engine)
+    assert Settings(_env_file=None, database_url=DB).memory_provider == engine  # type: ignore[call-arg]

@@ -24,7 +24,9 @@ class Settings(BaseSettings):
     # Restricted to a plain identifier because it names a schema in DDL and search_path.
     db_schema: str = Field(default=DEFAULT_DB_SCHEMA, pattern=r"^[a-z_][a-z0-9_]{0,62}$")
 
-    memory_provider: MemoryProviderName = "mem0"
+    # The memory engine: lite-mem (default since 2026-11-12; extracts and resolves conflicts), mem0
+    # (extracts, llm-steward compensates conflicts) or native (llm-steward extracts: memory_llm).
+    memory_provider: MemoryProviderName = "litemem"
     kb_provider: KnowledgeProviderName = "weknora"
     weknora_url: str = "http://localhost:8680"
     weknora_api_key: str | None = None
@@ -50,7 +52,9 @@ class Settings(BaseSettings):
     literag_search_mode: LiteRagSearchMode = "hybrid"
     literag_rerank: bool = False
     # lite-mem (the owner's own memory engine): its HTTP service by default, or in-process (extra
-    # `litemem`, configured by its own LITEMEM_* variables or `litemem_config`, an env file). Never
+    # `litemem`, in the image; compose runs it so), configured by its own LITEMEM_* variables or
+    # `litemem_config` (an env file); in-process it defaults to the governance database (schema
+    # lite_mem, migrated at start; beside SQLite, `<data_dir>/litemem.db`). Never
     # run lite-mem's `maintain` on these namespaces: llm-steward owns validity and review.
     litemem_mode: Literal["http", "inprocess"] = "http"
     litemem_url: str = "http://127.0.0.1:8710"

@@ -3,7 +3,7 @@
 llm-steward is a **governance layer for AI memory and knowledge**. It decides what an agent may remember, what it
 may trust and what it retrieves: memories pass through screening, end-user confirmation and expert review before
 they become trusted, traceable team knowledge. It does **not** re-implement a memory or RAG engine — it drives
-mature engines through adapters: mem0 (default memory), WeKnora (default KB), RAGFlow (complex documents) and a
+mature engines through adapters: lite-mem (default memory, the owner's engine), mem0, WeKnora (default KB), RAGFlow (complex documents) and a
 built-in `native` implementation (SQLite + sqlite-vec + FTS5) for tests and single-machine use. Apps and agents
 connect through REST, a Python SDK or MCP.
 
@@ -59,6 +59,10 @@ stay in P5); API-key writes are actor `host_app`; real LLM calls in local develo
 subscription profiles — **only when the user has started the gateway and asked for it**; tests use FakeLLM.
 WeKnora's own embedding model is local, served by Ollama on the host (decided 2026-11-08).
 
+Decided (2026-11-12): the default memory engine is **lite-mem** (in-process in the image and compose, schema
+`lite_mem` of the shared PG, bge-m3 on the host's Ollama); **mem0 stays supported** (`STEWARD_MEMORY_PROVIDER=mem0`,
+its extra, adapter and contract tests are kept), as does `native`.
+
 Decided (2026-11-10): license Apache-2.0; no TypeScript SDK in v1; Admin has no login or accounts (an internal
 monitor; how a remote `/admin/v1` is protected is decided in the P6 plan); reviewers are `review`-scoped API keys.
 
@@ -88,10 +92,10 @@ monitor; how a remote `/admin/v1` is protected is decided in the P6 plan); revie
 ## Tech stack
 
 - Backend: Python 3.12, uv, FastAPI + Pydantic v2, SQLAlchemy 2.1 async + Alembic, OpenAI SDK (role layer over any
-  OpenAI-compatible endpoint), mem0 2.2.1 (pinned), official `mcp` SDK
+  OpenAI-compatible endpoint), lite-mem (pinned to a commit), mem0 2.2.1 (pinned), official `mcp` SDK
   (streamable HTTP at `/mcp`, plus stdio), structlog, Prometheus `/metrics`.
-- Governance DB: PostgreSQL + pgvector (`standard`) or SQLite (`native`). llm-steward and mem0 share one database,
-  schemas `steward` and `mem0`. WeKnora runs its own ParadeDB (it needs `pg_search`) and Redis —
+- Governance DB: PostgreSQL + pgvector (`standard`) or SQLite (`native`). llm-steward and its memory engine share one
+  database, schemas `steward` and `lite_mem` (or `mem0`). WeKnora runs its own ParadeDB (it needs `pg_search`) and Redis —
   see `deploy/weknora/README.md`.
 - Native provider: sqlite-vec (`vec0`) + FTS5 + jieba + fastembed.
 - Frontend: React + Vite + TypeScript, TanStack Router/Query, shadcn/ui + Tailwind, Playwright.
@@ -172,7 +176,7 @@ pnpm e2e:live                      # the P6 acceptance flows: live Admin (8612) 
 | --- | --- |
 | Namespace | Unit of isolation and config, usually one integrating project; own API keys, config and providers |
 | Scope | Ownership inside a namespace: `user_id` / `agent_id` / `session_id`; NULL = shared |
-| Provider | Engine adapter: `MemoryProvider` (mem0 / native), `KnowledgeProvider` (WeKnora / RAGFlow / native) |
+| Provider | Engine adapter: `MemoryProvider` (lite-mem / mem0 / native), `KnowledgeProvider` (WeKnora / RAGFlow / native) |
 | Memory | One atomic fact; content lives in the memory provider, llm-steward keeps a mirror + governance metadata |
 | KB Entry | One governed atomic piece of knowledge; **llm-steward is its source of truth** |
 | KB Document | An uploaded document; parsed and chunked by the KB provider |

@@ -15,8 +15,6 @@ import uuid
 from typing import Any
 from urllib.parse import quote
 
-from sqlalchemy.engine import make_url
-
 from llm_steward.errors import ProviderUnavailable
 from llm_steward.llm.roles import Role
 from llm_steward.providers.base import (
@@ -30,6 +28,7 @@ from llm_steward.providers.base import (
     ProviderHit,
     Scope,
 )
+from llm_steward.storage.db import libpq_url
 
 SHARED_USER = "__shared__"
 LIST_LIMIT = 10_000
@@ -39,10 +38,9 @@ SCHEMA = "mem0"
 def mem0_connection_string(database_url: str, schema: str) -> str:
     """The governance URL as a libpq URL whose search_path puts mem0's tables in `schema`
     (pgvector's types stay reachable in public)."""
-    url = make_url(database_url)
-    if url.get_backend_name() != "postgresql":
+    libpq = libpq_url(database_url)
+    if libpq is None:
         raise ProviderUnavailable("the mem0 memory provider needs PostgreSQL (pgvector)")
-    libpq = url.set(drivername="postgresql").render_as_string(hide_password=False)
     options = quote(f"-csearch_path={schema},public")
     return f"{libpq}{'&' if '?' in libpq else '?'}options={options}"
 

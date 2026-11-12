@@ -593,7 +593,7 @@ requires-dist = [
     { name = "httpx2", specifier = ">=2.16" },
     { name = "jieba", marker = "extra == 'native'", specifier = ">=0.42.1" },
     { name = "jinja2", specifier = ">=3.1" },
-    { name = "lite-mem", extras = ["server", "sqlite"], marker = "extra == 'litemem'", git = "https://github.com/ArthurGao/lite-mem?rev=e9d4f0d1659beccb06f0012712006cd19c942266" },
+    { name = "lite-mem", extras = ["server", "sqlite"], marker = "extra == 'litemem'", git = "https://github.com/ArthurGao/lite-mem?rev=7491e360d73d759e0bed5baedd634ef3f3b1a041" },
     { name = "lite-rag", extras = ["server"], marker = "extra == 'literag'", git = "https://github.com/ArthurGao/lite-rag?rev=6d52f90c161c53ee49f24e61517b906ba52ce0d1" },
     { name = "mcp", specifier = "==2.3.0" },
     { name = "mem0ai", marker = "extra == 'mem0'", specifier = "==2.2.1" },
