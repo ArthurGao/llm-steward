@@ -95,3 +95,28 @@ def test_the_recorded_suite_says_how_to_run_it_again(tmp_path: Path) -> None:
     suite = load_suite(write_suite(tmp_path, ["plain"]), tmp_path)
     with pytest.raises(ConfigError, match=r"pytest -m eval"):
         prepare_targets(suite)
+
+
+def test_the_gate_fails_on_a_degraded_reply_and_judges_recall_on_plain_only(
+    tmp_path: Path,
+) -> None:
+    """lite-eval 0.2.0 gate rules: `errors max 0` for every config, recall@8 for `plain`."""
+    from lite_eval.api import assert_gate
+    from lite_eval.errors import GateFailed
+
+    tenant, keys = _tenant(0)
+    post = tenant.c.http.post
+
+    def degraded(path: str, json: dict[str, Any], headers: Any) -> Any:
+        reply = post(path, json, headers)
+        if json.get("rerank"):  # only the reported run degrades
+            reply.json = lambda: {"items": [], "degraded": ["kb: timeout"]}
+        return reply
+
+    tenant.c.http.post = degraded
+    plain, reranked = evaluate(tenant, keys, db="fake", root=tmp_path)
+    with pytest.raises(GateFailed) as failed:
+        assert_gate([plain, reranked])
+    message = str(failed.value)
+    assert "gate FAILED: rerank" in message and "errors = 25.0000 > max 0" in message
+    assert "recall@8 =" not in message.split("gate FAILED: rerank")[1]  # recall gates plain only

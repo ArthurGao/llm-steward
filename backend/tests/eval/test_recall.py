@@ -29,7 +29,6 @@ def test_recall_at_8(
             print("  miss:", miss)
         for miss in misses(reranked):
             print("  miss (rerank):", miss)
-    # A degraded reply is a failed case (the original test failed outright), never a lower recall
-    for result in (plain, reranked):
-        assert result.record.summary.target_errors == {}, result.directory
-    assert_gate([plain])
+    # The suite's gate: recall on `plain` only, and no errored case in either run (a degraded
+    # reply is a failed case, as the original test failed outright; never a lower recall).
+    assert_gate([plain, reranked])

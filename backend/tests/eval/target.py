@@ -169,7 +169,11 @@ def write_suite(root: Path, names: Sequence[str]) -> Path:
         "scorers": [METRIC],
         "concurrency": 1,
         "cache": "off",  # a measurement of this build, never an older run's outputs
-        "gate": [{"metric": METRIC, "min": THRESHOLD}],
+        # recall gates `plain` only (rerank is reported); no config may have an errored case
+        "gate": [
+            {"metric": METRIC, "min": THRESHOLD, "configs": ["plain"]},
+            {"metric": "errors", "max": 0},
+        ],
     }
     path = root / "suites" / "steward-recall.yaml"
     path.parent.mkdir(parents=True)

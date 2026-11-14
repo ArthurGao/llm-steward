@@ -613,7 +613,7 @@ provides-extras = ["native", "mem0", "rerank", "literag", "litemem"]
 [package.metadata.requires-dev]
 dev = [
     { name = "import-linter", specifier = ">=2.1" },
-    { name = "lite-eval", git = "https://github.com/ArthurGao/lite-eval?subdirectory=backend&rev=8bc930154d1706af13c2ae3fd7adec41da793aa9" },
+    { name = "lite-eval", url = "https://github.com/ArthurGao/lite-eval/releases/download/v0.2.0/lite_eval-0.2.0-py3-none-any.whl" },
     { name = "llm-steward", extras = ["litemem"] },
     { name = "llm-steward", extras = ["literag"] },
     { name = "llm-steward-client", editable = "." },
