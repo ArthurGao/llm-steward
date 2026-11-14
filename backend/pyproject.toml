@@ -67,6 +67,9 @@ dev = [
     "llm-steward[litemem]",  # and lite-mem (its contract tests and in-process transport)
     "types-pyyaml>=6.0",
     "llm-steward-client",
+    # The recall gate (`pytest -m eval`) runs on lite-eval (design §11 P8). Pinned: an upgrade re-runs
+    # tests/eval/test_recall_equivalence.py, which compares it with the frozen original.
+    "lite-eval @ git+https://github.com/ArthurGao/lite-eval@8bc930154d1706af13c2ae3fd7adec41da793aa9#subdirectory=backend",
 ]
 
 [build-system]
