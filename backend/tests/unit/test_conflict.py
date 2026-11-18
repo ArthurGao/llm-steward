@@ -21,7 +21,7 @@ async def test_update_names_the_replaced_memory_and_records_provenance() -> None
     )
     resolution = await resolve_conflict(llm, NEW, [OLD])
     assert (resolution.action, resolution.target_id) == ("UPDATE", "m-old")
-    assert resolution.provenance == Provenance("memory.resolve", "fake-model", "fake")
+    assert resolution.provenance == Provenance("memory.resolve", "fake-model")
     [(_, payload)] = llm.calls
     assert payload == {"NEW": NEW.content, "EXISTING": [{"id": "m-old", "fact": OLD.content}]}
 

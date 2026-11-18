@@ -24,12 +24,12 @@ backend/
     providers/                # base.py (Protocols), registry.py (the only name → instance map), weknora.py,
                               # native/ (store_sqlite / store_pg, embedding, text, providers)
     pipeline/                 # buffer, conflict, worthiness, risk, maintenance
-    llm/                      # role layer (roles.py) + OpenAI-compatible client (client.py)
+    llm/                      # role names (roles.py) + the adapter over lite-model (client.py)
     storage/db.py             # engine/session, dialect chosen from the URL
     plugins/, prompts/*.j2, jobs/, embedded.py
   tests/
     conftest.py               # parametrised: sqlite | pg
-    fakes/                    # FakeLLM, FakeMemoryProvider, FakeKnowledgeProvider (inject faults and latency)
+    fakes/                    # FakeLLM (over lite-model AsyncFakeModel), FakeMemoryProvider, FakeKnowledgeProvider
     contract/  unit/  integration/  e2e/  eval/
 ```
 

@@ -50,7 +50,7 @@ def build_mem0_config(
     embedding_model: str,
     embedding_dims: int,
     llm_model: str,
-    llm_base_url: str,
+    llm_base_url: str | None,
     llm_api_key: str,
     history_db_path: str,
     collection: str = "memories",

@@ -560,6 +560,30 @@ wheels = [
 ]
 
 [[package]]
+name = "lite-model"
+version = "0.2.0"
+source = { url = "https://github.com/ArthurGao/lite-model/releases/download/v0.2.0/lite_model-0.2.0-py3-none-any.whl" }
+dependencies = [
+    { name = "openai" },
+    { name = "pydantic" },
+    { name = "pydantic-settings" },
+    { name = "typer" },
+]
+wheels = [
+    { url = "https://github.com/ArthurGao/lite-model/releases/download/v0.2.0/lite_model-0.2.0-py3-none-any.whl", hash = "sha256:f8acabc2af01b2c0ad24cee5d35b89ddfc79e8bb2fc55ae5891a16d5c4a4fae9" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "anthropic", marker = "extra == 'anthropic'", specifier = "==2.6.0" },
+    { name = "openai", specifier = "==3.46.0" },
+    { name = "pydantic", specifier = "==2.14.3" },
+    { name = "pydantic-settings", specifier = "==2.16.2" },
+    { name = "typer", specifier = "==0.27.3" },
+]
+provides-extras = ["anthropic"]
+
+[[package]]
 name = "llm-steward"
 version = "0.1.0"
 source = { editable = "../../backend" }
@@ -570,8 +594,8 @@ dependencies = [
     { name = "fastapi" },
     { name = "httpx2" },
     { name = "jinja2" },
+    { name = "lite-model" },
     { name = "mcp" },
-    { name = "openai" },
     { name = "pydantic" },
     { name = "pydantic-settings" },
     { name = "pyjwt" },
@@ -593,11 +617,11 @@ requires-dist = [
     { name = "httpx2", specifier = ">=2.16" },
     { name = "jieba", marker = "extra == 'native'", specifier = ">=0.42.1" },
     { name = "jinja2", specifier = ">=3.1" },
-    { name = "lite-mem", extras = ["server", "sqlite"], marker = "extra == 'litemem'", git = "https://github.com/ArthurGao/lite-mem?rev=7491e360d73d759e0bed5baedd634ef3f3b1a041" },
-    { name = "lite-rag", extras = ["server"], marker = "extra == 'literag'", git = "https://github.com/ArthurGao/lite-rag?rev=6d52f90c161c53ee49f24e61517b906ba52ce0d1" },
+    { name = "lite-mem", extras = ["server", "sqlite"], marker = "extra == 'litemem'", git = "https://github.com/ArthurGao/lite-mem?rev=be5269fef6291efe16e9a9dd598c5829af2511b8" },
+    { name = "lite-model", url = "https://github.com/ArthurGao/lite-model/releases/download/v0.2.0/lite_model-0.2.0-py3-none-any.whl" },
+    { name = "lite-rag", extras = ["server"], marker = "extra == 'literag'", git = "https://github.com/ArthurGao/lite-rag?rev=fc8641832adb039bcde025f75d62933c668f1862" },
     { name = "mcp", specifier = "==2.3.0" },
     { name = "mem0ai", marker = "extra == 'mem0'", specifier = "==2.2.1" },
-    { name = "openai", specifier = ">=1.60" },
     { name = "psycopg", extras = ["binary", "pool"], marker = "extra == 'mem0'", specifier = ">=3.2" },
     { name = "pydantic", specifier = ">=2.9" },
     { name = "pydantic-settings", specifier = ">=2.6" },
@@ -799,7 +823,7 @@ wheels = [
 
 [[package]]
 name = "openai"
-version = "3.49.0"
+version = "3.46.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "anyio" },
@@ -809,9 +833,9 @@ dependencies = [
     { name = "sniffio" },
     { name = "typing-extensions" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/83/8f/adc3e9f7077c16a2417eebb219df2f5933f4fa532fab143c6bbb1c287c67/openai-3.49.0.tar.gz", hash = "sha256:44badf2bea9bcd643dafa0bc4d5a109a14395889219fd68b8560322288196e96", size = 2410883, upload-time = "2026-11-10T06:47:55.206Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/34/b6/23cddcb571d6eafe7b4bb58c7e0a068076121b7b001b776179994cca6a03/openai-3.46.0.tar.gz", hash = "sha256:fb34cd8cab6809ad0aa8dc42493fa622aaa87c814fd8e67a6fb3fa1f1e5d952d", size = 2408622, upload-time = "2026-11-05T00:55:55.463Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/fe/45/de8fbd25a1ca0a46f9641604a7cb991123daa7f292c27625223d685d9bac/openai-3.49.0-py3-none-any.whl", hash = "sha256:3977754792115027ba80ae16996ba3366478b5b228e1ab58e2660bd7ac8c3d78", size = 2442112, upload-time = "2026-11-10T06:47:52.422Z" },
+    { url = "https://files.pythonhosted.org/packages/f4/63/454e6faad68ac903e7669932db8d0a91c95dfca829ec9476e52045b17684/openai-3.46.0-py3-none-any.whl", hash = "sha256:7b650117e9bf539029bf880c2eff94a26f281394f6572284efa5d068d4b1c98e", size = 2438918, upload-time = "2026-11-05T00:55:53.301Z" },
 ]
 
 [[package]]
@@ -1211,18 +1235,17 @@ wheels = [
 
 [[package]]
 name = "typer"
-version = "0.29.0"
+version = "0.27.3"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "annotated-doc" },
     { name = "colorama", marker = "sys_platform == 'win32'" },
-    { name = "pydantic" },
     { name = "rich" },
     { name = "shellingham" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/ed/db/401793a0d5345409a28de2c571d4ef8bea9a08700c20ea7f7b6af3b050d2/typer-0.29.0.tar.gz", hash = "sha256:6871960a1603fba66af2ff751be48a6735af6480a67660afaf2fab2f7e008ed4", size = 206371, upload-time = "2026-11-09T18:48:12.751Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/03/51/d33db42cc72ffd8c30777547b42d01f0cbf9d95a770457698d0174b3ed71/typer-0.27.3.tar.gz", hash = "sha256:d0396f770a560ab1b0a8504e13b5f254b728cedb05c61cf0359e944e50ce8901", size = 205303, upload-time = "2026-10-06T17:24:16.61Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/c1/3d/cc08d3cb257764101c71c47f18e2f547782d013928edc877f155cb99229d/typer-0.29.0-py3-none-any.whl", hash = "sha256:b3c3de6e06a848274dc7bd56a433499e9cf25fa1d40aa3ba4eccfec4e1624c7b", size = 121058, upload-time = "2026-11-09T18:48:11.665Z" },
+    { url = "https://files.pythonhosted.org/packages/07/ea/2e31b67051e91a133189e9c000c222502ddc6969856416de0d095de4c0b0/typer-0.27.3-py3-none-any.whl", hash = "sha256:e50022f28b82a86313e54501317a1db64bf8f8d036ff8cfe5ca7e47675454aff", size = 123312, upload-time = "2026-10-06T17:24:15.054Z" },
 ]
 
 [[package]]

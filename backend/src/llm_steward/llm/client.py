@@ -1,20 +1,29 @@
-"""Structured LLM calls via an OpenAI-compatible endpoint (llm-gateway in dev, a vendor in prod).
+"""Structured LLM calls through lite-model (its design §12). `LiteModelLLM` keeps llm-steward's
+`LLM` Protocol (system and user text in, a validated reply and its provenance out) over a lite-model
+`AsyncModel`; the backends, strict schemas, retries and provenance are lite-model's."""
 
-The OpenAI SDK is used instead of LiteLLM (design §3): it already ships with mem0, speaks to the
-gateway and to every OpenAI-compatible vendor endpoint, and keeps the dependency tree small.
-"""
-
+import contextlib
+import os
 from typing import Protocol
 
-from openai import AsyncOpenAI
-from pydantic import BaseModel, ValidationError
+import lite_model
+from lite_model import AsyncModel, Message
+from lite_model.config import resolve, target
+from pydantic import BaseModel
 
 from llm_steward.config import Settings
-from llm_steward.llm.roles import Provenance, Role, RoleTarget, resolve
+from llm_steward.llm.roles import ROLES, LLMConfigError, Provenance, Role
 
 
-class LLMOutputError(RuntimeError):
-    """The model answered, but not with what the role's schema requires."""
+class LLMError(RuntimeError):
+    """The call failed after lite-model's retries. The message never carries upstream text."""
+
+
+class LLMOutputError(LLMError):
+    """The model answered, but not with what the role's schema requires (or cut off)."""
+
+
+_OUTPUT = (lite_model.Truncated, lite_model.EmptyReply, lite_model.BadStructuredReply)
 
 
 class LLM(Protocol):
@@ -23,41 +32,56 @@ class LLM(Protocol):
     ) -> tuple[T, Provenance]: ...
 
 
-class OpenAICompatibleLLM:
-    def __init__(self, settings: Settings, roles: tuple[Role, ...]) -> None:
-        # Resolving every role up front makes a misconfiguration fail at startup (§1.5).
-        self._targets: dict[Role, RoleTarget] = {r: resolve(settings, r) for r in roles}
-        self._timeout_s = settings.llm_timeout_s
-        self._clients: dict[tuple[str, str], AsyncOpenAI] = {}
+class LiteModelLLM:
+    def __init__(self, model: AsyncModel) -> None:
+        self._model = model
 
     async def structured[T: BaseModel](
         self, role: Role, system: str, user: str, schema: type[T]
     ) -> tuple[T, Provenance]:
-        target = self._targets[role]
-        response = await self._client(target).chat.completions.create(
-            model=target.model,
-            messages=[{"role": "system", "content": system}, {"role": "user", "content": user}],
-            response_format={
-                "type": "json_schema",
-                "json_schema": {
-                    "name": schema.__name__,
-                    "schema": schema.model_json_schema(),
-                    "strict": True,
-                },
-            },
-            timeout=self._timeout_s,
-        )
-        provenance = Provenance(role.value, response.model or target.model, target.endpoint)
-        choice = response.choices[0]
-        if choice.finish_reason == "length":
-            raise LLMOutputError(f"{role.value}: reply truncated ({provenance.model})")
+        messages = [Message("system", system), Message("user", user)]
         try:
-            return schema.model_validate_json(choice.message.content or ""), provenance
-        except ValidationError as exc:
-            raise LLMOutputError(f"{role.value}: reply does not match {schema.__name__}") from exc
+            reply = await self._model.structured(role.value, messages, schema)
+        except _OUTPUT as exc:
+            raise LLMOutputError(str(exc)) from exc
+        except lite_model.ModelError as exc:
+            raise LLMError(str(exc)) from exc
+        p = reply.provenance
+        # the model that answered, as the endpoint reports it; the requested one when it does not
+        # say (what llm-steward recorded before lite-model)
+        return reply.value, Provenance(role.value, p.answered or p.requested)
 
-    def _client(self, target: RoleTarget) -> AsyncOpenAI:
-        key = (target.base_url, target.api_key)
-        if key not in self._clients:
-            self._clients[key] = AsyncOpenAI(base_url=target.base_url, api_key=target.api_key)
-        return self._clients[key]
+
+def role_llm(settings: Settings, roles: tuple[Role, ...]) -> LiteModelLLM:
+    """The LLM for `roles`, the ones that will be used. Every configured role is checked now (an
+    unknown role, a missing key, a missing extra): a misconfiguration fails at startup."""
+    if settings.llm is None:
+        names = ", ".join(r.value for r in roles)
+        raise LLMConfigError(
+            f"no model for LLM roles {names}: set STEWARD_LLM__BACKEND and STEWARD_LLM__MODEL"
+        )
+    try:
+        return LiteModelLLM(lite_model.build_async(settings.llm, ROLES))
+    except lite_model.ConfigError as exc:
+        raise LLMConfigError(str(exc)) from exc
+
+
+def openai_endpoint(settings: Settings, role: Role) -> tuple[str, str | None, str]:
+    """(model, base_url, key) of `role`, for an engine that calls the model itself through the
+    OpenAI SDK (mem0): checked like every role, and refused on a backend that does not speak the
+    OpenAI protocol. `base_url` None is the SDK's own default (api.openai.com)."""
+    if settings.llm is None:
+        raise LLMConfigError(
+            f"no model for LLM role {role.value}: set STEWARD_LLM__BACKEND and STEWARD_LLM__MODEL"
+        )
+    with contextlib.suppress(lite_model.ConfigError):  # an unknown backend: resolve() says so
+        # before resolve(), which would only ask for lite-model's anthropic extra
+        if (t := target(settings.llm, role.value)).type == "anthropic":
+            where = f"role {role.value} ({t.backend}:{t.model})"
+            raise LLMConfigError(f"{where}: mem0 needs an OpenAI-compatible backend")
+    try:
+        t = resolve(settings.llm, ROLES)[role.value]
+    except lite_model.ConfigError as exc:
+        raise LLMConfigError(str(exc)) from exc
+    # a keyless endpoint (the gateway, Ollama) ignores the key; the SDK refuses an empty one
+    return t.model, t.base_url, os.environ[t.api_key_env] if t.api_key_env else "unused"

@@ -19,7 +19,7 @@ async def test_the_role_sees_the_conversation_and_its_facts_come_back_with_prove
     llm = _answering("用户住在北京", "用户喜欢绿茶")
     facts, provenance = await extract_facts(llm, CHAT)
     assert facts == ["用户住在北京", "用户喜欢绿茶"]
-    assert provenance == Provenance("memory.extract", "fake-model", "fake")
+    assert provenance == Provenance("memory.extract", "fake-model")
     [(role, payload)] = llm.calls
     assert role == "memory.extract"
     assert payload == {

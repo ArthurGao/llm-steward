@@ -1,15 +1,13 @@
-"""The LLM role layer (KB llm-app-architecture §1).
-
-Call sites name a role; configuration says which endpoint and model serve it. No business code
-imports a vendor SDK or names a model. A role with no model or endpoint is a startup error, not a
-first-call surprise (§1.5). There is no fallback chain (§3.2): a failed call raises.
+"""The LLM role layer (KB llm-app-architecture §1). Every call goes through lite-model (its design
+§12): call sites name a role, `Settings.llm` (lite-model's configuration) maps each role to a model
+on a backend, a failed call raises after retries on the same model (no fallback chain), and the
+reply says which model answered. A role that will be used and cannot be served is a startup error.
 """
 
 from dataclasses import dataclass
 from enum import StrEnum
-from urllib.parse import urlsplit
 
-from llm_steward.config import Settings
+from lite_model import RolePolicy, RoleSpec
 
 
 class Role(StrEnum):
@@ -20,20 +18,13 @@ class Role(StrEnum):
     KB_DRAFT = "kb.draft"  # rewrite a memory / a suggestion as general knowledge
 
 
+# lite-model's declaration of the roles. None may go through a routing alias: each one decides or
+# labels governed knowledge, and its record must name a model that can be asked again.
+ROLES = RoleSpec({r.value: RolePolicy(routable=False) for r in Role})
+
+
 class LLMConfigError(ValueError):
     """Raised at startup when a role that will be used cannot be served."""
-
-
-@dataclass(frozen=True)
-class RoleTarget:
-    model: str
-    base_url: str
-    api_key: str
-
-    @property
-    def endpoint(self) -> str:
-        """Host only, for provenance: never the key, never a path with a token in it."""
-        return urlsplit(self.base_url).netloc or self.base_url
 
 
 @dataclass(frozen=True)
@@ -47,18 +38,3 @@ class Provenance:
     def tag(self) -> str:
         """`role:model`, as recorded with what the answer produced (AGENTS.md rule 10)."""
         return f"{self.role}:{self.model}"
-
-    endpoint: str
-
-
-def resolve(settings: Settings, role: Role) -> RoleTarget:
-    unknown = set(settings.llm_roles) - {r.value for r in Role}
-    if unknown:
-        raise LLMConfigError(f"STEWARD_LLM_ROLES names unknown roles: {sorted(unknown)}")
-    model = settings.llm_roles.get(role.value) or settings.llm_model
-    if not model:
-        raise LLMConfigError(f"no model for LLM role {role.value!r}: set STEWARD_LLM_MODEL")
-    if not settings.llm_base_url:
-        raise LLMConfigError(f"no endpoint for LLM role {role.value!r}: set STEWARD_LLM_BASE_URL")
-    # A local gateway ignores the key; a vendor endpoint will reject a missing one on first use.
-    return RoleTarget(model, settings.llm_base_url, settings.llm_api_key or "unused")

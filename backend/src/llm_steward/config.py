@@ -1,8 +1,9 @@
 """Runtime settings, read from environment variables with the STEWARD_ prefix."""
 
-from typing import Literal
+from typing import Annotated, Any, Literal
 
-from pydantic import Field, SecretStr, field_validator
+from lite_model import ModelsConfig
+from pydantic import BeforeValidator, Field, SecretStr, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 MemoryProviderName = Literal["mem0", "native", "litemem"]
@@ -14,8 +15,34 @@ LiteRagSearchMode = Literal["vector", "bm25", "hybrid"]
 DEFAULT_DB_SCHEMA = "steward"
 
 
+class LLMConfig(ModelsConfig):
+    """lite-model's configuration for llm-steward's roles (lite-model design §4): `backend`,
+    `model`, `roles` (per role: `model`, `backend`, …), `backends`, `max_output_tokens`, … — in env
+    `STEWARD_LLM__BACKEND`, `STEWARD_LLM__MODEL`, `STEWARD_LLM__ROLES` (JSON), …. No default model:
+    a role that will be used and is not configured fails at startup. The timeout and the two
+    retries are what llm-steward's own OpenAI client had."""
+
+    timeout_s: float = Field(default=60.0, gt=0)
+    max_retries: int = Field(default=2, ge=0)
+
+
+def _moved(value: Any) -> None:
+    if value not in (None, ""):  # an empty one, as an old .env.example left it, is unset
+        raise ValueError(
+            "the LLM settings moved to lite-model's shape: STEWARD_LLM__BACKEND, "
+            "STEWARD_LLM__MODEL, STEWARD_LLM__BACKENDS (an endpoint and its key's variable), "
+            "STEWARD_LLM__ROLES, STEWARD_LLM__TIMEOUT_S (README, .env.example)"
+        )
+
+
+# STEWARD_LLM_BASE_URL and the rest, before lite-model: refused, never silently ignored
+Moved = Annotated[None, BeforeValidator(_moved)]
+
+
 class Settings(BaseSettings):
-    model_config = SettingsConfigDict(env_prefix="STEWARD_", env_file=".env", extra="ignore")
+    model_config = SettingsConfigDict(
+        env_prefix="STEWARD_", env_file=".env", env_nested_delimiter="__", extra="ignore"
+    )
 
     # Required on purpose: a default would silently create a SQLite file in whatever directory the
     # command happens to run from (e.g. the repo root, whose .env has no STEWARD_DATABASE_URL).
@@ -69,13 +96,14 @@ class Settings(BaseSettings):
     # Per-provider budget for one /v1/retrieve search; a slower provider is reported as degraded.
     retrieve_timeout_ms: int = Field(default=800, gt=0)
 
-    # LLM role layer (llm/roles.py). Call sites name a role; these say which endpoint and model
-    # serve it. Dev: llm-gateway (http://127.0.0.1:8787/v1, gpt-sub / claude-sub). Prod: a vendor.
-    llm_base_url: str | None = None
-    llm_api_key: str | None = None
-    llm_model: str | None = None  # default model for every role
-    llm_roles: dict[str, str] = Field(default_factory=dict)  # role -> model override (JSON in env)
-    llm_timeout_s: float = Field(default=60.0, gt=0)
+    # LLM role layer (llm/roles.py): which model on which backend serves each role. Dev: llm-gateway
+    # (backend `gateway`, models gpt-sub / claude-sub). Prod: a vendor. None: no LLM roles.
+    llm: LLMConfig | None = None
+    llm_base_url: Moved = None
+    llm_api_key: Moved = None
+    llm_model: Moved = None
+    llm_roles: Moved = None
+    llm_timeout_s: Moved = None
     # KB pipeline LLM steps (design §5): risk labels, worthiness scoring, drafting (roles kb.risk,
     # kb.worthiness, kb.draft). Off: rules-only risk, no suggestions; promote/suggestions → 422.
     kb_llm: bool = False

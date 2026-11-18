@@ -94,7 +94,7 @@ library only, for the bootstrap script); an LLM for memory extraction: an OpenAI
    | `STEWARD_DB_PASSWORD`, `WEKNORA_DB_PASSWORD`, `WEKNORA_REDIS_PASSWORD`, `WEKNORA_SYSTEM_AES_KEY` | `openssl rand -hex 16` each (keep the AES key: losing it makes WeKnora's encrypted fields unreadable) |
    | `WEKNORA_JWT_SECRET` | `openssl rand -hex 32` |
    | `WEKNORA_ADMIN_PASSWORD` | 8–32 letters and digits (WeKnora's owner account) |
-   | `STEWARD_LLM_BASE_URL`, `STEWARD_LLM_API_KEY`, `STEWARD_LLM_MODEL` | your LLM endpoint, e.g. `https://api.openai.com/v1`, a key, `gpt-4.1-mini` (unset: lite-mem uses `qwen3:8b` on the host's Ollama; mem0 needs them) |
+   | `STEWARD_LLM`, `STEWARD_LLM_KEY` | llm-steward's LLM roles in [lite-model](https://github.com/ArthurGao/lite-model)'s shape, as JSON, and the key it names, e.g. `{"backend": "openai", "model": "gpt-4.1-mini", "backends": {"openai": {"api_key_env": "STEWARD_LLM_KEY"}}}` (unset: no LLM roles; mem0 and `STEWARD_KB_LLM` need them). lite-mem has its own: `qwen3:8b` on the host's Ollama, or `LITEMEM_DOCKER_LLM_URL` / `LITEMEM_LLM_MODEL` |
    | `STEWARD_MEMORY_PROVIDER`, `STEWARD_MEMORY_LLM` | the memory engine: `litemem` / `false` (default: [lite-mem](https://github.com/ArthurGao/lite-mem) in-process, which extracts and resolves conflicts itself), `mem0` / `false` (mem0 2.2.1; llm-steward compensates conflicts), or `native` / `true` (llm-steward extracts the facts). Switching an existing deployment: `steward resync` afterwards |
 
    `--profile db` below runs a bundled PostgreSQL + pgvector for llm-steward and its memory engine
@@ -275,7 +275,7 @@ engine keeps its copies and is no longer reachable: removals still queued for it
 The memory engine switches the same way, in either direction between lite-mem (default) and mem0:
 
 ```sh
-# in .env: STEWARD_MEMORY_PROVIDER=mem0   (or litemem; mem0 also needs STEWARD_LLM_*)
+# in .env: STEWARD_MEMORY_PROVIDER=mem0   (or litemem; mem0 also needs STEWARD_LLM)
 docker compose --profile standard up -d --wait                     # restart with the new engine
 docker compose exec steward-standard steward resync                # give it the memories it lacks
 ```

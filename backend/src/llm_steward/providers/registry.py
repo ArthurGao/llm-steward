@@ -9,7 +9,8 @@ import httpx2
 from sqlalchemy.ext.asyncio import AsyncEngine
 
 from llm_steward.config import Settings
-from llm_steward.llm.roles import Role, resolve
+from llm_steward.llm.client import openai_endpoint
+from llm_steward.llm.roles import Role
 from llm_steward.providers.base import (
     KnowledgeProvider,
     MemoryProvider,
@@ -184,13 +185,13 @@ def build_mem0(settings: Settings) -> MemoryProvider:
     from llm_steward.providers.mem0_provider import Mem0Provider, build_mem0_config
     from llm_steward.providers.native.embedding import model_dim
 
-    extract = resolve(settings, Role.MEMORY_EXTRACT)
+    model, base_url, api_key = openai_endpoint(settings, Role.MEMORY_EXTRACT)
     config = build_mem0_config(
         embedding_model=settings.embedding_model,
         embedding_dims=model_dim(settings.embedding_model),
-        llm_model=extract.model,
-        llm_base_url=extract.base_url,
-        llm_api_key=extract.api_key,
+        llm_model=model,
+        llm_base_url=base_url,
+        llm_api_key=api_key,
         history_db_path=str(Path(settings.data_dir) / "mem0_history.db"),
     )
     return Mem0Provider(

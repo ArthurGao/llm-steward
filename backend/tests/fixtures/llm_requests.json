@@ -1,0 +1,300 @@
+{
+  "kb.draft": {
+    "auth": "Bearer gateway-key",
+    "body": {
+      "messages": [
+        {
+          "content": "Rewrite TEXT as one entry for a team knowledge base: a short title and a general statement that is\ntrue for everyone, in the language of TEXT. Remove names, personal details and anything that only\napplies to one person or one conversation. Keep numbers and conditions exact; do not add facts that\nTEXT does not state.\n\nThen label how risky it is to share your entry without an expert checking it first: high for prices,\nlegal or policy commitments, medical, financial or safety advice, security details, or anything about\na specific person; medium for product or process facts that could be outdated; low for general,\nstable, harmless facts. When unsure, choose the higher level. Give a one-sentence reason.\n",
+          "role": "system"
+        },
+        {
+          "content": "{\"TEXT\": \"Pour-over uses 1:16 coffee to water.\"}",
+          "role": "user"
+        }
+      ],
+      "model": "gpt-sub",
+      "response_format": {
+        "json_schema": {
+          "name": "DraftReply",
+          "schema": {
+            "additionalProperties": false,
+            "description": "The draft and its risk label in one call (the drafter knows what it just wrote).",
+            "properties": {
+              "content": {
+                "title": "Content",
+                "type": "string"
+              },
+              "reason": {
+                "title": "Reason",
+                "type": "string"
+              },
+              "risk_level": {
+                "enum": [
+                  "low",
+                  "medium",
+                  "high"
+                ],
+                "title": "Risk Level",
+                "type": "string"
+              },
+              "title": {
+                "title": "Title",
+                "type": "string"
+              }
+            },
+            "required": [
+              "title",
+              "content",
+              "risk_level",
+              "reason"
+            ],
+            "title": "DraftReply",
+            "type": "object"
+          },
+          "strict": true
+        },
+        "type": "json_schema"
+      }
+    },
+    "method": "POST",
+    "url": "http://gateway.test/v1/chat/completions"
+  },
+  "kb.risk": {
+    "auth": "Bearer gateway-key",
+    "body": {
+      "messages": [
+        {
+          "content": "You review knowledge that a team's AI assistant will share with every user. Label how risky it is to\nshare this text without an expert checking it first:\n\n- high: prices, legal or policy commitments, medical, financial or safety advice, security details,\n  anything about a specific person, anything that would be costly if wrong.\n- medium: product or process facts that could be outdated or partly wrong.\n- low: general, stable, harmless facts.\n\nWhen unsure between two levels, choose the higher one. Give a one-sentence reason.\n",
+          "role": "system"
+        },
+        {
+          "content": "{\"title\": \"Pour-over ratio\", \"content\": \"1:16 coffee to water.\"}",
+          "role": "user"
+        }
+      ],
+      "model": "gpt-sub",
+      "response_format": {
+        "json_schema": {
+          "name": "RiskLabel",
+          "schema": {
+            "additionalProperties": false,
+            "properties": {
+              "reason": {
+                "title": "Reason",
+                "type": "string"
+              },
+              "risk_level": {
+                "enum": [
+                  "low",
+                  "medium",
+                  "high"
+                ],
+                "title": "Risk Level",
+                "type": "string"
+              }
+            },
+            "required": [
+              "risk_level",
+              "reason"
+            ],
+            "title": "RiskLabel",
+            "type": "object"
+          },
+          "strict": true
+        },
+        "type": "json_schema"
+      }
+    },
+    "method": "POST",
+    "url": "http://gateway.test/v1/chat/completions"
+  },
+  "kb.worthiness": {
+    "auth": "Bearer gateway-key",
+    "body": {
+      "messages": [
+        {
+          "content": "You decide which facts from conversations are worth adding to a team knowledge base. Score each FACT\nfrom 0 to 1 on five criteria:\n\n- reusability: would it help answer other people's questions later?\n- novelty: does it add something a knowledge base would not already say?\n- timeliness: will it still be true for months (1) or is it about today only (0)?\n- generality: is it true for everyone (1), or only about this one person (0)?\n- trust: how likely is it to be correct as stated?\n\nReturn one item per FACT, with the FACT's id. Personal details (a person's own city, job, preferences)\nare low on generality.\n",
+          "role": "system"
+        },
+        {
+          "content": "{\"FACTS\": [{\"id\": \"m1\", \"fact\": \"Pour-over uses 1:16 coffee to water.\"}]}",
+          "role": "user"
+        }
+      ],
+      "model": "gpt-sub",
+      "response_format": {
+        "json_schema": {
+          "name": "WorthinessReply",
+          "schema": {
+            "$defs": {
+              "FactScores": {
+                "additionalProperties": false,
+                "properties": {
+                  "generality": {
+                    "title": "Generality",
+                    "type": "number"
+                  },
+                  "id": {
+                    "title": "Id",
+                    "type": "string"
+                  },
+                  "novelty": {
+                    "title": "Novelty",
+                    "type": "number"
+                  },
+                  "reusability": {
+                    "title": "Reusability",
+                    "type": "number"
+                  },
+                  "timeliness": {
+                    "title": "Timeliness",
+                    "type": "number"
+                  },
+                  "trust": {
+                    "title": "Trust",
+                    "type": "number"
+                  }
+                },
+                "required": [
+                  "id",
+                  "reusability",
+                  "novelty",
+                  "timeliness",
+                  "generality",
+                  "trust"
+                ],
+                "title": "FactScores",
+                "type": "object"
+              }
+            },
+            "additionalProperties": false,
+            "properties": {
+              "items": {
+                "items": {
+                  "$ref": "#/$defs/FactScores"
+                },
+                "title": "Items",
+                "type": "array"
+              }
+            },
+            "required": [
+              "items"
+            ],
+            "title": "WorthinessReply",
+            "type": "object"
+          },
+          "strict": true
+        },
+        "type": "json_schema"
+      }
+    },
+    "method": "POST",
+    "url": "http://gateway.test/v1/chat/completions"
+  },
+  "memory.extract": {
+    "auth": "Bearer gateway-key",
+    "body": {
+      "messages": [
+        {
+          "content": "You maintain a person's long-term memory. Read the conversation in MESSAGES and list the facts worth\nremembering about the person (the \"user\" turns): who they are, where they live, what they prefer,\nwhat they have, plan or asked for, and what has changed.\n\nRules:\n- One fact per item, short and self-contained (\"Lives in Shanghai\", not \"He said that he moved\").\n- Write each fact in the language the person used.\n- Only what the person said or clearly confirmed. Nothing the assistant said on its own, no guesses,\n  no small talk, no questions, no one-off details that will not matter later.\n- Secrets (passwords, card numbers, keys) are never facts.\n- Nothing worth keeping: return an empty list.\n",
+          "role": "system"
+        },
+        {
+          "content": "{\"MESSAGES\": [{\"role\": \"user\", \"content\": \"我住在惠灵顿，是护士。\"}, {\"role\": \"assistant\", \"content\": \"Noted.\"}]}",
+          "role": "user"
+        }
+      ],
+      "model": "gpt-sub",
+      "response_format": {
+        "json_schema": {
+          "name": "ExtractedFacts",
+          "schema": {
+            "additionalProperties": false,
+            "description": "The role's structured output.",
+            "properties": {
+              "facts": {
+                "items": {
+                  "type": "string"
+                },
+                "title": "Facts",
+                "type": "array"
+              }
+            },
+            "required": [
+              "facts"
+            ],
+            "title": "ExtractedFacts",
+            "type": "object"
+          },
+          "strict": true
+        },
+        "type": "json_schema"
+      }
+    },
+    "method": "POST",
+    "url": "http://gateway.test/v1/chat/completions"
+  },
+  "memory.resolve": {
+    "auth": "Bearer gateway-key",
+    "body": {
+      "messages": [
+        {
+          "content": "You maintain a person's long-term memory. A NEW fact was just extracted. Compare it with EXISTING facts\nabout the same person and choose exactly one action:\n\n- ADD: the new fact is unrelated to every existing fact, or adds information. Keep everything.\n- UPDATE: the new fact replaces one existing fact (it changed, e.g. a new city, a new job). Name it.\n- DELETE: the new fact says one existing fact is no longer true, without replacing it. Name it.\n- NOOP: the new fact says nothing an existing fact does not already say. The new fact is dropped.\n\nRules: name only an id from EXISTING. When unsure, choose ADD. Give a one-sentence reason.\n",
+          "role": "system"
+        },
+        {
+          "content": "{\"NEW\": \"Lives in Auckland\", \"EXISTING\": [{\"id\": \"m1\", \"fact\": \"Lives in Wellington\"}]}",
+          "role": "user"
+        }
+      ],
+      "model": "claude-sub",
+      "response_format": {
+        "json_schema": {
+          "name": "ConflictDecision",
+          "schema": {
+            "additionalProperties": false,
+            "description": "The role's structured output. `target_id` names an EXISTING fact for UPDATE / DELETE.",
+            "properties": {
+              "action": {
+                "enum": [
+                  "ADD",
+                  "UPDATE",
+                  "DELETE",
+                  "NOOP"
+                ],
+                "title": "Action",
+                "type": "string"
+              },
+              "reason": {
+                "title": "Reason",
+                "type": "string"
+              },
+              "target_id": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "title": "Target Id"
+              }
+            },
+            "required": [
+              "action",
+              "target_id",
+              "reason"
+            ],
+            "title": "ConflictDecision",
+            "type": "object"
+          },
+          "strict": true
+        },
+        "type": "json_schema"
+      }
+    },
+    "method": "POST",
+    "url": "http://gateway.test/v1/chat/completions"
+  }
+}

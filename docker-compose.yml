@@ -36,20 +36,22 @@ x-steward-pg-env: &steward-pg-env
   # llm-gateway is loopback-only by design, so a container needs a vendor endpoint or the host's Ollama.
   STEWARD_MEMORY_PROVIDER: ${STEWARD_MEMORY_PROVIDER:-litemem}
   STEWARD_MEMORY_LLM: ${STEWARD_MEMORY_LLM:-false}
-  STEWARD_LLM_BASE_URL: ${STEWARD_LLM_BASE_URL:-}
-  STEWARD_LLM_API_KEY: ${STEWARD_LLM_API_KEY:-}
-  STEWARD_LLM_MODEL: ${STEWARD_LLM_MODEL:-}
-  # lite-mem in-process: the same database (schema lite_mem, migrated at start); its models are
-  # the LLM endpoint above (else qwen3:8b on the host's Ollama) and bge-m3:567m embeddings on the
-  # host's Ollama, the model WeKnora uses.
+  # The LLM roles, in lite-model's shape as one JSON (README), its key in STEWARD_LLM_KEY, e.g.
+  # STEWARD_LLM={"backend": "openai", "model": "gpt-4.1-mini",
+  #              "backends": {"openai": {"api_key_env": "STEWARD_LLM_KEY"}}}. Unset: no LLM roles.
+  STEWARD_LLM: ${STEWARD_LLM:-null}
+  STEWARD_LLM_KEY: ${STEWARD_LLM_KEY:-}
+  # lite-mem in-process: the same database (schema lite_mem, migrated at start); its own models
+  # (its roles are not llm-steward's): qwen3:8b on the host's Ollama, or another OpenAI-compatible
+  # endpoint without a key (LITEMEM_DOCKER_LLM_URL), and bge-m3:567m embeddings on the host's
+  # Ollama, the model WeKnora uses. A keyed vendor: run lite-mem as its own service (mode http).
   # Or a lite-mem service of its own: STEWARD_LITEMEM_MODE=http, _URL and _API_KEY.
   STEWARD_LITEMEM_MODE: ${STEWARD_LITEMEM_MODE:-inprocess}
   STEWARD_LITEMEM_URL: ${STEWARD_LITEMEM_URL:-http://host.docker.internal:8710}
   STEWARD_LITEMEM_API_KEY: ${STEWARD_LITEMEM_API_KEY:-}
   LITEMEM_EMBEDDING__BASE_URL: ${LITEMEM_EMBEDDING_URL:-http://host.docker.internal:11434}
-  LITEMEM_LLM__BASE_URL: ${STEWARD_LLM_BASE_URL:-http://host.docker.internal:11434/v1}
-  LITEMEM_LLM__API_KEY: ${STEWARD_LLM_API_KEY:-}
-  LITEMEM_LLM__MODEL: ${STEWARD_LLM_MODEL:-qwen3:8b}
+  LITEMEM_LLM__BACKENDS__OPENAI__BASE_URL: ${LITEMEM_DOCKER_LLM_URL:-http://host.docker.internal:11434/v1}
+  LITEMEM_LLM__MODEL: ${LITEMEM_LLM_MODEL:-qwen3:8b}
 
 services:
   # The governance DB for `standard` / `docparse` when you have no PostgreSQL + pgvector of your own.

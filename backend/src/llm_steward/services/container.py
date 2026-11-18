@@ -17,7 +17,7 @@ import httpx2
 from sqlalchemy.ext.asyncio import AsyncEngine
 
 from llm_steward.config import Settings
-from llm_steward.llm.client import LLM, OpenAICompatibleLLM
+from llm_steward.llm.client import LLM, role_llm
 from llm_steward.llm.roles import Role
 from llm_steward.models.enums import JobType
 from llm_steward.namespace_config import read_config
@@ -101,7 +101,7 @@ def build_llm(settings: Settings, providers: Providers) -> LLM | None:
         roles += [Role.KB_RISK, Role.KB_WORTHINESS, Role.KB_DRAFT]
     else:
         log.info("KB LLM steps are off (STEWARD_KB_LLM): rules-only risk, no suggestions")
-    return OpenAICompatibleLLM(settings, tuple(roles)) if roles else None
+    return role_llm(settings, tuple(roles)) if roles else None
 
 
 def build_services(

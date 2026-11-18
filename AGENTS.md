@@ -43,7 +43,7 @@ If a change must contradict the design, update the design in the same change and
 
 ## Current stage
 
-**P8 (2026-11-14): the recall gate (`uv run pytest -m eval`) runs on lite-eval** (design §11 P8; `backend/tests/eval/target.py`, frozen original in `legacy_recall.py`). **All stages P0–P7 are closed out** (P7, RAGFlow and wrap-up, closed out 2026-11-11). v1 follow-ups and open owner decisions are recorded in design §11. The owner's own RAG engine **lite-rag**
+**P9 (2026-11-19): every LLM call goes through lite-model** (design §11 P9; `llm/client.py` is the adapter, `tests/unit/test_llm_requests.py` pins the request bodies). **P8 (2026-11-14): the recall gate (`uv run pytest -m eval`) runs on lite-eval** (design §11 P8; `backend/tests/eval/target.py`, frozen original in `legacy_recall.py`). **All stages P0–P7 are closed out** (P7, RAGFlow and wrap-up, closed out 2026-11-11). v1 follow-ups and open owner decisions are recorded in design §11. The owner's own RAG engine **lite-rag**
 (`~/Code/AI/lite-rag`) was built first and plugged in as `LiteRagProvider` (S9, 2026-11-09). P3 slices: P3a
 governance core, P3b LLM steps, P3c `WeKnoraProvider` and P3d documents are done; P4 (joint retrieval: scoring,
 MMR, budget, rerank, documents' passages, retrieval log, feedback, hit counts; recall@8 baseline 0.960 on the
@@ -91,8 +91,8 @@ monitor; how a remote `/admin/v1` is protected is decided in the P6 plan); revie
 
 ## Tech stack
 
-- Backend: Python 3.12, uv, FastAPI + Pydantic v2, SQLAlchemy 2.1 async + Alembic, OpenAI SDK (role layer over any
-  OpenAI-compatible endpoint), lite-mem (pinned to a commit), mem0 2.2.1 (pinned), official `mcp` SDK
+- Backend: Python 3.12, uv, FastAPI + Pydantic v2, SQLAlchemy 2.1 async + Alembic, lite-model (the role layer, P9;
+  llm-gateway, any OpenAI-compatible endpoint, Ollama, LiteLLM Proxy), lite-mem (pinned to a commit), mem0 2.2.1 (pinned), official `mcp` SDK
   (streamable HTTP at `/mcp`, plus stdio), structlog, Prometheus `/metrics`.
 - Governance DB: PostgreSQL + pgvector (`standard`) or SQLite (`native`). llm-steward and its memory engine share one
   database, schemas `steward` and `lite_mem` (or `mem0`). WeKnora runs its own ParadeDB (it needs `pg_search`) and Redis —

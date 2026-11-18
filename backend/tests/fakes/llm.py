@@ -1,33 +1,33 @@
-"""FakeLLM: scripted answers per role at the model boundary (never the gateway, never a vendor)."""
+"""FakeLLM: scripted answers per role at the model boundary (never the gateway, never a vendor),
+over lite-model's `AsyncFakeModel`: the replies go through the same adapter as a real model's."""
 
 import json
 from collections.abc import Callable
 from typing import Any
 
-from pydantic import BaseModel
+from lite_model.testing import AsyncFakeModel, FakeCall
 
-from llm_steward.llm.roles import Provenance, Role
+from llm_steward.llm.client import LiteModelLLM
 
 Handler = Callable[[dict[str, Any]], dict[str, Any]]
 
 
-class FakeLLM:
-    model = "fake-model"
+class FakeLLM(LiteModelLLM):
+    """Each handler answers one role from the call's JSON payload; its provenance says
+    `<role>:fake-model`, so a scripted answer is never mistaken for a model's."""
 
     def __init__(self, **handlers: Handler) -> None:
         # keyword = role with dots as underscores, e.g. memory_resolve=...
-        self._handlers = {k.replace("_", "."): v for k, v in handlers.items()}
-        self.calls: list[tuple[str, dict[str, Any]]] = []
+        def script(handler: Handler) -> Callable[[FakeCall], dict[str, Any]]:
+            return lambda call: handler(json.loads(call.messages[-1].content))
 
-    async def structured[T: BaseModel](
-        self, role: Role, system: str, user: str, schema: type[T]
-    ) -> tuple[T, Provenance]:
-        payload = json.loads(user)
-        self.calls.append((role.value, payload))
-        if role.value not in self._handlers:
-            raise AssertionError(f"FakeLLM has no answer scripted for role {role.value!r}")
-        answer = self._handlers[role.value](payload)
-        return schema.model_validate(answer), Provenance(role.value, self.model, "fake")
+        self.fake = AsyncFakeModel(**{k.replace("_", "."): script(v) for k, v in handlers.items()})
+        super().__init__(self.fake)
+
+    @property
+    def calls(self) -> list[tuple[str, dict[str, Any]]]:
+        """(role, payload) of every call, scripted or not."""
+        return [(c.role, json.loads(c.messages[-1].content)) for c in self.fake.calls]
 
 
 def update_when(marker: str) -> Handler:

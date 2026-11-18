@@ -174,7 +174,7 @@ GovernanceService 是唯一的写入出口；同步器（Syncer）通过任务�
 | 自有库 | PostgreSQL 18 + pgvector（本地共用的 PG 容器，CI 用 `pgvector/pgvector:pg18`）；native 模式用 SQLite | 与 mem0 共用一个 PG 实例；WeKnora 自带 ParadeDB |
 | Memory | `mem0ai`（锁定版本） | 见第 2 节 |
 | KB 客户端 | httpx2（httpx 的后继，Starlette 1.x TestClient 也用它）调用 WeKnora / RAGFlow 的 REST API | 锁定版本，由合约测试保护 |
-| LLM / Embedding | OpenAI SDK，走任意 OpenAI 兼容端点（本地开发用 llm-gateway，生产用厂商端点）；按「角色」配置模型（`memory.extract`、`memory.resolve` …），调用点不写模型名 | 治理层自己的 LLM 调用（风险分级、KB 价值评分、起草、冲突判断）与 provider 的配置分开。原定 LiteLLM，P2 改为 OpenAI SDK：mem0 已自带该依赖，依赖树更小（2026-11-08） |
+| LLM / Embedding | lite-model（P9 起）：按「角色」配置模型（`memory.extract`、`memory.resolve` …），调用点不写模型名；backend 可以是 llm-gateway（本地开发）、任意 OpenAI 兼容端点、Ollama、LiteLLM Proxy | 治理层自己的 LLM 调用（风险分级、KB 价值评分、起草、冲突判断）与 provider 的配置分开。原定 LiteLLM，P2 改为 OpenAI SDK：mem0 已自带该依赖，依赖树更小（2026-11-08）；P9 改由 lite 系列共用的 lite-model 调用（它也只用 OpenAI SDK，不 import LiteLLM） |
 | native 实现 | sqlite-vec（`vec0`）+ FTS5 + jieba + fastembed | 零依赖、离线可跑 |
 | 后台任务 | 数据库任务表（outbox）+ asyncio worker | llm-steward 本身不依赖 Redis（WeKnora 自带的 Redis 只供 WeKnora 使用），两种数据库都能用 |
 | MCP | 官方 `mcp` Python SDK（streamable HTTP），挂载在 `/mcp` | 与 REST 共用 service 和鉴权 |
@@ -191,7 +191,8 @@ STEWARD_MEMORY_PROVIDER=mem0          # mem0 | native
 STEWARD_KB_PROVIDER=weknora           # weknora | ragflow | native
 STEWARD_WEKNORA_URL=http://weknora:8080
 STEWARD_WEKNORA_API_KEY=***
-STEWARD_LLM_MODEL=anthropic/claude-haiku-5-5
+STEWARD_LLM__BACKEND=gateway         # lite-model 的配置（P9）：backend、model、roles、backends
+STEWARD_LLM__MODEL=gpt-sub
 ```
 
 ## 4. 数据模型
@@ -1001,6 +1002,39 @@ llm-steward/
      - Codex：1 条 Low 采纳——只比平均值和漏掉列表，互相抵消的逐题差异会漏过：两个等价测试都加了逐题比较（冻结的 `_recall` 每次只给一题，返回的平均值就是这一题的分数；改坏一题的命中会变红）。其余检查都成立（API 在不含 pinned 时最多返回 top_k 个不重复的条目，所以"前 8 个不重复 id"和原来的"全部返回条目的集合"等价；只有 `plain` 过门禁；`degraded` 让测试失败）。
      - 偶发：一次完整测试有 1 个检索测试因 `memory provider failed: TimeoutError` 失败，当时 LongMemEval M 正在后台占满 CPU；单独重跑和再跑一次完整测试都通过（967 passed）。
    - 验收：`-m eval` 在 SQLite 和 PG 上通过，数字和原测试相同；等价测试通过；默认测试套件、ruff、mypy、lint-imports 通过
+
+10. **P9 LLM 调用迁到 lite-model**（lite-model 设计 §12 的第三个宿主，2026-11-19）
+   - [x] `llm/client.py` 只留 `LiteModelLLM`：把 llm-steward 的 `LLM` Protocol（system、user 文本 → 校验过的回复和
+     `Provenance(role, model)`）接到 lite-model 的 `AsyncModel` 上；删掉 `OpenAICompatibleLLM`、`roles.py` 的 `RoleTarget` /
+     `resolve`；`Provenance` 去掉没人用的 `endpoint`，记录格式 `role:model` 不变（model 取响应里的，响应没说时取请求的，和以前
+     一样）。五个 role 都不可路由（它们决定或标注受治理的知识，记录里的模型要能再问一次）。`FakeLLM` 基于 lite-model 的
+     `AsyncFakeModel`，回复经过同一个 adapter。依赖：去掉 `openai`，加 `lite-model` 0.2.0（GitHub release wheel）。
+   - [x] 配置改成 lite-model 的形状：`Settings.llm`（`STEWARD_LLM__BACKEND`、`__MODEL`、`__ROLES`、`__BACKENDS`、…，或整个
+     `STEWARD_LLM` JSON）；默认没有 LLM，用到的 role 没配置就启动失败（和以前一样）。超时 60 秒、重试 2 次是以前客户端的值。
+     旧的 `STEWARD_LLM_BASE_URL`、`_API_KEY`、`_MODEL`、`_ROLES`、`_TIMEOUT_S` 启动时拒绝并说明去处（空值视为未设，旧
+     `.env.example` 留下的空行不挡启动）。行为变化：配置里的五个 role 启动时都检查（以前只查会用到的）。
+   - [x] mem0 自己调模型，不经过 lite-model：`openai_endpoint` 从 `memory.extract` 的 lite-model target 取模型、URL（OpenAI
+     兼容的，含 `/v1`）和 key（keyless 的给 `unused`）；Anthropic backend 拒绝。
+   - [x] compose：`STEWARD_LLM`（JSON，默认 `null` 即不配）和它点名的 `STEWARD_LLM_KEY`；不透传 `OPENAI_API_KEY`（一开始透传了，
+     发现会把 shell 里的 key 带进不用它的容器）。进程内的 lite-mem 用自己的模型（它的 role 名不是 llm-steward 的，不能共用
+     一份 JSON）：宿主机 Ollama 的 `qwen3:8b`，或 `LITEMEM_DOCKER_LLM_URL` / `LITEMEM_LLM_MODEL`；要 key 的厂商就把 lite-mem 单独起服务。
+   - [x] 请求体：迁移前用旧客户端录下五个 role 经各自的 pipeline 函数发出的请求（llm-gateway 形状的端点、带 key、一个 role
+     换模型），`tests/fixtures/llm_requests.json`；迁移后 URL、认证头、body 逐字段相同。llm-steward 的五个 schema 本来就是
+     strict 形状（`extra="forbid"`、字段全必填），lite-model 的 `strict_schema` 结果和原来一样。
+   - [x] 锁定：lite-rag `6d52f90` → `fc86418`（S15 迁到 lite-model、S16 图抽取用结构化输出），lite-mem `7491e36` → `be5269f`
+     （S12 迁到 lite-model、0.2.0 `host_backends`）；三者共用 lite-model 0.2.0。lite-rag、lite-mem 自己的配置由它们的
+     `literag_config` / `litemem_config` 给，LLM 部分要用 lite-model 的形状（旧键启动时被它们拒绝）。
+   - 验收：请求体测试通过；默认套件 989 passed、ruff、mypy、lint-imports 通过；`-m contract` 里 lite-mem、mem0、引擎切换、
+     lite-rag 的 15 个通过（WeKnora、RAGFlow 的要外部服务，没跑）。
+   - 收尾（在单独的 worktree / 分支上做：主工作区有另一个会话没提交的 worker idle 改动）：
+     - /simplify 采纳：mem0 的端点不再为检查配置而白建一个 lite-model 客户端（`resolve()` 一次）；空的旧变量视为未设；
+       `FakeLLM.model` 死代码；根目录 `.env.example` 还写着旧变量。不采纳：旧变量用一个 model validator 代替五个字段（pydantic-
+       settings 不收集未知的 env，`.env` 里的旧名只能靠字段看到）；去掉 `LLMError` 包装直接抛 lite-model 的错误（adapter 的
+       Protocol 不暴露 lite-model 类型）；只检查会用到的 role（lite-model 要求配置里的 role 都已声明，见上）；lite-mem 共用
+       llm-steward 的 backends（role 名不同）。
+     - Codex：3 条都不成立——"lite-model 的错误消息可能带上游文本"（lite-model 规则 8：只有 role、`backend:model` 和异常类型，
+       有测试）；"compose 里 `api_key_env: STEWARD_LLM_KEY` 取不到"（这个变量本身就传进了容器，`docker compose config` 可见）；
+       `env_nested_delimiter` 影响别的变量（没有别的 `STEWARD_*__*` 字段，env 测试通过）。
 
 ### 给 Claude Code 的第一条指令（参考）
 
