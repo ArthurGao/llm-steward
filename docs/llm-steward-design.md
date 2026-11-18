@@ -1022,7 +1022,8 @@ llm-steward/
      换模型），`tests/fixtures/llm_requests.json`；迁移后 URL、认证头、body 逐字段相同。llm-steward 的五个 schema 本来就是
      strict 形状（`extra="forbid"`、字段全必填），lite-model 的 `strict_schema` 结果和原来一样。
    - [x] 锁定：lite-rag `6d52f90` → `fc86418`（S15 迁到 lite-model、S16 图抽取用结构化输出），lite-mem `7491e36` → `be5269f`
-     （S12 迁到 lite-model、0.2.0 `host_backends`）；三者共用 lite-model 0.2.0。lite-rag、lite-mem 自己的配置由它们的
+     （S12 迁到 lite-model、0.2.0 `host_backends`）；三者共用 lite-model 0.2.0。同日再升：lite-model 0.2.1（key 的来源算一个
+     选择）、lite-rag `53c3f4b`、lite-mem `d8c0cb6`（都只是跟着升 lite-model）。lite-rag、lite-mem 自己的配置由它们的
      `literag_config` / `litemem_config` 给，LLM 部分要用 lite-model 的形状（旧键启动时被它们拒绝）。
    - 验收：请求体测试通过；默认套件 989 passed、ruff、mypy、lint-imports 通过；`-m contract` 里 lite-mem、mem0、引擎切换、
      lite-rag 的 15 个通过（WeKnora、RAGFlow 的要外部服务，没跑）。

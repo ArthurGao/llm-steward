@@ -43,13 +43,13 @@ rerank = [
 # The owner's own RAG engine in-process (`STEWARD_LITERAG_MODE=inprocess`); the default HTTP mode needs
 # nothing. Pinned to a commit: upgrading requires the contract tests (`pytest -m contract`) to pass first.
 literag = [
-    "lite-rag[server] @ git+https://github.com/ArthurGao/lite-rag@fc8641832adb039bcde025f75d62933c668f1862",
+    "lite-rag[server] @ git+https://github.com/ArthurGao/lite-rag@53c3f4b8650286e0ad32b7c70d1aa78ede732196",
 ]
 # The owner's own memory engine in-process (`STEWARD_MEMORY_PROVIDER=litemem`,
 # `STEWARD_LITEMEM_MODE=inprocess`); the default HTTP mode needs nothing. Pinned to a commit:
 # upgrading requires the contract tests (`pytest -m contract`) to pass first.
 litemem = [
-    "lite-mem[server,sqlite] @ git+https://github.com/ArthurGao/lite-mem@be5269fef6291efe16e9a9dd598c5829af2511b8",
+    "lite-mem[server,sqlite] @ git+https://github.com/ArthurGao/lite-mem@d8c0cb6e8938789ce6f27036edb3d39012c66968",
 ]
 
 [project.scripts]
@@ -139,5 +139,5 @@ source_modules = [
 forbidden_modules = ["fastapi", "starlette"]
 
 [tool.uv.sources]
-lite-model = { url = "https://github.com/ArthurGao/lite-model/releases/download/v0.2.0/lite_model-0.2.0-py3-none-any.whl" }
+lite-model = { url = "https://github.com/ArthurGao/lite-model/releases/download/v0.2.1/lite_model-0.2.1-py3-none-any.whl" }
 llm-steward-client = { path = "../sdk/python", editable = true }
