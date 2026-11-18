@@ -157,9 +157,14 @@ def build_literag(settings: Settings, http: httpx2.AsyncClient) -> KnowledgeProv
         from lite_rag.config import load_settings
         from lite_rag.engine import RagRuntime
 
-        runtime = RagRuntime.from_settings(
-            load_settings(settings.literag_config), max_connections=LITERAG_CONCURRENCY
-        )
+        own = load_settings(settings.literag_config)
+        if settings.literag_search_mode == "graph" and not own.graph.enabled:
+            # every search would fail: say so at startup (in HTTP mode lite-rag answers each one)
+            raise ValueError(
+                "STEWARD_LITERAG_SEARCH_MODE=graph needs lite-rag's graph: graph.enabled in its "
+                "config (STEWARD_LITERAG_CONFIG), with kbs built after it was turned on"
+            )
+        runtime = RagRuntime.from_settings(own, max_connections=LITERAG_CONCURRENCY)
         transport = InProcessTransport(
             runtime,
             LITERAG_CONCURRENCY,

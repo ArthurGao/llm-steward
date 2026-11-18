@@ -8,9 +8,10 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 MemoryProviderName = Literal["mem0", "native", "litemem"]
 KnowledgeProviderName = Literal["weknora", "ragflow", "native", "literag"]
-# lite-rag's retrieval modes in the pinned version (S10). Its S11 adds "graph": add it here when
-# the pin moves past S11 (the graph also needs lite-rag kbs built with it).
-LiteRagSearchMode = Literal["vector", "bm25", "hybrid"]
+# lite-rag's retrieval modes. `graph` (lite-rag S11): the entities the query names, then the chunks
+# that mention them and their neighbours; it needs lite-rag kbs built with `graph.enabled`
+# (PostgreSQL), and `hybrid` fuses it too when lite-rag's own `retrieval.hybrid_paths` lists it.
+LiteRagSearchMode = Literal["vector", "bm25", "graph", "hybrid"]
 
 DEFAULT_DB_SCHEMA = "steward"
 

@@ -5,6 +5,7 @@ import asyncio
 import threading
 import time
 import uuid
+from pathlib import Path
 from typing import Any
 
 import httpx2
@@ -261,3 +262,28 @@ async def test_in_process_the_settings_choose_the_mode_too(monkeypatch: pytest.M
     provider = build_literag(settings, mock_http(_search_router()))
     await provider.search("q", [f"{NS}/{REFUNDS}"], top_k=3)
     assert [(c["mode"], c["rerank"]) for c in runtime.searched] == [("bm25", True)]
+
+
+async def test_the_graph_mode_is_a_choice_and_is_sent_as_is() -> None:
+    # lite-rag S11: entities named in the query, then the chunks that mention them and their
+    # neighbours; needs a lite-rag kb built with graph.enabled (PostgreSQL)
+    router = _search_router()
+    settings = Settings(database_url="sqlite+aiosqlite://", literag_search_mode="graph")
+    await build_literag(settings, mock_http(router)).search("q", [f"{NS}/{REFUNDS}"], top_k=3)
+    assert router.body("POST", "/v1/search")["mode"] == "graph"
+
+
+def test_in_process_the_graph_mode_needs_lite_rags_graph(tmp_path: Path) -> None:
+    # refused at startup, not at the first search: lite-rag would fail every graph search
+    config = tmp_path / "literag.yaml"
+    config.write_text("graph:\n  enabled: false\n", encoding="utf-8")
+    settings = Settings(
+        database_url="sqlite+aiosqlite://",
+        literag_mode="inprocess",
+        literag_config=str(config),
+        literag_search_mode="graph",
+    )
+    with pytest.raises(
+        ValueError, match=r"STEWARD_LITERAG_SEARCH_MODE=graph needs lite-rag's graph"
+    ):
+        build_literag(settings, mock_http(_search_router()))

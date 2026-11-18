@@ -180,6 +180,60 @@ def literag_runtime() -> Iterator[Any]:
         conn.execute(drop)
 
 
+# Each passage's graph, as a model would list it: Atlas → Maria → the safety council.
+GRAPHS = {
+    "Project Atlas": '{"entities": [{"name": "Project Atlas", "type": "project"}, '
+    '{"name": "Maria Keller", "type": "person"}], "relations": []}',
+    "safety council": '{"entities": [{"name": "Maria Keller", "type": "person"}, '
+    '{"name": "Safety Council", "type": "group"}], "relations": []}',
+}
+NO_GRAPH = '{"entities": [], "relations": []}'
+
+
+@pytest.fixture
+def literag_graph_runtime(literag_runtime: Any) -> Any:
+    """The same store with the graph on, its extraction scripted (no model)."""
+    from lite_rag.engine import RagRuntime
+    from lite_rag.testing import FakeLLM
+
+    def extract(messages: list[Any]) -> str:
+        passage = messages[-1].content
+        return next((g for key, g in GRAPHS.items() if key in passage), NO_GRAPH)
+
+    settings = literag_runtime.settings.model_copy(
+        update={"graph": literag_runtime.settings.graph.model_copy(update={"enabled": True})}
+    )
+    return RagRuntime(
+        settings, literag_runtime.store, literag_runtime.embedder, graph_llm=FakeLLM(extract)
+    )
+
+
+@pytest.mark.contract
+async def test_literag_graph_mode_reaches_what_only_the_graph_links(
+    literag_graph_runtime: Any,
+) -> None:
+    kb = LiteRagProvider(InProcessTransport(literag_graph_runtime, concurrency=4, mode="graph"))
+    people = await kb.ensure_collection(KbCollectionRef(uuid.uuid4(), NS, "people"))
+    atlas = await kb.upsert_entry(
+        KbEntryDoc(uuid.uuid4(), NS, "Atlas", "Project Atlas is led by Maria Keller.", 1), people
+    )
+    council = await kb.upsert_entry(
+        KbEntryDoc(uuid.uuid4(), NS, "Council", "Maria Keller chairs the safety council.", 1),
+        people,
+    )
+    await kb.upsert_entry(
+        KbEntryDoc(uuid.uuid4(), NS, "Courier", "Parcels ship by courier.", 1), people
+    )
+    # the query names Atlas only: the council entry shares no word with it, Maria links them
+    hits = await kb.search("Project Atlas", [people], top_k=5)
+    assert {h.external_id for h in hits} == {atlas, council}
+    # the control: by its words alone the query does not reach the council entry
+    words = LiteRagProvider(InProcessTransport(literag_graph_runtime, concurrency=4, mode="bm25"))
+    assert [h.external_id for h in await words.search("Project Atlas", [people], top_k=5)] == [
+        atlas
+    ]
+
+
 def _app_client(runtime: Any, namespaces: list[str]) -> tuple[httpx2.AsyncClient, str]:
     """lite-rag's real HTTP app with one write key, reached in-process through ASGI."""
     from lite_rag.config import ApiKeyConfig
