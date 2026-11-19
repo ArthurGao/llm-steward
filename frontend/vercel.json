@@ -1,8 +1,8 @@
 {
   "$schema": "https://openapi.vercel.sh/vercel.json",
   "framework": null,
-  "installCommand": "pnpm install --frozen-lockfile",
-  "buildCommand": "pnpm --filter @llm-steward/admin build",
+  "installCommand": "npx --yes pnpm@10.34.7 install --frozen-lockfile",
+  "buildCommand": "npx --yes pnpm@10.34.7 --filter @llm-steward/admin build",
   "outputDirectory": "apps/admin/dist",
   "rewrites": [{ "source": "/(.*)", "destination": "/index.html" }],
   "headers": [
