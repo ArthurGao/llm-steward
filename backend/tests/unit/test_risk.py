@@ -26,6 +26,10 @@ POLICY = RiskPolicy(high_risk_keywords=("退款政策", "price"), pii_action="re
         ("key sk-abcdefghijklmnopqrstuvwx", "secret"),
         ("AKIAABCDEFGHIJKLMNOP leaked", "secret"),
         ("api_key = 9f8e7d6c5b4a3210", "secret"),
+        ("lite-mem key lm_ab12cd34_Zx9-Yw8Vu7_Ts6Rq5Po4Nm", "secret"),  # lite-mem's format
+        ("ghp_abcdefghijklmnopqrstuvwxyz0123456789", "secret"),  # GitHub token
+        ("github_pat_11ABCDEFG0123456789_abcdefghijklmnopqrstuvwxyz0123", "secret"),  # fine-grained
+        ("xoxb-123456789012-abcdefghij", "secret"),  # Slack token
     ],
 )
 def test_pii_is_found(text: str, kind: str) -> None:

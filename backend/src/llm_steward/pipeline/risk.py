@@ -16,7 +16,9 @@ from llm_steward.namespace_config import NamespaceConfig, PiiAction
 
 _SECRET = re.compile(
     r"sk-[A-Za-z0-9_-]{20,}"  # OpenAI-style keys
-    r"|(?:stw|lrk)_[A-Za-z0-9]+_[A-Za-z0-9_-]{16,}"  # llm-steward / lite-rag keys
+    r"|(?:stw|lrk|lm)_[A-Za-z0-9]+_[A-Za-z0-9_-]{16,}"  # llm-steward / lite-rag / lite-mem keys
+    r"|gh[pousr]_[A-Za-z0-9]{36,}|github_pat_[A-Za-z0-9_]{22,}"  # GitHub tokens
+    r"|xox[abprs]-[A-Za-z0-9-]{10,}"  # Slack tokens
     r"|AKIA[0-9A-Z]{16}"  # AWS access key ids
     r"|-----BEGIN [A-Z ]*PRIVATE KEY-----"
     r"|(?i:\b(?:api[_-]?key|secret|token|password)\s*[:=]\s*\S{8,})"
