@@ -9,6 +9,7 @@ import httpx2
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from mcp.server.transport_security import TransportSecuritySettings
+from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
 from llm_steward.api import admin as api_admin
 from llm_steward.api import errors, system
@@ -23,6 +24,31 @@ from llm_steward.providers.native.embedding import Embedder
 from llm_steward.services.container import runtime
 
 log = logging.getLogger(__name__)
+
+
+class WakesWorker:
+    """Every request is activity: an idle outbox worker wakes up when it starts, and again when
+    its answer starts — after its transaction committed, so a job it enqueued is seen even when
+    the request outlasted the idle timeout (pure ASGI, streams untouched)."""
+
+    def __init__(self, app: ASGIApp) -> None:
+        self.app = app
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        is_http = scope["type"] == "http"
+        services = getattr(scope["app"].state, "services", None) if is_http else None
+        if services is None:
+            await self.app(scope, receive, send)
+            return
+        worker = services.worker
+        worker.touch()
+
+        async def answering(message: Message) -> None:
+            if message["type"] == "http.response.start":
+                worker.touch()
+            await send(message)
+
+        await self.app(scope, receive, answering)
 
 
 def create_app(
@@ -80,6 +106,8 @@ def create_app(
                         await task
 
     app = FastAPI(title="llm-steward", version="0.1.0", lifespan=lifespan)
+    if settings.worker_idle_after_s is not None and settings.run_worker:
+        app.add_middleware(WakesWorker)  # only an idle worker in this process needs waking
     errors.install(app)
     # an upload's limit, plus room for the multipart framing
     app.add_middleware(IdempotencyMiddleware, max_body=(settings.kb_max_upload_mb + 1) * 2**20)

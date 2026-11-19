@@ -13,12 +13,12 @@ from dataclasses import dataclass
 from datetime import timedelta
 from typing import Any, NamedTuple
 
-from sqlalchemy import and_, or_, select, update
+from sqlalchemy import and_, case, func, or_, select, type_coerce, update
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from llm_steward.errors import NotFound, StewardError
 from llm_steward.models import ExternalRef, Job
-from llm_steward.models.base import utcnow
+from llm_steward.models.base import UtcDateTime, utcnow
 from llm_steward.models.enums import JobStatus, JobType, ObjectType, SyncStatus
 from llm_steward.pipeline.risk import redact_pii
 
@@ -112,6 +112,23 @@ class JobQueue:
         self._lease = lease
         self._backoff_base_s = backoff_base_s
         self._backoff_cap_s = backoff_cap_s
+
+    async def next_due_s(self) -> float | None:
+        """Seconds until a job can be claimed (0 when one already can): the earliest pending
+        `run_after`, or when a running job's lease runs out. None when nothing waits."""
+        claimable_at = case(
+            (Job.status == JobStatus.PENDING, Job.run_after), else_=Job.locked_until
+        )
+        async with self._sessions() as session:
+            due = await session.scalar(
+                # typed as the columns are, so SQLite's naive datetimes come back as UTC too
+                select(type_coerce(func.min(claimable_at), UtcDateTime())).where(
+                    Job.status.in_([JobStatus.PENDING, JobStatus.RUNNING])
+                )
+            )
+        if due is None:
+            return None
+        return max((due - utcnow()).total_seconds(), 0.0)
 
     async def claim(self, job_id: uuid.UUID | None = None) -> ClaimedJob | None:
         """The next claimable job, or that specific one (a request processing its own job)."""

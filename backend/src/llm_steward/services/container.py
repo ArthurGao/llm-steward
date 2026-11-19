@@ -167,9 +167,14 @@ def build_services(
         return await handlers[job.type](job)
 
     jobs = JobQueue(sessions)
+    # Idle mode needs requests to wake it: only for the worker inside the API process.
+    idle = settings.worker_idle_after_s if settings.run_worker else None
     worker = Worker(
         jobs,
         dispatch,
+        idle_after_s=idle,
+        # Idle: wake one flush interval after a buffer could have gone idle, so it is flushed.
+        idle_ticks_after_s=settings.buffer_idle_minutes * 60 + IDLE_FLUSH_EVERY_S,
         ticks=(
             # late-bound: `episodes` is built below, with the worker's run_job
             Tick("flush idle episode buffers", IDLE_FLUSH_EVERY_S, lambda: episodes.flush_idle()),

@@ -176,7 +176,7 @@ GovernanceService 是唯一的写入出口；同步器（Syncer）通过任务�
 | KB 客户端 | httpx2（httpx 的后继，Starlette 1.x TestClient 也用它）调用 WeKnora / RAGFlow 的 REST API | 锁定版本，由合约测试保护 |
 | LLM / Embedding | lite-model（P9 起）：按「角色」配置模型（`memory.extract`、`memory.resolve` …），调用点不写模型名；backend 可以是 llm-gateway（本地开发）、任意 OpenAI 兼容端点、Ollama、LiteLLM Proxy | 治理层自己的 LLM 调用（风险分级、KB 价值评分、起草、冲突判断）与 provider 的配置分开。原定 LiteLLM，P2 改为 OpenAI SDK：mem0 已自带该依赖，依赖树更小（2026-11-08）；P9 改由 lite 系列共用的 lite-model 调用（它也只用 OpenAI SDK，不 import LiteLLM） |
 | native 实现 | sqlite-vec（`vec0`）+ FTS5 + jieba + fastembed | 零依赖、离线可跑 |
-| 后台任务 | 数据库任务表（outbox）+ asyncio worker | llm-steward 本身不依赖 Redis（WeKnora 自带的 Redis 只供 WeKnora 使用），两种数据库都能用 |
+| 后台任务 | 数据库任务表（outbox）+ asyncio worker；可选 idle 模式（`STEWARD_WORKER_IDLE_AFTER_S`，2026-11-19）：API 进程内的 worker 在最后一个请求或任务之后这么久不再查库，请求（开始和开始回答时）、下一个到期任务、episode buffer 的空闲 flush 把它叫醒，给会缩到零的数据库（Neon）用；前提是只有这个进程入队，别的进程入队的任务要等下一个请求 | llm-steward 本身不依赖 Redis（WeKnora 自带的 Redis 只供 WeKnora 使用），两种数据库都能用 |
 | MCP | 官方 `mcp` Python SDK（streamable HTTP），挂载在 `/mcp` | 与 REST 共用 service 和鉴权 |
 | 鉴权 | Namespace API key（哈希存储）+ 短期 user token（浏览器端）；Admin 不做登录（2026-11-10） | 机器调用和终端用户分开；Admin 是内部监控台 |
 | 前端 | React + Vite + TypeScript + TanStack Router/Query + shadcn/ui + Tailwind | 用 `@hey-api/openapi-ts` 生成客户端 |

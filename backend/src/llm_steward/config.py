@@ -150,6 +150,11 @@ class Settings(BaseSettings):
     # Run the outbox worker inside the API process (single-process deployments); otherwise run
     # `steward worker` separately.
     run_worker: bool = True
+    # A database that scales to zero (e.g. Neon): the worker stops querying this long after the
+    # last request or job and sleeps until a request, the next due job, or the episode buffers'
+    # idle flush. Unset: it polls every second. Assumes this API process is the only one that
+    # enqueues: a job another process enqueues while it is idle waits for the next request.
+    worker_idle_after_s: float | None = Field(default=None, gt=0)
 
     @field_validator("db_schema")
     @classmethod

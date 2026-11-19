@@ -43,11 +43,35 @@ class Worker:
         *,
         ticks: tuple[Tick, ...] = (),
         idle_sleep_s: float = 1.0,
+        idle_after_s: float | None = None,
+        idle_ticks_after_s: float | None = None,
     ) -> None:
+        """`idle_after_s` (a database that scales to zero, e.g. Neon): this long after the last
+        `touch` (a request) or job, the loop stops querying. Idle, it sleeps until touched or the
+        next job falls due, and runs the ticks once `idle_ticks_after_s` after going quiet (the
+        episode buffers' idle flush). None: it polls every `idle_sleep_s`, as before."""
         self._queue = queue
         self._dispatch = dispatch
         self._ticks = ticks
         self._idle_sleep_s = idle_sleep_s
+        self._idle_after_s = idle_after_s
+        self._idle_ticks_after_s = idle_ticks_after_s
+        self._wake = asyncio.Event()
+        self.touch()
+
+    def touch(self) -> None:
+        """Activity: an idle loop wakes up and polls again, and the ticks' catch-up is re-armed."""
+        self._last_active = time.monotonic()
+        catch_up = self._idle_ticks_after_s
+        self._ticks_at = None if catch_up is None else self._last_active + catch_up
+        self._wake.set()
+        self._wake = asyncio.Event()  # a waiter keeps the event it started with
+
+    @property
+    def active(self) -> bool:
+        if self._idle_after_s is None:
+            return True
+        return time.monotonic() - self._last_active < self._idle_after_s
 
     async def run_once(self) -> bool:
         """Process one claimable job; False when there was none."""
@@ -99,14 +123,51 @@ class Worker:
 
     async def run_forever(self, stop: asyncio.Event) -> None:
         while not stop.is_set():
+            wake = self._wake  # taken first: a touch from here on ends the nap below
+            if not self.active and not self._ticks_due():
+                woken = await self._nap(wake, await self._idle_wait(), stop)
+                if not woken and not self._ticks_due() and await self._claim():
+                    self.touch()  # the nap ran out because a job fell due: claim it then
+                continue
+            if not self.active:
+                self._ticks_at = None  # the catch-up runs once per quiet spell
             await self.run_ticks()
-            try:
-                busy = await self.run_once()
-            except Exception:  # the queue itself failed (e.g. database down): keep the loop alive
-                log.exception("worker: claiming a job failed")
-                busy = False
-            if not busy:
-                try:
-                    await asyncio.wait_for(stop.wait(), timeout=self._idle_sleep_s)
-                except TimeoutError:
-                    pass
+            if await self._claim():
+                self.touch()
+            else:
+                await self._nap(wake, self._idle_sleep_s, stop)
+
+    def _ticks_due(self) -> bool:
+        return self._ticks_at is not None and time.monotonic() >= self._ticks_at
+
+    async def _claim(self) -> bool:
+        try:
+            return await self.run_once()
+        except Exception:  # the queue itself failed (e.g. database down): keep the loop alive
+            log.exception("worker: claiming a job failed")
+            return False
+
+    async def _idle_wait(self) -> float | None:
+        """Until the next job falls due or the ticks' catch-up, whichever is first (None: until
+        touched)."""
+        try:
+            due = await self._queue.next_due_s()
+        except Exception:
+            log.exception("worker: looking ahead for jobs failed")
+            due = self._idle_sleep_s
+        waits = [] if due is None else [max(due, self._idle_sleep_s)]
+        if self._ticks_at is not None:
+            waits.append(max(self._ticks_at - time.monotonic(), 0.0))
+        return min(waits) if waits else None
+
+    @staticmethod
+    async def _nap(wake: asyncio.Event, wait_s: float | None, stop: asyncio.Event) -> bool:
+        """Sleep `wait_s` (None: until woken); True when touched or stopped, False on time out."""
+        waits = {asyncio.ensure_future(wake.wait()), asyncio.ensure_future(stop.wait())}
+        try:
+            done, _ = await asyncio.wait(waits, timeout=wait_s, return_when=asyncio.FIRST_COMPLETED)
+            return bool(done)
+        finally:
+            for w in waits:
+                w.cancel()
+            await asyncio.gather(*waits, return_exceptions=True)
