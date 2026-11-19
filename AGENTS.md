@@ -44,7 +44,7 @@ If a change must contradict the design, update the design in the same change and
 ## Current stage
 
 **P9 (2026-11-19): every LLM call goes through lite-model** (design §11 P9; `llm/client.py` is the adapter, `tests/unit/test_llm_requests.py` pins the request bodies). **P8 (2026-11-14): the recall gate (`uv run pytest -m eval`) runs on lite-eval** (design §11 P8; `backend/tests/eval/target.py`, frozen original in `legacy_recall.py`). **All stages P0–P7 are closed out** (P7, RAGFlow and wrap-up, closed out 2026-11-11). v1 follow-ups and open owner decisions are recorded in design §11. The owner's own RAG engine **lite-rag**
-(`~/Code/AI/lite-rag`) was built first and plugged in as `LiteRagProvider` (S9, 2026-11-09). P3 slices: P3a
+(`~/Code/AI/lite-ai/lite-rag`) was built first and plugged in as `LiteRagProvider` (S9, 2026-11-09). P3 slices: P3a
 governance core, P3b LLM steps, P3c `WeKnoraProvider` and P3d documents are done; P4 (joint retrieval: scoring,
 MMR, budget, rerank, documents' passages, retrieval log, feedback, hit counts; recall@8 baseline 0.960 on the
 synthetic eval, `uv run pytest -m eval`) is done; P5 (config as code, user tokens, erasure, rate limit, idempotency,
