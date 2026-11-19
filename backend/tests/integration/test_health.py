@@ -28,7 +28,7 @@ def _get_health(settings: Settings, http: httpx2.AsyncClient | None = None) -> h
 def test_all_ok_with_native_providers(migrated_url: str) -> None:
     response = _get_health(_settings(migrated_url))
     body = response.json()
-    assert response.status_code == 200
+    assert response.status_code == 200, body
     assert body["status"] == "ok"
     assert body["components"]["database"]["status"] == "ok"
     assert body["components"]["database"]["name"] in ("sqlite", "postgresql")
@@ -61,7 +61,10 @@ def test_weknora_up_is_reported_ok(migrated_url: str) -> None:
     settings = _settings(migrated_url, kb_provider="weknora")
     response = _get_health(settings, mock_http(handler))
     body = response.json()
-    assert response.status_code == 200
+    # The body names the failing component: once, under heavy parallel load, this got a 503
+    # that only the database check can cause (ping over 3 s, or no connection), and the bare
+    # assert hid which one.
+    assert response.status_code == 200, body
     assert body["status"] == "ok"
     assert seen == [f"{WEKNORA}/health"]
     assert body["components"]["kb_provider"] == {"name": "weknora", "status": "ok", "detail": None}

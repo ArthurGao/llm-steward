@@ -5,8 +5,10 @@ import { fileURLToPath } from 'node:url'
 import { defineConfig } from 'vitest/config'
 
 // Port 8610 is registered for llm-steward-admin in the KB ports registry.
-export default defineConfig({
-  plugins: [tanstackRouter({ target: 'react', autoCodeSplitting: true }), react(), tailwindcss()],
+// Routes are code-split for the bundle only: under vitest a lazy route chunk is transformed on first render,
+// which under parallel workers took over the 1 s findBy* budget of each file's first test.
+export default defineConfig(({ mode }) => ({
+  plugins: [tanstackRouter({ target: 'react', autoCodeSplitting: mode !== 'test' }), react(), tailwindcss()],
   resolve: { alias: { '@': fileURLToPath(new URL('./src', import.meta.url)) } },
   server: { port: 8610, strictPort: true, host: '127.0.0.1' },
   preview: { port: 8610, strictPort: true, host: '127.0.0.1' },
@@ -17,4 +19,4 @@ export default defineConfig({
     css: false,
     globals: true,
   },
-})
+}))
