@@ -4,7 +4,7 @@ Provider order is fixed by patching `search` where a test needs a known rank: th
 what is under test, not the engines' ranking."""
 
 import uuid
-from datetime import timedelta
+from datetime import datetime, timedelta
 from typing import Any
 
 import pytest
@@ -14,6 +14,7 @@ from llm_steward.models import Memory
 from llm_steward.models.base import utcnow
 from llm_steward.models.enums import KbStatus, RiskLevel
 from llm_steward.ranking import estimate_tokens
+from llm_steward.services import retrieval_service
 from llm_steward.services.governance_service import CreateCollection
 from llm_steward.storage.db import session_factory
 from tests.conftest import AppClient, fix_order, kb_entry_op, post_memory
@@ -29,10 +30,11 @@ def _ids(r: Any) -> list[str]:
     return [i["id"] for i in r.json()["items"]]
 
 
-def _age(c: AppClient, memory_id: str, days: int) -> None:
+def _at(c: AppClient, memory_id: str, when: datetime) -> None:
+    """Set a memory's validity start (what its age is measured from) and creation time."""
+
     async def write() -> None:
         async with session_factory(c.services.engine)() as s, s.begin():
-            when = utcnow() - timedelta(days=days)
             await s.execute(
                 update(Memory)
                 .where(Memory.id == uuid.UUID(memory_id))
@@ -40,6 +42,10 @@ def _age(c: AppClient, memory_id: str, days: int) -> None:
             )
 
     c.call(write)
+
+
+def _age(c: AppClient, memory_id: str, days: int) -> None:
+    _at(c, memory_id, utcnow() - timedelta(days=days))
 
 
 def test_verified_knowledge_outranks_active_at_the_next_rank(
@@ -99,7 +105,12 @@ def test_namespace_config_overrides_weights_half_lives_and_top_k(
     h, ns = app_client.new_tenant("acme")
     ids = [post_memory(app_client, h, f"note {i}", memory_type="order_event") for i in range(4)]
     app_client.drain()
-    _age(app_client, ids[0], 10)
+    # Exact ages: with a 10-day half-life, the second or so a slow CI runner spends between the
+    # write and the retrieve decays the score past pytest.approx's 1e-6 (flaked 2026-11-19).
+    now = utcnow()
+    monkeypatch.setattr(retrieval_service, "utcnow", lambda: now)
+    for i, memory_id in enumerate(ids):
+        _at(app_client, memory_id, now - timedelta(days=10 if i == 0 else 0))
     app_client.set_config(
         ns,
         {
