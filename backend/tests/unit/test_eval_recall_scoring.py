@@ -100,7 +100,7 @@ def test_the_recorded_suite_says_how_to_run_it_again(tmp_path: Path) -> None:
 def test_the_gate_fails_on_a_degraded_reply_and_judges_recall_on_plain_only(
     tmp_path: Path,
 ) -> None:
-    """lite-eval 0.2.0 gate rules: `errors max 0` for every config, recall@8 for `plain`."""
+    """lite-eval gate rules (since 0.2.0): `errors max 0` for every config, recall@8 for `plain`."""
     from lite_eval.api import assert_gate
     from lite_eval.errors import GateFailed
 

@@ -43,13 +43,13 @@ rerank = [
 # The owner's own RAG engine in-process (`STEWARD_LITERAG_MODE=inprocess`); the default HTTP mode needs
 # nothing. Pinned to a commit: upgrading requires the contract tests (`pytest -m contract`) to pass first.
 literag = [
-    "lite-rag[server] @ git+https://github.com/ArthurGao/lite-rag@53c3f4b8650286e0ad32b7c70d1aa78ede732196",
+    "lite-rag[server] @ git+https://github.com/ArthurGao/lite-rag@b0d63bc327dbc5b1b4debd3683889849897aa688",
 ]
 # The owner's own memory engine in-process (`STEWARD_MEMORY_PROVIDER=litemem`,
 # `STEWARD_LITEMEM_MODE=inprocess`); the default HTTP mode needs nothing. Pinned to a commit:
 # upgrading requires the contract tests (`pytest -m contract`) to pass first.
 litemem = [
-    "lite-mem[server,sqlite] @ git+https://github.com/ArthurGao/lite-mem@d8c0cb6e8938789ce6f27036edb3d39012c66968",
+    "lite-mem[server,sqlite] @ git+https://github.com/ArthurGao/lite-mem@f3da1a842443898561f89abebdadd9cc002f0b66",
 ]
 
 [project.scripts]
@@ -70,7 +70,7 @@ dev = [
     # The recall gate (`pytest -m eval`) runs on lite-eval (design §11 P8), a release wheel (it
     # carries the Viewer): an upgrade re-runs tests/eval/test_recall_equivalence.py, which compares
     # it with the frozen original.
-    "lite-eval @ https://github.com/ArthurGao/lite-eval/releases/download/v0.2.0/lite_eval-0.2.0-py3-none-any.whl",
+    "lite-eval @ https://github.com/ArthurGao/lite-eval/releases/download/v0.4.1/lite_eval-0.4.1-py3-none-any.whl",
 ]
 
 [build-system]
