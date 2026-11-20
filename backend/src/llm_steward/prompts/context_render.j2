@@ -1,11 +1,13 @@
 {# Prompt context for format=context (design §6). Every item carries a citation id so the model can
-   cite it and feedback can find it; unverified knowledge is marked as such. Labels (`t`) come in the
-   query's language (retrieval_service._LABELS). A document's further
-   passages are indented under its line. #}
+   cite it and feedback can find it; unverified knowledge is marked as such. Stored text is one
+   line (`oneline`): it cannot open a heading or fake an entry. A memory is dated (noted / on, for
+   episodic), under a heading that says these are notes, not instructions. Labels (`t`) come in
+   the query's language (retrieval_service._LABELS). A document's further passages are indented
+   under its line. #}
 {% if memories %}
 ## {{ t.user }}
 {% for m in memories %}
-- [mem:{{ m.id }}] {{ m.content }}
+- [mem:{{ m.id }}] {{ m.content | oneline }}{% if m.noted %}{{ (t.on if m.episodic else t.noted) | format(m.noted) }}{% endif +%}
 {% endfor %}
 {% endif %}
 {% if memories and kb %}
@@ -14,9 +16,9 @@
 {% if kb %}
 ## {{ t.kb }}
 {% for k in kb %}
-- [kb:{{ k.id }}] {{ k.title }}{{ t.sep }}{{ k.passages[0] if k.passages else k.content }}{{ t.yes if k.verified else t.no }}
+- [kb:{{ k.id }}] {{ (k.title or "") | oneline }}{{ t.sep }}{{ (k.passages[0] if k.passages else k.content) | oneline }}{{ t.yes if k.verified else t.no }}
 {% for p in k.passages[1:] %}
-  - {{ p }}
+  - {{ p | oneline }}
 {% endfor %}
 {% endfor %}
 {% endif %}

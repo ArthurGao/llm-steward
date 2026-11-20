@@ -5,6 +5,7 @@ from __future__ import annotations
 from typing import Annotated, Any, Literal
 from pydantic import AwareDatetime, BaseModel, Field, RootModel
 from uuid import UUID
+from datetime import date
 
 
 class AddToKbIn(BaseModel):
@@ -388,6 +389,13 @@ class RetrieveScope(BaseModel):
 
 class RetrievedItemOut(BaseModel):
     content: Annotated[str, Field(title="Content")]
+    episodic: Annotated[
+        bool | None,
+        Field(
+            description="An episodic memory: something that happened on `noted`, not a lasting fact.",
+            title="Episodic",
+        ),
+    ] = False
     id: Annotated[UUID, Field(title="Id")]
     kind: Annotated[
         Literal["memory", "entry", "document"],
@@ -396,6 +404,13 @@ class RetrievedItemOut(BaseModel):
             title="Kind",
         ),
     ]
+    noted: Annotated[
+        date | None,
+        Field(
+            description="A memory's date: when it was noted (its valid_from). None for KB hits.",
+            title="Noted",
+        ),
+    ] = None
     passages: Annotated[
         list[str] | None,
         Field(

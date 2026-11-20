@@ -3322,6 +3322,12 @@
             "title": "Content",
             "type": "string"
           },
+          "episodic": {
+            "default": false,
+            "description": "An episodic memory: something that happened on `noted`, not a lasting fact.",
+            "title": "Episodic",
+            "type": "boolean"
+          },
           "id": {
             "format": "uuid",
             "title": "Id",
@@ -3336,6 +3342,19 @@
             ],
             "title": "Kind",
             "type": "string"
+          },
+          "noted": {
+            "anyOf": [
+              {
+                "format": "date",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "A memory's date: when it was noted (its valid_from). None for KB hits.",
+            "title": "Noted"
           },
           "passages": {
             "description": "A document's matching chunks, best first; `content` is them joined.",

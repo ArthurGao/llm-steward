@@ -1,4 +1,4 @@
-# ruff: noqa: E501, RUF001  (data: one item per line; Chinese text uses full-width commas)
+# ruff: noqa: E501  (data: one item per line)
 """SYNTHETIC evaluation corpus for retrieval quality (design §11 P4 acceptance: recall@8).
 
 Everything here is invented for testing: "Nimbus Outfitters" is a fictional outdoor-gear shop,

@@ -1,5 +1,5 @@
 import uuid
-from datetime import datetime
+from datetime import date, datetime
 from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field
@@ -87,6 +87,14 @@ class RetrievedItemOut(BaseModel):
     passages: list[str] = Field(
         default_factory=list,
         description="A document's matching chunks, best first; `content` is them joined.",
+    )
+    noted: date | None = Field(
+        default=None,
+        description="A memory's date: when it was noted (its valid_from). None for KB hits.",
+    )
+    episodic: bool = Field(
+        default=False,
+        description="An episodic memory: something that happened on `noted`, not a lasting fact.",
     )
 
 

@@ -83,7 +83,7 @@ line-length = 100
 [tool.ruff.lint]
 select = ["E", "F", "W", "I", "UP", "B", "ASYNC", "RUF"]
 # Full-width punctuation is intentional: Chinese prompt context and sentence splitting.
-allowed-confusables = ["：", "（", "）", "！", "？"]
+allowed-confusables = ["：", "（", "）", "！", "？", "，"]
 
 [tool.mypy]
 strict = true
