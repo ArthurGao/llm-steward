@@ -75,3 +75,37 @@ def test_a_provider_2s_late_is_cut_off_and_the_rest_still_served(
     assert body["degraded"] == [slow]
     other = str(entry.id) if slow == "memory" else memory
     assert [i["id"] for i in body["items"]] == [other]  # the healthy source still answers
+
+
+STAGE_DELAY_S = 1.0  # well above the CI stalls this logging is for (up to ~1.3 s in total)
+
+
+@pytest.mark.parametrize(
+    ("stage", "method"), [("prepare", "_collection_ext_ids"), ("resolve", "_resolve")]
+)
+def test_the_retrieval_log_times_the_database_stages_around_the_search(
+    client: AppClient, monkeypatch: pytest.MonkeyPatch, stage: str, method: str
+) -> None:
+    """`prepare` (namespace config and collections, before the search) and `resolve` (governance
+    rows after it) are logged next to the providers', so a slow request says where it waited."""
+    h, ns = client.new_tenant("acme")
+    post_memory(client, h, "refund pending for order 7")
+    collection = client.apply(CreateCollection(ns, "faq"))
+    client.apply(kb_entry_op(ns, collection.id, KbStatus.ACTIVE))
+    client.drain()
+    retrieval = client.services.retrieval
+    original = getattr(retrieval, method)
+
+    async def slow(*args: Any, **kwargs: Any) -> Any:
+        await asyncio.sleep(STAGE_DELAY_S)
+        return await original(*args, **kwargs)
+
+    monkeypatch.setattr(retrieval, method, slow)
+    r = client.http.post("/v1/retrieve", json={"query": "refund"}, headers=h)
+
+    assert r.status_code == 200, r.text
+    latency = _logged_latency(client, r.json()["retrieval_id"])
+    other = "resolve" if stage == "prepare" else "prepare"
+    assert latency[stage] >= STAGE_DELAY_S * 1000
+    assert latency[other] < latency[stage]  # the delay is charged to its own stage only
+    assert latency["total"] >= latency["prepare"] + latency["resolve"]

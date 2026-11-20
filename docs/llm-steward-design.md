@@ -213,7 +213,7 @@ STEWARD_LLM__MODEL=gpt-sub
 | `candidates` | 待确认或待审核的写入提议 | 见下方 DDL |
 | `external_refs` | 与 provider 的 id 映射及同步状态 | 见下方 DDL |
 | `change_log` | 所有对象的变更历史 | `object_type`、`object_id`、`op`、`before`、`after`、`actor_type`（ai / end\_user / admin / system / provider）、`actor_id`、`reason` |
-| `retrieval_logs` | 每次检索的记录 | `query`、`filters`、`results`（含各 provider 的原始分与最终分）、`latency_ms`（分 provider）、`feedback` |
+| `retrieval_logs` | 每次检索的记录 | `query`、`filters`、`results`（含各 provider 的原始分与最终分）、`latency_ms`（分 provider；另有搜索前读配置和 collection 的 `prepare`、搜索后读治理数据的 `resolve`，以及 `total`）、`feedback` |
 | `jobs` | 后台任务与 outbox | `type`（sync / ingest / extract / maintenance）、`payload`、`status`、`attempts`、`run_after`、`locked_until`、`error` |
 | `native_*` | 仅 native provider 使用：`native_chunks`、`native_vectors`（sqlite-vec / pgvector）、`native_fts`（FTS5 / tsvector） | 与治理表分开，可以整体替换或删除 |
 
