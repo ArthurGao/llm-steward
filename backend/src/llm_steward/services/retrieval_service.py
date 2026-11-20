@@ -218,6 +218,10 @@ class RetrieveResult:
     context: str | None = None
 
 
+def _ms_since(started: float) -> int:
+    return int((time.perf_counter() - started) * 1000)
+
+
 class RetrievalService:
     def __init__(
         self,
@@ -247,6 +251,7 @@ class RetrievalService:
                 if "kb" in req.sources
                 else []
             )
+        latency_ms: dict[str, int] = {"prepare": _ms_since(started)}
         top_k = req.top_k or scoring.top_k
         rerank = scoring.rerank if req.rerank is None else req.rerank
         if rerank and self._reranker is None:  # the namespace asks for it, none is configured
@@ -270,7 +275,6 @@ class RetrievalService:
 
         outcomes = await asyncio.gather(*(self._timed(c) for c in searches.values()))
         hits: dict[Source, list[ProviderHit]] = {}
-        latency_ms: dict[str, int] = {}
         for source, (result, elapsed_ms) in zip(searches, outcomes, strict=True):
             latency_ms[source] = elapsed_ms
             if isinstance(result, BaseException):
@@ -282,11 +286,13 @@ class RetrievalService:
             raise ProviderUnavailable(f"every source failed: {', '.join(degraded)}")
 
         now = req.as_of or utcnow()  # one clock for validity and age
+        resolving = time.perf_counter()
         async with self._sessions() as s:
             rankings = await self._resolve(s, namespace_id, scope, hits, req, scoring, now)
             core = req.include_pinned and req.as_of is None
             core_rows = await core_memories(s, scope) if core else []
             pinned = _core_items([m for m in core_rows if req.admits(m)])
+        latency_ms["resolve"] = _ms_since(resolving)
         # Ranking is CPU work: no connection is held while it runs.
         seen = {p.id for p in pinned}
         ranked = [i for i in _fuse(rankings) if i.id not in seen]
@@ -300,7 +306,7 @@ class RetrievalService:
         budget = req.token_budget or scoring.token_budget
         items, left_out = _select(pinned, ranked, top_k, budget, cost)
         ranks = {i.id: rank for r in rankings for rank, i in enumerate(r, start=1)}
-        timing = {**latency_ms, "total": int((time.perf_counter() - started) * 1000)}
+        timing = {**latency_ms, "total": _ms_since(started)}
         async with self._sessions() as s, s.begin():
             retrieval_id = self._log(
                 s, namespace_id, req, items, left_out, ranks, timing, degraded, reranked_by
@@ -442,7 +448,7 @@ class RetrievalService:
             degraded.append("rerank")
             return ranked, None
         finally:
-            latency_ms["rerank"] = int((time.perf_counter() - started) * 1000)
+            latency_ms["rerank"] = _ms_since(started)
         rated = list(zip(head, relevance, strict=True))
         if floor is not None:  # what falls short goes, and so does the unrated tail
             rated, tail = [(i, r) for i, r in rated if r >= floor], []
@@ -456,7 +462,7 @@ class RetrievalService:
                 result = await search
         except Exception as exc:
             result = exc
-        return result, int((time.perf_counter() - started) * 1000)
+        return result, _ms_since(started)
 
     async def _collection_ext_ids(
         self, s: AsyncSession, namespace_id: uuid.UUID, names: tuple[str, ...] | None
