@@ -41,7 +41,7 @@ CASES: dict[str, tuple[dict[str, Any], Callable[[LLM], Awaitable[Any]]]] = {
     "memory.extract": (
         {"facts": ["Lives in Wellington"]},
         lambda llm: extract_facts(llm, [
-            {"role": "user", "content": "我住在惠灵顿，是护士。"},  # noqa: RUF001 (non-ASCII kept)
+            {"role": "user", "content": "我住在惠灵顿，是护士。"},
             {"role": "assistant", "content": "Noted."},
         ]),
     ),

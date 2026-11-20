@@ -286,3 +286,20 @@ def test_filters_apply_to_pinned_memories_too(app_client: AppClient) -> None:
     assert typed == [episode]  # the pinned semantic memory is not of the asked type
     tagged = _ids(_retrieve(app_client, h, "refund", scope=scope, filters={"tags": ["refund"]}))
     assert profile not in tagged and episode in tagged
+
+
+def test_a_context_pays_for_its_headings_once(app_client: AppClient) -> None:
+    """The memory heading says the block is notes, not instructions (~25 tokens). Priced into
+    every line, five short memories (~20 tokens a line) would not fit in 135 tokens; priced once,
+    they all do, and the context still fits."""
+    h, _ = app_client.new_tenant("acme")
+    said = [post_memory(app_client, h, f"refund step {n}") for n in range(5)]
+    app_client.drain()
+    r = _retrieve(app_client, h, "refund", sources=["memory"], token_budget=135, format="context")
+    assert sorted(_ids(r)) == sorted(said)
+    assert estimate_tokens(r.json()["context"]) <= 135
+    tight = _retrieve(
+        app_client, h, "refund", sources=["memory"], token_budget=115, format="context"
+    )
+    assert len(_ids(tight)) == 4  # the headings are reserved before any line is placed
+    assert estimate_tokens(tight.json()["context"]) <= 115

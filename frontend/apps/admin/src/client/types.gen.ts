@@ -1723,6 +1723,12 @@ export type RetrievedItemOut = {
      */
     content: string;
     /**
+     * Episodic
+     *
+     * An episodic memory: something that happened on `noted`, not a lasting fact.
+     */
+    episodic?: boolean;
+    /**
      * Id
      */
     id: string;
@@ -1732,6 +1738,12 @@ export type RetrievedItemOut = {
      * A KB hit is an entry, or a document (its matching chunks, not the file).
      */
     kind: 'memory' | 'entry' | 'document';
+    /**
+     * Noted
+     *
+     * A memory's date: when it was noted (its valid_from). None for KB hits.
+     */
+    noted?: string | null;
     /**
      * Passages
      *
