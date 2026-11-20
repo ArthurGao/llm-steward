@@ -18,6 +18,8 @@ from tests.conftest import AppClient, kb_entry_op, post_memory, running_app
 
 DELAY_S = 2.0
 TIMEOUT_MS = 800  # the default provider budget (design §6 step 2)
+CUT_OFF_BOUND_MS = 1000  # the slow provider's own timing: the budget plus scheduling slack
+TOTAL_BOUND_MS = 1500  # the whole retrieve on the server, cut-off included
 
 
 @pytest.fixture
@@ -66,12 +68,14 @@ def test_a_provider_2s_late_is_cut_off_and_the_rest_still_served(
 
     assert r.status_code == 200, r.text
     body = r.json()
-    # The server's own stage timings say whether the cut-off or another stage was slow: once on CI
-    # this took 2.17 s although the slow provider was cut off on time (its TimeoutError was logged).
-    assert elapsed < 1.5, (
-        f"{elapsed:.2f}s: not cut off at the {TIMEOUT_MS} ms budget; "
-        f"server latency_ms={_logged_latency(client, body['retrieval_id'])}"
-    )
+    # The budget is judged on the server's own timings: a shared CI runner now and then stalls the
+    # whole process for 0.5-1.3 s at a random point (seen 2026-11-19/20, inside and outside the
+    # server's total, with every stage fast), which a wall-clock bound near the budget turned into
+    # failures. The wall clock still has to show the response did not wait for the slow provider.
+    latency = _logged_latency(client, body["retrieval_id"])
+    assert latency[slow] < CUT_OFF_BOUND_MS, f"not cut off at the {TIMEOUT_MS} ms budget: {latency}"
+    assert latency["total"] < TOTAL_BOUND_MS, f"slow outside the providers: {latency}"
+    assert elapsed < DELAY_S, f"{elapsed:.2f}s: the response waited for the slow provider"
     assert body["degraded"] == [slow]
     other = str(entry.id) if slow == "memory" else memory
     assert [i["id"] for i in body["items"]] == [other]  # the healthy source still answers
