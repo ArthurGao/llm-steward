@@ -3,7 +3,7 @@
 from typing import Annotated, Any, Literal
 
 from lite_model import ModelsConfig
-from pydantic import BeforeValidator, Field, SecretStr, field_validator
+from pydantic import BaseModel, BeforeValidator, Field, SecretStr, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 MemoryProviderName = Literal["mem0", "native", "litemem"]
@@ -38,6 +38,19 @@ def _moved(value: Any) -> None:
 
 # STEWARD_LLM_BASE_URL and the rest, before lite-model: refused, never silently ignored
 Moved = Annotated[None, BeforeValidator(_moved)]
+
+
+class CacheSettings(BaseModel):
+    """lite-cache's exact (L1) LLM response cache for the KB labels (design §11 P10): a repeated
+    kb.risk / kb.worthiness request (same role, model, prompt and text) in the same namespace is
+    answered from PostgreSQL. Off by default; PostgreSQL only (lite-cache's store)."""
+
+    enabled: bool = False
+    # How long an answer is reused; None: until invalidated. The key already changes with the
+    # model, the prompt and the text, so this only bounds a model behaving differently later.
+    ttl_s: int | None = Field(default=30 * 86_400, gt=0)
+    # lite-cache's own schema in the governance database.
+    db_schema: str = Field(default="steward_cache", pattern=r"^[a-z_][a-z0-9_]{0,62}$")
 
 
 class Settings(BaseSettings):
@@ -108,6 +121,8 @@ class Settings(BaseSettings):
     # KB pipeline LLM steps (design §5): risk labels, worthiness scoring, drafting (roles kb.risk,
     # kb.worthiness, kb.draft). Off: rules-only risk, no suggestions; promote/suggestions → 422.
     kb_llm: bool = False
+    # STEWARD_CACHE__ENABLED=true: the KB labels' LLM answers are cached per namespace (lite-cache).
+    cache: CacheSettings = CacheSettings()
     # Memory extraction by llm-steward (role memory.extract, then memory.resolve) for an engine that
     # cannot extract (native): conversations then become memories without mem0. Off: such an
     # engine takes direct writes only (POST /v1/memories). An engine that extracts ignores it.
@@ -155,6 +170,19 @@ class Settings(BaseSettings):
     # idle flush. Unset: it polls every second. Assumes this API process is the only one that
     # enqueues: a job another process enqueues while it is idle waits for the next request.
     worker_idle_after_s: float | None = Field(default=None, gt=0)
+
+    @model_validator(mode="after")
+    def _cache_needs_postgresql(self) -> "Settings":
+        if self.cache.enabled and not self.database_url.startswith("postgresql"):
+            raise ValueError("STEWARD_CACHE__ENABLED needs PostgreSQL (lite-cache's store)")
+        schema = self.cache.db_schema
+        if schema == self.db_schema or schema.endswith("_test"):
+            # lite-cache migrates its own schema; *_test are the ones test fixtures drop
+            raise ValueError(
+                f"STEWARD_CACHE__DB_SCHEMA {schema!r} must be lite-cache's own schema: not the "
+                "governance schema, not a *_test one"
+            )
+        return self
 
     @field_validator("db_schema")
     @classmethod

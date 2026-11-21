@@ -6,8 +6,10 @@ from collections.abc import Callable
 from typing import Any
 
 from lite_model.testing import AsyncFakeModel, FakeCall
+from pydantic import BaseModel
 
 from llm_steward.llm.client import LiteModelLLM
+from llm_steward.llm.roles import Provenance, Role
 
 Handler = Callable[[dict[str, Any]], dict[str, Any]]
 
@@ -22,7 +24,14 @@ class FakeLLM(LiteModelLLM):
             return lambda call: handler(json.loads(call.messages[-1].content))
 
         self.fake = AsyncFakeModel(**{k.replace("_", "."): script(v) for k, v in handlers.items()})
+        self.scopes: list[tuple[str, str | None]] = []  # (role, cache_scope) of every call
         super().__init__(self.fake)
+
+    async def structured[T: BaseModel](
+        self, role: Role, system: str, user: str, schema: type[T], *, cache_scope: str | None = None
+    ) -> tuple[T, Provenance]:
+        self.scopes.append((role.value, cache_scope))
+        return await super().structured(role, system, user, schema, cache_scope=cache_scope)
 
     @property
     def calls(self) -> list[tuple[str, dict[str, Any]]]:
