@@ -174,3 +174,19 @@ async def test_the_fake_answers_through_the_same_adapter() -> None:
     assert fake.calls == [("kb.risk", {"q": "ok"})]
     with pytest.raises(AssertionError, match=r"no reply scripted for role 'kb\.draft'"):
         await fake.structured(Role.KB_DRAFT, "sys", "{}", Reply)
+
+
+async def test_closing_the_adapter_closes_lite_models_clients() -> None:
+    # the runtime closes the LLM it built on shutdown (lite-model 0.6.0); later calls fail
+    settings = _settings(  # nothing listens on port 1: never a real model
+        backend="ollama",
+        model="qwen3:8b",
+        max_retries=0,
+        backends={"ollama": {"base_url": "http://127.0.0.1:1/v1"}},
+    )
+    assert settings.llm is not None
+    llm = LiteModelLLM(lite_model.build_async(settings.llm, ROLES))
+    await llm.aclose()
+    with pytest.raises(RuntimeError, match="closed"):
+        await llm.structured(Role.KB_RISK, "s", "u", Reply)
+    await FakeLLM().aclose()  # nothing to release

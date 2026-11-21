@@ -735,8 +735,8 @@ wheels = [
 
 [[package]]
 name = "lite-agent"
-version = "0.2.1"
-source = { url = "https://github.com/ArthurGao/lite-agent/releases/download/v0.2.1/lite_agent-0.2.1-py3-none-any.whl" }
+version = "0.2.2"
+source = { url = "https://github.com/ArthurGao/lite-agent/releases/download/v0.2.2/lite_agent-0.2.2-py3-none-any.whl" }
 dependencies = [
     { name = "lite-model" },
     { name = "pydantic" },
@@ -744,7 +744,7 @@ dependencies = [
     { name = "typer" },
 ]
 wheels = [
-    { url = "https://github.com/ArthurGao/lite-agent/releases/download/v0.2.1/lite_agent-0.2.1-py3-none-any.whl", hash = "sha256:52803a968f04bb0b99288713e8a517e16e93c9bef691e9c97458840c594def3d" },
+    { url = "https://github.com/ArthurGao/lite-agent/releases/download/v0.2.2/lite_agent-0.2.2-py3-none-any.whl", hash = "sha256:38aa8abf64989aa1f2ea5980597b52e522b4f7af858a2567b43ce51c484c76da" },
 ]
 
 [package.optional-dependencies]
@@ -756,7 +756,7 @@ pg = [
 requires-dist = [
     { name = "fastapi", marker = "extra == 'server'", specifier = "==0.162.2" },
     { name = "lite-eval", marker = "extra == 'eval'" },
-    { name = "lite-model", url = "https://github.com/ArthurGao/lite-model/releases/download/v0.5.1/lite_model-0.5.1-py3-none-any.whl" },
+    { name = "lite-model", url = "https://github.com/ArthurGao/lite-model/releases/download/v0.6.0/lite_model-0.6.0-py3-none-any.whl" },
     { name = "psycopg", extras = ["binary", "pool"], marker = "extra == 'pg'", specifier = "==3.3.8" },
     { name = "pydantic", specifier = "==2.14.3" },
     { name = "pydantic-settings", specifier = "==2.16.2" },
@@ -768,8 +768,8 @@ provides-extras = ["eval", "pg", "server", "temporal"]
 
 [[package]]
 name = "lite-cache"
-version = "0.3.0"
-source = { url = "https://github.com/ArthurGao/lite-cache/releases/download/v0.3.0/lite_cache-0.3.0-py3-none-any.whl" }
+version = "0.3.1"
+source = { url = "https://github.com/ArthurGao/lite-cache/releases/download/v0.3.1/lite_cache-0.3.1-py3-none-any.whl" }
 dependencies = [
     { name = "lite-model" },
     { name = "psycopg", extra = ["binary", "pool"] },
@@ -778,13 +778,13 @@ dependencies = [
     { name = "typer" },
 ]
 wheels = [
-    { url = "https://github.com/ArthurGao/lite-cache/releases/download/v0.3.0/lite_cache-0.3.0-py3-none-any.whl", hash = "sha256:2a27fb03638838fc3cd6e0940ac0d1134079cd4ceaf9e12f7281a3acc3da8168" },
+    { url = "https://github.com/ArthurGao/lite-cache/releases/download/v0.3.1/lite_cache-0.3.1-py3-none-any.whl", hash = "sha256:39fa972b4e756e636003b2efba773a313c633b3fa774ddea66fcc4ac68653471" },
 ]
 
 [package.metadata]
 requires-dist = [
     { name = "lite-eval", marker = "extra == 'eval'", url = "https://github.com/ArthurGao/lite-eval/releases/download/v0.4.1/lite_eval-0.4.1-py3-none-any.whl" },
-    { name = "lite-model", url = "https://github.com/ArthurGao/lite-model/releases/download/v0.5.1/lite_model-0.5.1-py3-none-any.whl" },
+    { name = "lite-model", url = "https://github.com/ArthurGao/lite-model/releases/download/v0.6.0/lite_model-0.6.0-py3-none-any.whl" },
     { name = "psycopg", extras = ["binary", "pool"], specifier = "==3.3.8" },
     { name = "pyarrow", marker = "extra == 'eval'", specifier = "==26.0.1" },
     { name = "pydantic", specifier = "==2.14.3" },
@@ -830,7 +830,7 @@ provides-extras = ["ranking", "server"]
 [[package]]
 name = "lite-mem"
 version = "0.1.0"
-source = { git = "https://github.com/ArthurGao/lite-mem?rev=4918d09e24e0720c9497835a466057163560318e#4918d09e24e0720c9497835a466057163560318e" }
+source = { git = "https://github.com/ArthurGao/lite-mem?rev=0cbf10fcab1550f7c55f30f13f0bfc26f4589bed#0cbf10fcab1550f7c55f30f13f0bfc26f4589bed" }
 dependencies = [
     { name = "httpx2" },
     { name = "jieba" },
@@ -853,8 +853,8 @@ sqlite = [
 
 [[package]]
 name = "lite-model"
-version = "0.5.1"
-source = { url = "https://github.com/ArthurGao/lite-model/releases/download/v0.5.1/lite_model-0.5.1-py3-none-any.whl" }
+version = "0.6.0"
+source = { url = "https://github.com/ArthurGao/lite-model/releases/download/v0.6.0/lite_model-0.6.0-py3-none-any.whl" }
 dependencies = [
     { name = "openai" },
     { name = "pydantic" },
@@ -862,7 +862,7 @@ dependencies = [
     { name = "typer" },
 ]
 wheels = [
-    { url = "https://github.com/ArthurGao/lite-model/releases/download/v0.5.1/lite_model-0.5.1-py3-none-any.whl", hash = "sha256:89fc51514db7aed998d4891226dbe5745e7f2eefd121c738b56948653e2f38c8" },
+    { url = "https://github.com/ArthurGao/lite-model/releases/download/v0.6.0/lite_model-0.6.0-py3-none-any.whl", hash = "sha256:2c444f366cde84cd73ebff779222dd3cd8d48911f07eb7223b0b6b470768398a" },
 ]
 
 [package.metadata]
@@ -878,7 +878,7 @@ provides-extras = ["anthropic"]
 [[package]]
 name = "lite-rag"
 version = "0.1.0"
-source = { git = "https://github.com/ArthurGao/lite-rag?rev=85ec2f323c3aff3a3496482af949d5d323fe9e81#85ec2f323c3aff3a3496482af949d5d323fe9e81" }
+source = { git = "https://github.com/ArthurGao/lite-rag?rev=3d5202729f515fc384386bacc60b5daf3ddb8580#3d5202729f515fc384386bacc60b5daf3ddb8580" }
 dependencies = [
     { name = "httpx2" },
     { name = "jieba" },
@@ -973,11 +973,11 @@ requires-dist = [
     { name = "httpx2", specifier = ">=2.16" },
     { name = "jieba", marker = "extra == 'native'", specifier = ">=0.42.1" },
     { name = "jinja2", specifier = ">=3.1" },
-    { name = "lite-agent", extras = ["pg"], marker = "extra == 'agent'", url = "https://github.com/ArthurGao/lite-agent/releases/download/v0.2.1/lite_agent-0.2.1-py3-none-any.whl" },
-    { name = "lite-cache", marker = "extra == 'cache'", url = "https://github.com/ArthurGao/lite-cache/releases/download/v0.3.0/lite_cache-0.3.0-py3-none-any.whl" },
-    { name = "lite-mem", extras = ["server", "sqlite"], marker = "extra == 'litemem'", git = "https://github.com/ArthurGao/lite-mem?rev=4918d09e24e0720c9497835a466057163560318e" },
-    { name = "lite-model", url = "https://github.com/ArthurGao/lite-model/releases/download/v0.5.1/lite_model-0.5.1-py3-none-any.whl" },
-    { name = "lite-rag", extras = ["server"], marker = "extra == 'literag'", git = "https://github.com/ArthurGao/lite-rag?rev=85ec2f323c3aff3a3496482af949d5d323fe9e81" },
+    { name = "lite-agent", extras = ["pg"], marker = "extra == 'agent'", url = "https://github.com/ArthurGao/lite-agent/releases/download/v0.2.2/lite_agent-0.2.2-py3-none-any.whl" },
+    { name = "lite-cache", marker = "extra == 'cache'", url = "https://github.com/ArthurGao/lite-cache/releases/download/v0.3.1/lite_cache-0.3.1-py3-none-any.whl" },
+    { name = "lite-mem", extras = ["server", "sqlite"], marker = "extra == 'litemem'", git = "https://github.com/ArthurGao/lite-mem?rev=0cbf10fcab1550f7c55f30f13f0bfc26f4589bed" },
+    { name = "lite-model", url = "https://github.com/ArthurGao/lite-model/releases/download/v0.6.0/lite_model-0.6.0-py3-none-any.whl" },
+    { name = "lite-rag", extras = ["server"], marker = "extra == 'literag'", git = "https://github.com/ArthurGao/lite-rag?rev=3d5202729f515fc384386bacc60b5daf3ddb8580" },
     { name = "mcp", specifier = "==2.3.0" },
     { name = "mem0ai", marker = "extra == 'mem0'", specifier = "==2.2.1" },
     { name = "psycopg", extras = ["binary", "pool"], marker = "extra == 'mem0'", specifier = ">=3.2" },

@@ -134,6 +134,7 @@ async def open_triage(
     from lite_agent.pg import PgSessionStore
 
     model, tag = tool_model(settings, Role.AGENT_TRIAGE)
+    stack.push_async_callback(model.aclose)
     url = libpq_url(settings.database_url)
     assert url is not None  # Settings refuse the assistant on SQLite
     await asyncio.to_thread(_migrate_agent_schema, url, settings.agent.db_schema)
@@ -310,7 +311,9 @@ async def runtime(
             if caches(settings):  # a blocking connect and migration check: off the event loop
                 store = await asyncio.to_thread(open_cache_store, settings)
                 stack.push_async_callback(asyncio.to_thread, store.close)
-            llm = build_llm(settings, providers, store)
+            llm = built = build_llm(settings, providers, store)
+            if built is not None:
+                stack.push_async_callback(built.aclose)  # its SDK clients, after the services
         rerank = reranker or build_reranker(settings)
         triage = await open_triage(settings, engine, providers, stack)
         yield build_services(

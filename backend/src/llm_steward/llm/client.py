@@ -59,6 +59,13 @@ class LiteModelLLM:
         self._model = model
         self._cache = cache
 
+    async def aclose(self) -> None:
+        """Close the SDK clients lite-model built for `model` (lite-model 0.6.0); a model with
+        nothing to release (a fake) has no `aclose`."""
+        aclose = getattr(self._model, "aclose", None)
+        if aclose is not None:
+            await aclose()
+
     async def structured[T: BaseModel](
         self, role: Role, system: str, user: str, schema: type[T], *, cache_scope: str | None = None
     ) -> tuple[T, Provenance]:
