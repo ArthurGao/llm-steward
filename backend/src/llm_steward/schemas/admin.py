@@ -7,7 +7,14 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from llm_steward.models.enums import ActorType, ChangeOp, ObjectType, SyncStatus, TriageAction
+from llm_steward.models.enums import (
+    ActorType,
+    ChangeOp,
+    FindingDecision,
+    ObjectType,
+    SyncStatus,
+    TriageAction,
+)
 from llm_steward.schemas.jobs import JobOut
 from llm_steward.schemas.kb import CandidateOut, CollectionOut, EntryOut
 from llm_steward.schemas.memories import MemoryBrief
@@ -163,6 +170,9 @@ class ReconcileFindingOut(BaseModel):
     model: str
     session_id: str
     created_at: datetime
+    decision: FindingDecision | None  # None: waiting for a person (P13)
+    decided_at: datetime | None
+    decided_by: str | None
 
 
 class ReconcileFindingPage(BaseModel):

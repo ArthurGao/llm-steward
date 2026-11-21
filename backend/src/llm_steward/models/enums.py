@@ -131,6 +131,7 @@ class JobType(StrEnum):
     DOC_FETCH = "kb.doc_fetch"  # fetch a document imported by URL (through the outbound guard)
     WEBHOOK_DELIVER = "webhook.deliver"  # one event to one endpoint (design §7)
     RECONCILE_TRIAGE = "memory.reconcile_triage"  # an agent looks at unmirrored records (P11)
+    RECONCILE_REMIRROR = "memory.reconcile_remirror"  # a decided finding: mirror the record (P13)
 
 
 class JobStatus(StrEnum):
@@ -160,3 +161,10 @@ class TriageAction(StrEnum):
     IGNORE = "ignore"  # leave it: nothing to mirror or remove
     REMIRROR = "remirror"  # it is a memory the mirror should have: bring it under governance
     ERASE = "erase"  # it should not exist (e.g. a user's data after erasure): remove it
+
+
+class FindingDecision(StrEnum):
+    """What a person decided on a reconcile finding (P13)."""
+
+    APPLIED = "applied"  # its proposed action was carried out
+    DISMISSED = "dismissed"  # left as it is

@@ -543,6 +543,30 @@ async def reconcile_findings(
     )
 
 
+@router.post("/ns/{slug}/reconcile/findings/{finding_id}/apply")
+async def apply_finding(
+    ns: Ns, finding_id: uuid.UUID, services: ServicesDep
+) -> out.ReconcileFindingOut:
+    """Carry out the triage assistant's proposal (P13): erase queues the engine record's
+    removal, remirror queues its mirroring as a governed memory, ignore does nothing."""
+    return await _decide(services, ns, finding_id, apply=True)
+
+
+@router.post("/ns/{slug}/reconcile/findings/{finding_id}/dismiss")
+async def dismiss_finding(
+    ns: Ns, finding_id: uuid.UUID, services: ServicesDep
+) -> out.ReconcileFindingOut:
+    """Leave the record as it is; the finding is marked dismissed (P13)."""
+    return await _decide(services, ns, finding_id, apply=False)
+
+
+async def _decide(
+    services: ServicesDep, ns: Namespace, finding_id: uuid.UUID, *, apply: bool
+) -> out.ReconcileFindingOut:
+    finding = await services.admin.decide_finding(ns.id, finding_id, apply=apply, actor=ADMIN)
+    return out.ReconcileFindingOut.model_validate(finding)
+
+
 @router.post("/ns/{slug}/jobs/{job_id}/retry")
 async def retry_job(ns: Ns, job_id: uuid.UUID, services: ServicesDep) -> JobOut:
     return JobOut.model_validate(await services.admin.retry_job(ns.id, job_id))

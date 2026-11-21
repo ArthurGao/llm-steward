@@ -780,6 +780,7 @@ class JobOut(BaseModel):
             "kb.doc_fetch",
             "webhook.deliver",
             "memory.reconcile_triage",
+            "memory.reconcile_remirror",
         ],
         Field(title="JobType"),
     ]
@@ -854,6 +855,9 @@ class ReconcileFindingOut(BaseModel):
     """
 
     created_at: Annotated[AwareDatetime, Field(title="Created At")]
+    decided_at: Annotated[AwareDatetime | None, Field(title="Decided At")]
+    decided_by: Annotated[str | None, Field(title="Decided By")]
+    decision: Literal["applied", "dismissed"] | None
     diagnosis: Annotated[str, Field(title="Diagnosis")]
     evidence: Annotated[list[str], Field(title="Evidence")]
     external_id: Annotated[str, Field(title="External Id")]

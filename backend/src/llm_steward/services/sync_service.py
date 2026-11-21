@@ -18,6 +18,7 @@ ready or failed. The parse status and the waiting bytes are sync state, recorded
 `external_refs`; the document's governed state changes only through GovernanceService.
 """
 
+import logging
 import math
 import uuid
 from collections.abc import AsyncIterator, Awaitable, Callable
@@ -58,6 +59,8 @@ from llm_steward.providers.base import (
 )
 from llm_steward.services.job_queue import SYNC_JOBS, ClaimedJob, describe_error, enqueue, mark_ref
 from llm_steward.services.webhook_service import queue_event
+
+log = logging.getLogger(__name__)
 
 # retired: a removal job is queued; gone: the object row itself was deleted (nothing to queue on)
 Outcome = Literal["synced", "retired", "gone", "outdated"]
@@ -105,7 +108,8 @@ class SyncService:
             case JobType.MEMORY_UPSERT:
                 await self._memory_upsert(uuid.UUID(job.payload["memory_id"]))
             case JobType.MEMORY_REMOVE:
-                memory_id = uuid.UUID(job.payload["memory_id"])
+                memory = job.payload.get("memory_id")  # None: an engine record no memory names
+                memory_id = uuid.UUID(memory) if memory else None
                 await self._memory_remove(memory_id, job.payload.get("external_id"))
             case JobType.KB_UPSERT:
                 await self._kb_upsert(uuid.UUID(job.payload["entry_id"]))
@@ -166,20 +170,45 @@ class SyncService:
             namespace_id=memory.namespace_id,
         )
 
-    async def _memory_remove(self, memory_id: uuid.UUID, external_id: str | None = None) -> None:
+    async def _memory_remove(
+        self, memory_id: uuid.UUID | None, external_id: str | None = None
+    ) -> None:
         """`external_id`: the copy of a memory whose row is gone (erased while it was pushed),
-        which nothing else knows; deleting it twice is harmless. Otherwise the ref names it."""
+        which nothing else knows; deleting it twice is harmless. Otherwise the ref names it.
+        No `memory_id`: an engine record no memory ever named (a decided finding, P13)."""
         provider = self._providers.memory
         if external_id is None:
+            assert memory_id is not None
             await self._take_out(ObjectType.MEMORY, memory_id, provider.name, provider.delete)
             return
+        if memory_id is None and await self._governed(external_id):
+            # mirrored since the decision (Codex P13): the copy is a governed memory's now, and
+            # only governance removes that
+            log.warning("removal of %s skipped: a governed memory points at it", external_id)
+            return
         await provider.delete(external_id)  # a failure fails the job: it retries with backoff
+        if memory_id is None:
+            return
         async with self._sessions() as s, s.begin():  # the ref may have gone with the row
             await s.execute(
                 update(ExternalRef)
                 .where(*_ref_key(ObjectType.MEMORY, memory_id, provider.name))
                 .values(sync_status=SyncStatus.DELETED, last_error=None)
             )
+
+    async def _governed(self, external_id: str) -> bool:
+        """Whether a live ref of the configured memory engine points at `external_id` (the
+        job's namespace: row-level security scopes the query)."""
+        async with self._sessions() as s:
+            found = await s.scalar(
+                select(ExternalRef.id).where(
+                    ExternalRef.object_type == ObjectType.MEMORY,
+                    ExternalRef.provider == self._providers.memory.name,
+                    ExternalRef.external_id == external_id,
+                    ExternalRef.sync_status != SyncStatus.DELETED,
+                )
+            )
+        return found is not None
 
     async def _take_out(
         self,

@@ -511,6 +511,7 @@ function buildSupport(): NsData {
         id: 'rf_01', provider: 'litemem', external_id: 'mem_ext_7f3a', created_at: ago(5 * H), model: 'agent.triage:qwen3:8b', session_id: 'ses_01',
         diagnosis: 'An extraction for u_0042 died before mirroring; no governed memory says the same.',
         proposed_action: 'remirror', evidence: ['text: "Prefers email over phone"', 'no external ref ever pointed at it'],
+        decision: null, decided_at: null, decided_by: null,
       },
     ],
     syncRefs: syncRefsFor(memories, entries, documents),

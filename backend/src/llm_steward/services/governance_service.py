@@ -176,6 +176,8 @@ class RecordProviderMemory:
     # Chosen by the caller when a later operation of the same batch must name this memory (it
     # supersedes another: SupersedeMemory(by=id)). None: one is made.
     id: uuid.UUID | None = None
+    # extraction (the engine's own); import: a record taken in afterwards (a remirror, P13)
+    origin: MemoryOrigin = MemoryOrigin.EXTRACTION
 
 
 @dataclass(frozen=True)
@@ -597,7 +599,7 @@ class GovernanceService:
             memory_type="semantic",
             content=op.content,
             status=MemoryStatus.ACTIVE,
-            origin=MemoryOrigin.EXTRACTION,
+            origin=op.origin,
             valid_from=utcnow(),
             source_episode_id=op.source_episode_id,
             content_hash=content_hash(op.content),

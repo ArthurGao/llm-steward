@@ -12,7 +12,7 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta
 from typing import Any
 
-from sqlalchemy import case, func, or_, select
+from sqlalchemy import case, func, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from llm_steward.errors import Conflict
@@ -35,15 +35,17 @@ from llm_steward.models.enums import (
     ActorType,
     CandidateStage,
     CandidateStatus,
+    FindingDecision,
     JobStatus,
     JobType,
     KbStatus,
     MemoryStatus,
     ObjectType,
     SyncStatus,
+    TriageAction,
 )
 from llm_steward.providers.base import Providers
-from llm_steward.services.governance_service import load_owned
+from llm_steward.services.governance_service import Actor, load_owned
 from llm_steward.services.health_service import HealthReport
 from llm_steward.services.job_queue import SYNC_JOBS, enqueue, requeued
 from llm_steward.services.paging import page
@@ -335,6 +337,39 @@ class AdminService:
         query = select(ReconcileFinding).where(ReconcileFinding.namespace_id == namespace_id)
         async with self._sessions() as s:
             return await page(s, query, ReconcileFinding, cursor, limit)
+
+    async def decide_finding(
+        self, namespace_id: uuid.UUID, finding_id: uuid.UUID, *, apply: bool, actor: Actor
+    ) -> ReconcileFinding:
+        """A person's decision on a triage proposal (P13). Applying it queues the work through
+        the outbox, never inline: `erase` a removal of the engine record (the Syncer deletes
+        it), `remirror` a job that mirrors it as a governed memory (`ReconcileService`), and
+        `ignore` nothing. A finding already decided is a conflict."""
+        async with self._sessions() as s, s.begin():
+            finding = await load_owned(s, ReconcileFinding, namespace_id, finding_id, "finding")
+            decided = await s.execute(  # one decision even when two people decide at once
+                update(ReconcileFinding)
+                .where(ReconcileFinding.id == finding.id, ReconcileFinding.decision.is_(None))
+                .values(
+                    decision=FindingDecision.APPLIED if apply else FindingDecision.DISMISSED,
+                    decided_at=utcnow(),
+                    decided_by=actor.id or actor.type.value,
+                )
+            )
+            if decided.rowcount == 0:  # type: ignore[attr-defined]
+                await s.refresh(finding)
+                raise Conflict(f"this finding was already {finding.decision}")
+            await s.refresh(finding)
+            if apply and finding.proposed_action == TriageAction.ERASE:
+                # no memory names the record: the removal names only the engine's copy
+                payload = {"external_id": finding.external_id, "provider": finding.provider}
+                enqueue(s, namespace_id, JobType.MEMORY_REMOVE, payload)
+            elif apply and finding.proposed_action == TriageAction.REMIRROR:
+                enqueue(
+                    s, namespace_id, JobType.RECONCILE_REMIRROR, {"finding_id": str(finding.id)}
+                )
+            await s.flush()
+            return finding
 
     async def retry_job(self, namespace_id: uuid.UUID, job_id: uuid.UUID) -> Job:
         """A failed job, given a fresh set of attempts (handlers are idempotent)."""

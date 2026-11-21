@@ -2125,6 +2125,15 @@
         "title": "FeedbackIn",
         "type": "object"
       },
+      "FindingDecision": {
+        "description": "What a person decided on a reconcile finding (P13).",
+        "enum": [
+          "applied",
+          "dismissed"
+        ],
+        "title": "FindingDecision",
+        "type": "string"
+      },
       "FlushResult": {
         "properties": {
           "job_id": {
@@ -2263,7 +2272,8 @@
           "kb.doc_remove",
           "kb.doc_fetch",
           "webhook.deliver",
-          "memory.reconcile_triage"
+          "memory.reconcile_triage",
+          "memory.reconcile_remirror"
         ],
         "title": "JobType",
         "type": "string"
@@ -2953,6 +2963,39 @@
             "title": "Created At",
             "type": "string"
           },
+          "decided_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Decided At"
+          },
+          "decided_by": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Decided By"
+          },
+          "decision": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/FindingDecision"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "diagnosis": {
             "title": "Diagnosis",
             "type": "string"
@@ -2998,7 +3041,10 @@
           "evidence",
           "model",
           "session_id",
-          "created_at"
+          "created_at",
+          "decision",
+          "decided_at",
+          "decided_by"
         ],
         "title": "ReconcileFindingOut",
         "type": "object"
@@ -6211,6 +6257,122 @@
           }
         ],
         "summary": "Reconcile Findings",
+        "tags": [
+          "admin"
+        ]
+      }
+    },
+    "/admin/v1/ns/{slug}/reconcile/findings/{finding_id}/apply": {
+      "post": {
+        "description": "Carry out the triage assistant's proposal (P13): erase queues the engine record's\nremoval, remirror queues its mirroring as a governed memory, ignore does nothing.",
+        "operationId": "apply_finding_admin_v1_ns__slug__reconcile_findings__finding_id__apply_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "finding_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Finding Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "slug",
+            "required": true,
+            "schema": {
+              "title": "Slug",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ReconcileFindingOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "AdminToken": []
+          }
+        ],
+        "summary": "Apply Finding",
+        "tags": [
+          "admin"
+        ]
+      }
+    },
+    "/admin/v1/ns/{slug}/reconcile/findings/{finding_id}/dismiss": {
+      "post": {
+        "description": "Leave the record as it is; the finding is marked dismissed (P13).",
+        "operationId": "dismiss_finding_admin_v1_ns__slug__reconcile_findings__finding_id__dismiss_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "finding_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Finding Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "slug",
+            "required": true,
+            "schema": {
+              "title": "Slug",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ReconcileFindingOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "AdminToken": []
+          }
+        ],
+        "summary": "Dismiss Finding",
         "tags": [
           "admin"
         ]

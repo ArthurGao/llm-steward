@@ -1082,6 +1082,13 @@ export type FeedbackIn = {
 };
 
 /**
+ * FindingDecision
+ *
+ * What a person decided on a reconcile finding (P13).
+ */
+export type FindingDecision = 'applied' | 'dismissed';
+
+/**
  * FlushResult
  */
 export type FlushResult = {
@@ -1159,7 +1166,7 @@ export type JobStatus = 'pending' | 'running' | 'done' | 'failed';
 /**
  * JobType
  */
-export type JobType = 'sync.memory_upsert' | 'sync.memory_remove' | 'sync.kb_upsert' | 'sync.kb_remove' | 'memory.extract' | 'memory.reconcile' | 'kb.suggest' | 'kb.doc_ingest' | 'kb.doc_status' | 'kb.doc_remove' | 'kb.doc_fetch' | 'webhook.deliver' | 'memory.reconcile_triage';
+export type JobType = 'sync.memory_upsert' | 'sync.memory_remove' | 'sync.kb_upsert' | 'sync.kb_remove' | 'memory.extract' | 'memory.reconcile' | 'kb.suggest' | 'kb.doc_ingest' | 'kb.doc_status' | 'kb.doc_remove' | 'kb.doc_fetch' | 'webhook.deliver' | 'memory.reconcile_triage' | 'memory.reconcile_remirror';
 
 /**
  * KbOrigin
@@ -1541,6 +1548,15 @@ export type ReconcileFindingOut = {
      * Created At
      */
     created_at: string;
+    /**
+     * Decided At
+     */
+    decided_at: string | null;
+    /**
+     * Decided By
+     */
+    decided_by: string | null;
+    decision: FindingDecision | null;
     /**
      * Diagnosis
      */
@@ -3257,6 +3273,74 @@ export type ReconcileFindingsAdminV1NsSlugReconcileFindingsGetResponses = {
 };
 
 export type ReconcileFindingsAdminV1NsSlugReconcileFindingsGetResponse = ReconcileFindingsAdminV1NsSlugReconcileFindingsGetResponses[keyof ReconcileFindingsAdminV1NsSlugReconcileFindingsGetResponses];
+
+export type ApplyFindingAdminV1NsSlugReconcileFindingsFindingIdApplyPostData = {
+    body?: never;
+    path: {
+        /**
+         * Finding Id
+         */
+        finding_id: string;
+        /**
+         * Slug
+         */
+        slug: string;
+    };
+    query?: never;
+    url: '/admin/v1/ns/{slug}/reconcile/findings/{finding_id}/apply';
+};
+
+export type ApplyFindingAdminV1NsSlugReconcileFindingsFindingIdApplyPostErrors = {
+    /**
+     * Validation Error
+     */
+    422: HttpValidationError;
+};
+
+export type ApplyFindingAdminV1NsSlugReconcileFindingsFindingIdApplyPostError = ApplyFindingAdminV1NsSlugReconcileFindingsFindingIdApplyPostErrors[keyof ApplyFindingAdminV1NsSlugReconcileFindingsFindingIdApplyPostErrors];
+
+export type ApplyFindingAdminV1NsSlugReconcileFindingsFindingIdApplyPostResponses = {
+    /**
+     * Successful Response
+     */
+    200: ReconcileFindingOut;
+};
+
+export type ApplyFindingAdminV1NsSlugReconcileFindingsFindingIdApplyPostResponse = ApplyFindingAdminV1NsSlugReconcileFindingsFindingIdApplyPostResponses[keyof ApplyFindingAdminV1NsSlugReconcileFindingsFindingIdApplyPostResponses];
+
+export type DismissFindingAdminV1NsSlugReconcileFindingsFindingIdDismissPostData = {
+    body?: never;
+    path: {
+        /**
+         * Finding Id
+         */
+        finding_id: string;
+        /**
+         * Slug
+         */
+        slug: string;
+    };
+    query?: never;
+    url: '/admin/v1/ns/{slug}/reconcile/findings/{finding_id}/dismiss';
+};
+
+export type DismissFindingAdminV1NsSlugReconcileFindingsFindingIdDismissPostErrors = {
+    /**
+     * Validation Error
+     */
+    422: HttpValidationError;
+};
+
+export type DismissFindingAdminV1NsSlugReconcileFindingsFindingIdDismissPostError = DismissFindingAdminV1NsSlugReconcileFindingsFindingIdDismissPostErrors[keyof DismissFindingAdminV1NsSlugReconcileFindingsFindingIdDismissPostErrors];
+
+export type DismissFindingAdminV1NsSlugReconcileFindingsFindingIdDismissPostResponses = {
+    /**
+     * Successful Response
+     */
+    200: ReconcileFindingOut;
+};
+
+export type DismissFindingAdminV1NsSlugReconcileFindingsFindingIdDismissPostResponse = DismissFindingAdminV1NsSlugReconcileFindingsFindingIdDismissPostResponses[keyof DismissFindingAdminV1NsSlugReconcileFindingsFindingIdDismissPostResponses];
 
 export type RetrievalLogsAdminV1NsSlugRetrievalLogsGetData = {
     body?: never;
