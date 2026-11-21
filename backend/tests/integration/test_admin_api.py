@@ -376,3 +376,98 @@ def test_reconcile_findings_are_listed_per_namespace(c: AppClient, t: Tenant) ->
     assert (finding["external_id"], finding["proposed_action"], finding["evidence"]) == (
         "e-acme", "ignore", ["x"],
     )  # fmt: skip
+
+
+def _finding(c: AppClient, ns: uuid.UUID, action: str, text: str = "stray") -> tuple[str, str]:
+    """An unmirrored engine record of `ns` and a triage finding proposing `action` for it."""
+    from llm_steward.models import ReconcileFinding
+    from llm_steward.models.enums import TriageAction
+    from llm_steward.providers.base import Message, Scope
+
+    provider = c.services.providers.memory
+
+    async def seed() -> tuple[str, str]:
+        [event] = await provider.add([Message("user", text)], Scope(ns, "u1"), infer=False)
+        async with c.sessions() as s, s.begin():
+            row = ReconcileFinding(
+                namespace_id=ns, provider=provider.name, external_id=event.external_id,
+                diagnosis="d", proposed_action=TriageAction(action), evidence=[],
+                model="agent.triage:m", session_id="s1",
+            )  # fmt: skip
+            s.add(row)
+        return str(row.id), event.external_id
+
+    return c.call(seed)
+
+
+def test_applying_an_erase_finding_removes_the_engine_record(c: AppClient, t: Tenant) -> None:
+    finding, record = _finding(c, t.ns, "erase")
+    decided = post(c, f"/ns/acme/reconcile/findings/{finding}/apply")
+    assert (decided["decision"], decided["decided_by"]) == ("applied", "admin")
+    assert c.call(c.services.providers.memory.get, record) is not None  # only queued so far
+    c.drain()  # the Syncer removes it, as every engine write
+    assert c.call(c.services.providers.memory.get, record) is None
+    again = c.http.post(f"/admin/v1/ns/acme/reconcile/findings/{finding}/apply", headers=ADMIN)
+    assert again.status_code == 409  # decided once
+
+
+def test_applying_a_remirror_finding_governs_the_record(c: AppClient, t: Tenant) -> None:
+    finding, _ = _finding(c, t.ns, "remirror", "prefers email")
+    post(c, f"/ns/acme/reconcile/findings/{finding}/apply")
+    c.drain()
+    [memory] = c.http.get("/v1/memories?user_id=u1", headers=t.host).json()["items"]
+    assert (memory["content"], memory["origin"], memory["sync_status"]) == (
+        "prefers email", "import", "synced",
+    )  # fmt: skip
+    history = get(c, f"/ns/acme/memories/{memory['id']}/history")
+    assert [h["actor_type"] for h in history["changes"]] == ["admin"]  # through governance
+
+
+def test_dismissing_a_finding_changes_nothing_else(c: AppClient, t: Tenant) -> None:
+    finding, record = _finding(c, t.ns, "erase")
+    assert post(c, f"/ns/acme/reconcile/findings/{finding}/dismiss")["decision"] == "dismissed"
+    c.drain()
+    assert c.call(c.services.providers.memory.get, record) is not None
+
+
+def test_another_namespaces_finding_cannot_be_decided(c: AppClient, t: Tenant) -> None:
+    _, other = c.new_tenant("globex")
+    finding, _ = _finding(c, other, "erase")
+    r = c.http.post(f"/admin/v1/ns/acme/reconcile/findings/{finding}/apply", headers=ADMIN)
+    assert r.status_code == 404
+
+
+def test_a_remirror_never_takes_in_another_namespaces_record(c: AppClient, t: Tenant) -> None:
+    # a finding is a model's proposal: one naming a record of another namespace (by mistake or
+    # through text in the data) must not copy that record into this one
+    from llm_steward.models import ReconcileFinding
+
+    _, other = c.new_tenant("globex")
+    _, theirs = _finding(c, other, "ignore", "globex secret")
+    finding, _ = _finding(c, t.ns, "remirror", "mine")
+
+    async def point_at_theirs() -> None:
+        async with c.sessions() as s, s.begin():
+            row = await s.get(ReconcileFinding, uuid.UUID(finding))
+            assert row is not None
+            row.external_id = theirs
+
+    c.call(point_at_theirs)
+    post(c, f"/ns/acme/reconcile/findings/{finding}/apply")
+    c.drain()
+    assert c.http.get("/v1/memories?user_id=u1", headers=t.host).json()["items"] == []
+
+
+def test_an_erase_leaves_a_record_mirrored_after_the_decision(c: AppClient, t: Tenant) -> None:
+    # Codex P13: between the decision and the Syncer's removal the record may become governed
+    # (another remirror, an extraction); its engine copy is then the governed memory's, and only
+    # governance may remove it
+    from llm_steward.services.governance_service import RecordProviderMemory
+
+    finding, record = _finding(c, t.ns, "erase", "now governed")
+    post(c, f"/ns/acme/reconcile/findings/{finding}/apply")
+    c.apply(RecordProviderMemory(t.ns, record, "now governed", user_id="u1"))
+    c.drain()
+    assert c.call(c.services.providers.memory.get, record) is not None
+    [memory] = c.http.get("/v1/memories?user_id=u1", headers=t.host).json()["items"]
+    assert memory["sync_status"] == "synced"

@@ -42,3 +42,10 @@ test('reconcile findings are listed per namespace', async () => {
   expect(acme.items.map((f) => [f.external_id, f.proposed_action])).toEqual([['mem_ext_7f3a', 'remirror']])
   expect((await api.reconcile.findings('acme-sales', {})).items).toEqual([])
 })
+
+test('a finding is decided once', async () => {
+  const [f] = (await api.reconcile.findings(NS, {})).items
+  if (!f) throw new Error('the demo has one finding')
+  expect((await api.reconcile.apply(NS, f.id)).decision).toBe('applied')
+  expect((await failure(api.reconcile.dismiss(NS, f.id))).status).toBe(409)
+})

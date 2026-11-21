@@ -120,6 +120,8 @@ export function createHandlers(store: Store) {
     })),
 
     http.get(`${BASE}/ns/:ns/reconcile/findings`, route(({ params, url }) => store.listFindings(ns(params), query(url)))),
+    http.post(`${BASE}/ns/:ns/reconcile/findings/:id/apply`, route(({ params }) => store.decideFinding(ns(params), params.id ?? '', true, ADMIN))),
+    http.post(`${BASE}/ns/:ns/reconcile/findings/:id/dismiss`, route(({ params }) => store.decideFinding(ns(params), params.id ?? '', false, ADMIN))),
     http.get(`${BASE}/ns/:ns/jobs`, route(({ params, url }) => store.listJobs(ns(params), { ...query(url), status: jobStatus(url.searchParams.get('status')) }))),
     http.post(`${BASE}/ns/:ns/jobs/:id/retry`, route(({ params }) => store.retryJob(ns(params), params.id ?? ''))),
     http.post(`${BASE}/ns/:ns/jobs/:id/cancel`, route(({ params }) => store.cancelJob(ns(params), params.id ?? ''))),

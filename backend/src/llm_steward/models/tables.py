@@ -23,6 +23,7 @@ from llm_steward.models.enums import (
     ChangeOp,
     DocStatus,
     EpisodeKind,
+    FindingDecision,
     JobStatus,
     JobType,
     KbOrigin,
@@ -393,3 +394,9 @@ class ReconcileFinding(IdMixin, CreatedMixin, Base):
     evidence: Mapped[list[str]] = mapped_column(default=list)
     model: Mapped[str] = mapped_column(String(200))  # role:model as configured (the log: per turn)
     session_id: Mapped[str] = mapped_column(String(64))  # the agent's log (lite-agent session)
+    # a person's decision (P13): None while it waits
+    decision: Mapped[FindingDecision | None] = mapped_column(
+        enum_column(FindingDecision, "finding_decision")
+    )
+    decided_at: Mapped[datetime | None]
+    decided_by: Mapped[str | None] = mapped_column(String(200))

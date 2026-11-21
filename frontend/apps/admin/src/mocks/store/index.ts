@@ -611,6 +611,16 @@ export class Store {
     return paginate(this.ns(slug).findings, q)
   }
 
+  decideFinding(slug: string, id: string, apply: boolean, actor: Actor): ReconcileFinding {
+    const f = this.ns(slug).findings.find((x) => x.id === id)
+    if (!f) throw new StoreError(404, `No finding ${id}`)
+    if (f.decision) throw new StoreError(409, `This finding was already ${f.decision}`)
+    f.decision = apply ? 'applied' : 'dismissed'
+    f.decided_at = NOW
+    f.decided_by = actor.id
+    return f
+  }
+
   listJobs(slug: string, q: JobQuery): Page<Job> {
     return paginate(this.ns(slug).jobs.filter((j) => (q.status ? j.status === q.status : true)), q)
   }

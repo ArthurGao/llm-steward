@@ -103,6 +103,8 @@ export const mockApi = {
 
   reconcile: {
     findings: (slug: string, q: Query) => request<Page<ReconcileFinding>>(`${ns(slug)}/reconcile/findings${qs(q)}`),
+    apply: (slug: string, id: string) => request<ReconcileFinding>(`${ns(slug)}/reconcile/findings/${id}/apply`, json({})),
+    dismiss: (slug: string, id: string) => request<ReconcileFinding>(`${ns(slug)}/reconcile/findings/${id}/dismiss`, json({})),
   },
 
   providers: {

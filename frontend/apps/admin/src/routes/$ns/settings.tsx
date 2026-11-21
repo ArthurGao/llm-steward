@@ -7,7 +7,7 @@ import { DataTable, type Column } from '@/components/DataTable'
 import { HeaderBlock } from '@/components/HeaderBlock'
 import { ErrorNote, Loading, Mono, NOT_IN_DEMO, PageTitle } from '@/components/misc'
 import { Button } from '@/components/ui/button'
-import { Dialog } from '@/components/ui/dialog'
+import { ConfirmDialog, Dialog } from '@/components/ui/dialog'
 import { Field, Input } from '@/components/ui/field'
 import { TabPanel, Tabs } from '@/components/ui/tabs'
 import { age, day } from '@/lib/format'
@@ -105,7 +105,8 @@ function KeysTab({ ns }: { ns: string }) {
   const [created, setCreated] = useState<ApiKeyCreated | null>(null)
   const done = () => qc.invalidateQueries({ queryKey: [ns, 'keys'] })
   const create = useMutation({ mutationFn: () => api.settings.createKey(ns, { name: name.trim(), scopes }), onSuccess: (k) => { setCreated(k); setName(''); void done() } })
-  const revoke = useMutation({ mutationFn: (id: string) => api.settings.revokeKey(ns, id), onSuccess: done })
+  const [revoking, setRevoking] = useState<ApiKey | null>(null)
+  const revoke = useMutation({ mutationFn: (id: string) => api.settings.revokeKey(ns, id), onSuccess: () => { setRevoking(null); void done() } })
   const submit = (e: FormEvent) => {
     e.preventDefault()
     create.mutate()
@@ -115,7 +116,7 @@ function KeysTab({ ns }: { ns: string }) {
     { key: 'p', header: 'Key', cell: (k) => <Mono className="text-ink-2">stw_{k.prefix}_…</Mono> },
     { key: 's', header: 'Scopes', cell: (k) => <Mono>{k.scopes.join(' ')}</Mono> },
     { key: 'u', header: 'Last used', align: 'right', cell: (k) => <Mono className="text-ink-2">{k.last_used_at ? age(k.last_used_at) : 'never'}</Mono>, wide: true },
-    { key: 'a', header: '', align: 'right', cell: (k) => (k.revoked_at ? <span className="text-[13px] text-ink-3">revoked {day(k.revoked_at)}</span> : <Button size="sm" variant="danger" onClick={() => revoke.mutate(k.id)}>Revoke</Button>) },
+    { key: 'a', header: '', align: 'right', cell: (k) => (k.revoked_at ? <span className="text-[13px] text-ink-3">revoked {day(k.revoked_at)}</span> : <Button size="sm" variant="danger" onClick={() => setRevoking(k)}>Revoke…</Button>) },
   ]
   return (
     <section className="grid max-w-5xl gap-5">
@@ -134,6 +135,16 @@ function KeysTab({ ns }: { ns: string }) {
       </form>
       {(create.error ?? revoke.error) && <ErrorNote error={create.error ?? revoke.error} />}
       {keys.isPending ? <Loading /> : <DataTable label="API keys" rows={keys.data?.items ?? []} columns={columns} rowKey={(k) => k.id} />}
+      <ConfirmDialog
+        open={!!revoking}
+        onOpenChange={(o) => !o && setRevoking(null)}
+        title={`Revoke “${revoking?.name ?? ''}”?`}
+        description="Every app using this key loses access at once. A revoked key cannot be restored; create a new one instead."
+        confirmLabel="Revoke key"
+        pending={revoke.isPending}
+        error={revoke.error}
+        onConfirm={() => revoking && revoke.mutate(revoking.id)}
+      />
       <Dialog open={!!created} onOpenChange={(o) => !o && setCreated(null)} title={`Key “${created?.name ?? ''}” created`} description="Copy it now. Only its hash is stored, so it cannot be shown again.">
         <div className="grid gap-3">
           <Input aria-label="New key secret" readOnly value={created?.secret ?? ''} className="font-mono" onFocus={(e) => e.currentTarget.select()} />

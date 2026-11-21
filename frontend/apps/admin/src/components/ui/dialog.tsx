@@ -1,5 +1,7 @@
 import * as D from '@radix-ui/react-dialog'
 import type { ReactNode } from 'react'
+import { ErrorNote } from '@/components/misc'
+import { Button } from './button'
 
 export function Dialog({ open, onOpenChange, title, description, children }: { open: boolean; onOpenChange: (open: boolean) => void; title: string; description?: string; children: ReactNode }) {
   return (
@@ -13,5 +15,31 @@ export function Dialog({ open, onOpenChange, title, description, children }: { o
         </D.Content>
       </D.Portal>
     </D.Root>
+  )
+}
+
+/** A confirmation for an action that cannot be undone or changes what others see (rule 5):
+ * Cancel, and the action itself, disabled while it runs; its error shows in the dialog. */
+export function ConfirmDialog({ open, onOpenChange, title, description, confirmLabel, danger = true, pending, error, onConfirm }: {
+  open: boolean
+  onOpenChange: (open: boolean) => void
+  title: string
+  description?: string
+  confirmLabel: string
+  danger?: boolean
+  pending: boolean
+  error: unknown
+  onConfirm: () => void
+}) {
+  return (
+    <Dialog open={open} onOpenChange={onOpenChange} title={title} description={description}>
+      <div className="grid gap-3">
+        {error ? <ErrorNote error={error} /> : null}
+        <div className="flex justify-end gap-2">
+          <Button variant="ghost" onClick={() => onOpenChange(false)}>Cancel</Button>
+          <Button variant={danger ? 'danger' : 'primary'} disabled={pending} onClick={onConfirm}>{confirmLabel}</Button>
+        </div>
+      </div>
+    </Dialog>
   )
 }

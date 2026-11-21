@@ -184,7 +184,9 @@ def build_services(
         on_extracted=kb.queue_suggestions,
     )
     extracts = extraction.mode != "none"
-    reconcile = ReconcileService(sessions, providers.memory, triage=triage is not None)
+    reconcile = ReconcileService(
+        sessions, providers.memory, triage=triage is not None, governance=governance
+    )
     idempotency = IdempotencyService(sessions)
     out = Outbound(allow_private=settings.allow_private_urls)  # user-supplied URLs only
     webhooks = WebhookService(sessions, out)
@@ -216,6 +218,7 @@ def build_services(
         JobType.DOC_FETCH: documents.handle_fetch,
         # a job queued while the assistant was on, after it was turned off: dropped
         JobType.RECONCILE_TRIAGE: triage.handle if triage else _triage_off,
+        JobType.RECONCILE_REMIRROR: reconcile.remirror,
     }
     missing = set(JobType) - set(handlers)
     if missing:

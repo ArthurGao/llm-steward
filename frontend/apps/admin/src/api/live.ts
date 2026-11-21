@@ -255,6 +255,8 @@ export const liveApi: typeof mockApi = {
 
   reconcile: {
     findings: async (slug, q) => page(await call(sdk.reconcileFindingsAdminV1NsSlugReconcileFindingsGet({ ...at(slug), query: paging(q) })), (f) => f),
+    apply: async (slug, id) => call(sdk.applyFindingAdminV1NsSlugReconcileFindingsFindingIdApplyPost(at(slug, { finding_id: id }))),
+    dismiss: async (slug, id) => call(sdk.dismissFindingAdminV1NsSlugReconcileFindingsFindingIdDismissPost(at(slug, { finding_id: id }))),
   },
 
   providers: {

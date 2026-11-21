@@ -289,6 +289,10 @@ export interface ReconcileFinding {
   model: string
   session_id: string
   created_at: ISODate
+  /** A person's decision (P13); null while it waits. */
+  decision: 'applied' | 'dismissed' | null
+  decided_at: ISODate | null
+  decided_by: string | null
 }
 
 export interface SyncRef {

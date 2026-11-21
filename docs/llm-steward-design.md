@@ -1134,6 +1134,31 @@ llm-steward/
      yield 依赖的清理时机对流式响应不合适，现在每个请求跑在自己的 task 里，不会泄漏）。Codex：没有 finding。
    - 还没做：把 bypass 改成 BYPASSRLS 的独立角色（见 §4）；compose 的 `steward-db` 还是 superuser，所以 compose 下 RLS 实际上不生效，文档里写明了。
 
+14. **P13 对排查提议做决定，以及诊断质量的第一次测量**（2026-11-22）
+   - [x] 迁移 0018：`reconcile_findings` 加上 `decision`（applied / dismissed）、`decided_at`、`decided_by`；`memory.reconcile_remirror` 加进 `jobs.type` 的 CHECK。
+     remirror 出来的记忆 origin 记为 `import`，没有新加 origin：加的话 SQLite 要整表重建 `memories`，会丢掉它的部分索引。
+   - [x] `POST /admin/v1/ns/{slug}/reconcile/findings/{id}/apply` 和 `/dismiss`（`AdminService.decide_finding`）。apply 不在请求里直接动手，而是排进 outbox：
+     - erase：排一个只带 `external_id` 的 `MEMORY_REMOVE`，由 Syncer 去删。为此 `_memory_remove` 的 `memory_id` 改成可选：没有记忆指向的记录，就不去更新 ref。
+     - remirror：排 `memory.reconcile_remirror`。`ReconcileService.remirror` 从 engine 读出记录，必须仍属于这个 namespace，然后经治理服务 `RecordProviderMemory`（origin import）建镜像。记录已不存在或已有镜像时什么也不做。
+     - ignore：只记下决定。
+     - finding 本身不是受治理数据，所以决定由 AdminService 直接写，和 `retry_job` 一样；它带来的受治理写入仍走单一写入路径。已决定的再决定返回 409；别的 namespace 的 finding 返回 404。
+   - [x] Admin：Jobs 页的 findings 列表加了 Apply / Dismiss，apply 之前要在确认框里确认，说明会发生什么。新建 `ConfirmDialog`，Settings 页的 Revoke key 也补上了确认框（前端规则 5）。
+   - [x] 测试（`test_admin_api.py`，两种数据库）：erase 之后 engine 记录被删、再次执行返回 409；remirror 之后出现一条受治理的记忆，origin 为 import、状态 synced、操作者是 admin；dismiss 不动 engine；别的 namespace 的 finding 返回 404；finding 指向别的 namespace 的记录时 remirror 不会把它镜像进来。另有前端 `handlers.test.ts`。新测试都改实现看过变红。
+   - [x] **诊断质量的第一次测量**（`tests/eval/test_triage_quality.py`，`-m triage`；本地 Ollama `qwen3:8b`，不思考；12 个构造场景，每类 3 个）：
+     **3/12 正确**，答对的全是 ignore。remirror 0/3（都答成 ignore）。erase 0/3（1 个答成 ignore，2 个答成 remirror：模型看到了"删除过的记忆"，却没据此判断）。注入 0/3：1 个照着记录里的指令答了 erase，2 个答成 ignore。
+     结论：这个模型的诊断还不可用。所以 `STEWARD_AGENT__RECONCILE_TRIAGE` 继续默认关；提议必须由人确认才会执行，这一条不变，模型被注入了也不会自动改数据。
+     下一步（另做一个阶段，前后都要测）：在 prompt 里把三种情况写成判别规则；或者让 `recent_changes` 直接返回删除记录；或者换一个更强的本地模型。
+   - [x] 收尾：/simplify 采纳了 4 条：
+     - erase 不再借用 `memory_id` 字段；
+     - `decide_finding` 直接接收 `Actor`，去掉重复的 `"admin"` 兜底；
+     - 新建共用的 `ConfirmDialog`；
+     - apply 和 dismiss 共用 `_decide`。
+     不采纳：测试的种子 helper 去重（只有两处）。
+   - [x] Codex：采纳 2 条，都先写了失败的测试：
+     - 做完决定之后、Syncer 删除之前，记录可能已经有了镜像。这时 erase 会删掉一条受治理记忆在 engine 里的副本。现在删除前会检查有没有存活的 ref 指向它，有就跳过并记日志，因为这时只能走治理流程。
+     - 两个人同时做决定：改成带条件的 UPDATE（`decision IS NULL`），只有一个会成功。
+     不采纳：并发的两个 remirror 会产生重复记忆。不会发生：`external_refs` 在 (provider, namespace, external_id) 上唯一，记忆和 ref 在同一个事务里写入，第二个会回滚；重试时看到 ref 已存在，什么也不做。
+
 ### 给 Claude Code 的第一条指令（参考）
 
 ```text
