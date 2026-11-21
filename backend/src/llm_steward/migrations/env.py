@@ -41,6 +41,8 @@ def _run(connection: Connection, schema: str) -> None:
         include_name=include_in_migrations,
     )
     with context.begin_transaction():
+        if is_pg:  # a data migration reads and writes every namespace's rows (P12)
+            connection.exec_driver_sql("SELECT set_config('app.rls_bypass', 'on', true)")
         context.run_migrations()
 
 

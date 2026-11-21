@@ -21,6 +21,7 @@ from llm_steward.models import ExternalRef, Job
 from llm_steward.models.base import UtcDateTime, utcnow
 from llm_steward.models.enums import JobStatus, JobType, ObjectType, SyncStatus
 from llm_steward.pipeline.risk import redact_pii
+from llm_steward.storage.db import unscoped_sessions
 
 ERROR_MAX_CHARS = 500
 
@@ -108,7 +109,8 @@ class JobQueue:
         backoff_base_s: float = 2.0,
         backoff_cap_s: float = 300.0,
     ) -> None:
-        self._sessions = sessions
+        # every namespace's jobs: the queue is cross-namespace by nature (P12)
+        self._sessions = unscoped_sessions(sessions)
         self._lease = lease
         self._backoff_base_s = backoff_base_s
         self._backoff_cap_s = backoff_cap_s

@@ -11,6 +11,7 @@ from typing import Any
 
 from llm_steward.models.enums import JobStatus
 from llm_steward.services.job_queue import ClaimedJob, JobQueue, describe_error
+from llm_steward.storage.db import namespace_scope
 
 log = logging.getLogger(__name__)
 
@@ -95,7 +96,8 @@ class Worker:
         reclaim it; a late finish could not settle the new claim anyway (see JobQueue)."""
         try:
             async with asyncio.timeout(self._queue.lease.total_seconds() / 2):
-                result = await self._dispatch(job)
+                with namespace_scope(job.namespace_id):  # the job's namespace only (P12)
+                    result = await self._dispatch(job)
         except Exception as exc:
             status = await self._queue.fail(job, exc)
             level = logging.ERROR if status == JobStatus.FAILED else logging.WARNING

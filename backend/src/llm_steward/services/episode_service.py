@@ -24,6 +24,7 @@ from llm_steward.services.governance_service import Actor, CreateEpisode, Govern
 from llm_steward.services.job_queue import enqueue
 from llm_steward.services.scoping import exact
 from llm_steward.services.worker import JobNotClaimable
+from llm_steward.storage.db import per_namespace, unscoped
 
 RunJob = Callable[[uuid.UUID], Awaitable[Any]]
 Status = Literal["buffered", "queued", "processed"]
@@ -122,19 +123,26 @@ class EpisodeService:
     async def flush_idle(self) -> int:
         """Flush every buffer whose newest episode is older than the idle limit."""
         cutoff = utcnow() - self._buffer_idle
-        async with self._sessions() as s:
-            rows = await s.execute(
-                select(Episode.namespace_id, Episode.user_id, Episode.agent_id, Episode.session_id)
-                .where(Episode.processed_at.is_(None))
-                .group_by(
-                    Episode.namespace_id, Episode.user_id, Episode.agent_id, Episode.session_id
+        with unscoped():  # the scan crosses namespaces; each flush runs in its own (P12)
+            async with self._sessions() as s:
+                rows = await s.execute(
+                    select(
+                        Episode.namespace_id, Episode.user_id, Episode.agent_id, Episode.session_id
+                    )
+                    .where(Episode.processed_at.is_(None))
+                    .group_by(
+                        Episode.namespace_id, Episode.user_id, Episode.agent_id, Episode.session_id
+                    )
+                    .having(func.max(Episode.created_at) < cutoff)
                 )
-                .having(func.max(Episode.created_at) < cutoff)
-            )
-            scopes = [Scope(*row) for row in rows]
+                scopes = [Scope(*row) for row in rows]
         flushed = 0
-        for scope in scopes:
+
+        async def flush(scope: Scope) -> None:
+            nonlocal flushed
             flushed += await self.flush(scope) is not None
+
+        await per_namespace([(sc.namespace_id, sc) for sc in scopes], flush)
         return flushed
 
     async def _buffered_tokens(self, scope: Scope) -> int:

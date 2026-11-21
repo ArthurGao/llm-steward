@@ -63,6 +63,7 @@ from llm_steward.ranking import (
 from llm_steward.services.governance_service import load_owned
 from llm_steward.services.memory_service import RECALLABLE, core_memories
 from llm_steward.services.scoping import visible
+from llm_steward.storage.db import run_unscoped
 
 log = logging.getLogger(__name__)
 
@@ -369,6 +370,7 @@ class RetrievalService:
                     .values({counter: counter + 1, KbEntry.updated_at: KbEntry.updated_at})
                 )
 
+    @run_unscoped  # every namespace's logs and counters (P12)
     async def count_hits(self, batch: int = HIT_BATCH) -> int:
         """Design §6 step 9, off the request path (a worker tick): the hits of up to `batch`
         uncounted retrievals, added to the counters, and those logs marked counted, in one

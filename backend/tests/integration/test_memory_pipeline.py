@@ -183,8 +183,8 @@ def test_a_retried_extraction_does_not_add_to_the_engine_twice(migrated_url: str
 
 async def _due_now(c: AppClient) -> None:
     """Skip the retry backoff."""
-    async with c.services.engine.begin() as conn:
-        await conn.execute(update(Job).values(run_after=utcnow()))
+    async with c.sessions() as s, s.begin():  # a governance session: unscoped in `call` (P12)
+        await s.execute(update(Job).values(run_after=utcnow()))
 
 
 def test_sync_mode_reports_queued_when_the_worker_claimed_the_job_first(

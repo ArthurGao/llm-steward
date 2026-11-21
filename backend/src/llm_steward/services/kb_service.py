@@ -59,6 +59,7 @@ from llm_steward.services.governance_service import (
 )
 from llm_steward.services.job_queue import ClaimedJob, enqueue
 from llm_steward.services.paging import page
+from llm_steward.storage.db import per_namespace, unscoped
 
 log = logging.getLogger(__name__)
 
@@ -490,9 +491,9 @@ class KbService:
         """Flag effective knowledge often rated unhelpful since its last review (a daily worker
         tick, every namespace), each in its own transaction; returns how many were flagged."""
         unhelpful, rated = KbEntry.unhelpful_since_review, KbEntry.rated_since_review
-        async with self._sessions() as s:
-            due = (
-                await s.execute(
+        with unscoped():  # the scan crosses namespaces; each flag runs in its own (P12)
+            async with self._sessions() as s:
+                due = await s.execute(
                     select(KbEntry.namespace_id, KbEntry.id).where(
                         KbEntry.status.in_(EFFECTIVE_KB_STATUSES),
                         KbEntry.review_due_at.is_(None),
@@ -501,15 +502,13 @@ class KbService:
                         _share_at_least(unhelpful, rated, REVIEW_UNHELPFUL_PERCENT),
                     )
                 )
-            ).all()
-        flagged = 0
-        for namespace_id, entry_id in due:
-            try:
-                await self._governance.apply(FlagKbEntryForReview(namespace_id, entry_id), SYSTEM)
-            except NotFound:
-                continue  # gone between the scan and now (erasure): not the whole sweep
-            flagged += 1
-        return flagged
+                items = [(ns, (ns, entry)) for ns, entry in due.all()]
+
+        async def flag(item: tuple[uuid.UUID, uuid.UUID]) -> None:
+            await self._governance.apply(FlagKbEntryForReview(*item), SYSTEM)
+
+        # one gone between the scan and now (erasure) is skipped, not the whole sweep
+        return await per_namespace(items, flag, skip=(NotFound,))
 
     async def list_candidates(
         self,
