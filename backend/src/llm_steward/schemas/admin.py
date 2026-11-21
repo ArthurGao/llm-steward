@@ -7,7 +7,7 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from llm_steward.models.enums import ActorType, ChangeOp, ObjectType, SyncStatus
+from llm_steward.models.enums import ActorType, ChangeOp, ObjectType, SyncStatus, TriageAction
 from llm_steward.schemas.jobs import JobOut
 from llm_steward.schemas.kb import CandidateOut, CollectionOut, EntryOut
 from llm_steward.schemas.memories import MemoryBrief
@@ -146,6 +146,27 @@ class AddToKbIn(BaseModel):
 
 class AdminJobPage(BaseModel):
     items: list[JobOut]
+    next_cursor: uuid.UUID | None
+
+
+class ReconcileFindingOut(BaseModel):
+    """What the reconcile triage assistant proposes for one unmirrored provider record (P11): a
+    proposal for a person, never applied by itself."""
+
+    model_config = ConfigDict(from_attributes=True)
+    id: uuid.UUID
+    provider: str
+    external_id: str
+    diagnosis: str
+    proposed_action: TriageAction
+    evidence: list[str]
+    model: str
+    session_id: str
+    created_at: datetime
+
+
+class ReconcileFindingPage(BaseModel):
+    items: list[ReconcileFindingOut]
     next_cursor: uuid.UUID | None
 
 

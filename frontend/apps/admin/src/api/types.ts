@@ -277,6 +277,20 @@ export interface Job {
   updated_at: ISODate
 }
 
+/** The reconcile triage assistant's proposal for one unmirrored engine record (design §11 P11):
+ * for a person to decide, never applied by itself. */
+export interface ReconcileFinding {
+  id: string
+  provider: string
+  external_id: string
+  diagnosis: string
+  proposed_action: 'ignore' | 'remirror' | 'erase'
+  evidence: string[]
+  model: string
+  session_id: string
+  created_at: ISODate
+}
+
 export interface SyncRef {
   id: string
   object_type: ObjectType

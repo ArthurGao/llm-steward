@@ -1,7 +1,7 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { createFileRoute, useNavigate } from '@tanstack/react-router'
 import { api } from '@/api/endpoints'
-import type { Job } from '@/api/types'
+import type { Job, ReconcileFinding } from '@/api/types'
 import { DataTable, type Column } from '@/components/DataTable'
 import { EmptyState, ErrorNote, Loading, Mono, PageTitle } from '@/components/misc'
 import { StatusBadge } from '@/components/StatusBadge'
@@ -56,6 +56,29 @@ function Jobs() {
       {list.isPending && <Loading />}
       {list.isError && <div className="p-5"><ErrorNote error={list.error} /></div>}
       {list.data && <DataTable label="Jobs" rows={list.data.items} columns={columns} rowKey={(j) => j.id} empty={<EmptyState title="No jobs with this status" />} />}
+      <Findings ns={ns} />
     </>
+  )
+}
+
+// What the reconcile triage assistant proposes for engine records the mirror does not point at
+// (design §11 P11). Read-only: a person decides; nothing here changes data.
+function Findings({ ns }: { ns: string }) {
+  const list = useQuery({ queryKey: [ns, 'reconcile-findings'], queryFn: () => api.reconcile.findings(ns, { limit: 50 }) })
+  const columns: Column<ReconcileFinding>[] = [
+    { key: 'rec', header: 'Engine record', cell: (f) => <Mono>{f.external_id}</Mono> },
+    { key: 'act', header: 'Proposed', cell: (f) => <Mono>{f.proposed_action}</Mono> },
+    { key: 'why', header: 'Diagnosis', cell: (f) => <span className="text-[13px]">{f.diagnosis}</span>, wide: true },
+    { key: 'ev', header: 'Evidence', cell: (f) => <span className="text-[13px] text-ink-2">{f.evidence.join(' · ')}</span>, wide: true },
+    { key: 'by', header: 'By', cell: (f) => <Mono className="text-ink-2">{f.model}</Mono> },
+    { key: 'at', header: 'Found', align: 'right', cell: (f) => <Mono className="text-ink-2">{age(f.created_at)}</Mono> },
+  ]
+  return (
+    <section aria-label="Reconcile findings" className="border-t border-rule">
+      <PageTitle title="Reconcile findings" count="Unmirrored engine records, as the triage assistant reads them: proposals, not changes" />
+      {list.isPending && <Loading />}
+      {list.isError && <div className="p-5"><ErrorNote error={list.error} /></div>}
+      {list.data && <DataTable label="Reconcile findings" rows={list.data.items} columns={columns} rowKey={(f) => f.id} empty={<EmptyState title="No findings" />} />}
+    </section>
   )
 }

@@ -1159,7 +1159,7 @@ export type JobStatus = 'pending' | 'running' | 'done' | 'failed';
 /**
  * JobType
  */
-export type JobType = 'sync.memory_upsert' | 'sync.memory_remove' | 'sync.kb_upsert' | 'sync.kb_remove' | 'memory.extract' | 'memory.reconcile' | 'kb.suggest' | 'kb.doc_ingest' | 'kb.doc_status' | 'kb.doc_remove' | 'kb.doc_fetch' | 'webhook.deliver';
+export type JobType = 'sync.memory_upsert' | 'sync.memory_remove' | 'sync.kb_upsert' | 'sync.kb_remove' | 'memory.extract' | 'memory.reconcile' | 'kb.suggest' | 'kb.doc_ingest' | 'kb.doc_status' | 'kb.doc_remove' | 'kb.doc_fetch' | 'webhook.deliver' | 'memory.reconcile_triage';
 
 /**
  * KbOrigin
@@ -1528,6 +1528,62 @@ export type ProviderPage = {
      * Items
      */
     items: Array<ProviderOut>;
+};
+
+/**
+ * ReconcileFindingOut
+ *
+ * What the reconcile triage assistant proposes for one unmirrored provider record (P11): a
+ * proposal for a person, never applied by itself.
+ */
+export type ReconcileFindingOut = {
+    /**
+     * Created At
+     */
+    created_at: string;
+    /**
+     * Diagnosis
+     */
+    diagnosis: string;
+    /**
+     * Evidence
+     */
+    evidence: Array<string>;
+    /**
+     * External Id
+     */
+    external_id: string;
+    /**
+     * Id
+     */
+    id: string;
+    /**
+     * Model
+     */
+    model: string;
+    proposed_action: TriageAction;
+    /**
+     * Provider
+     */
+    provider: string;
+    /**
+     * Session Id
+     */
+    session_id: string;
+};
+
+/**
+ * ReconcileFindingPage
+ */
+export type ReconcileFindingPage = {
+    /**
+     * Items
+     */
+    items: Array<ReconcileFindingOut>;
+    /**
+     * Next Cursor
+     */
+    next_cursor: string | null;
 };
 
 /**
@@ -1969,6 +2025,14 @@ export type TemplateOut = {
      */
     name: string;
 };
+
+/**
+ * TriageAction
+ *
+ * What the reconcile triage assistant proposes for an unmirrored provider record (P11). A
+ * proposal only: a person decides, and any change goes through the governance service.
+ */
+export type TriageAction = 'ignore' | 'remirror' | 'erase';
 
 /**
  * UserDetailOut
@@ -3154,6 +3218,45 @@ export type ProvidersAdminV1NsSlugProvidersGetResponses = {
 };
 
 export type ProvidersAdminV1NsSlugProvidersGetResponse = ProvidersAdminV1NsSlugProvidersGetResponses[keyof ProvidersAdminV1NsSlugProvidersGetResponses];
+
+export type ReconcileFindingsAdminV1NsSlugReconcileFindingsGetData = {
+    body?: never;
+    path: {
+        /**
+         * Slug
+         */
+        slug: string;
+    };
+    query?: {
+        /**
+         * Cursor
+         */
+        cursor?: string | null;
+        /**
+         * Limit
+         */
+        limit?: number;
+    };
+    url: '/admin/v1/ns/{slug}/reconcile/findings';
+};
+
+export type ReconcileFindingsAdminV1NsSlugReconcileFindingsGetErrors = {
+    /**
+     * Validation Error
+     */
+    422: HttpValidationError;
+};
+
+export type ReconcileFindingsAdminV1NsSlugReconcileFindingsGetError = ReconcileFindingsAdminV1NsSlugReconcileFindingsGetErrors[keyof ReconcileFindingsAdminV1NsSlugReconcileFindingsGetErrors];
+
+export type ReconcileFindingsAdminV1NsSlugReconcileFindingsGetResponses = {
+    /**
+     * Successful Response
+     */
+    200: ReconcileFindingPage;
+};
+
+export type ReconcileFindingsAdminV1NsSlugReconcileFindingsGetResponse = ReconcileFindingsAdminV1NsSlugReconcileFindingsGetResponses[keyof ReconcileFindingsAdminV1NsSlugReconcileFindingsGetResponses];
 
 export type RetrievalLogsAdminV1NsSlugRetrievalLogsGetData = {
     body?: never;

@@ -253,6 +253,10 @@ export const liveApi: typeof mockApi = {
     cancel: async (slug, id) => job(await call(sdk.cancelJobAdminV1NsSlugJobsJobIdCancelPost(at(slug, { job_id: id })))),
   },
 
+  reconcile: {
+    findings: async (slug, q) => page(await call(sdk.reconcileFindingsAdminV1NsSlugReconcileFindingsGet({ ...at(slug), query: paging(q) })), (f) => f),
+  },
+
   providers: {
     list: async (slug) => ({
       items: (await call(sdk.providersAdminV1NsSlugProvidersGet(at(slug)))).items.map((p) => ({

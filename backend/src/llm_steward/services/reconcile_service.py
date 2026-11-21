@@ -29,10 +29,16 @@ class ReconcileReport:
 
 class ReconcileService:
     def __init__(
-        self, sessions: async_sessionmaker[AsyncSession], provider: MemoryProvider
+        self,
+        sessions: async_sessionmaker[AsyncSession],
+        provider: MemoryProvider,
+        *,
+        triage: bool = False,
     ) -> None:
+        """`triage`: unmirrored records are handed to the triage assistant (P11)."""
         self._sessions = sessions
         self._provider = provider
+        self._triage = triage
 
     async def handle(self, job: ClaimedJob) -> ReconcileReport:
         return await self.run(job.namespace_id)
@@ -69,19 +75,25 @@ class ReconcileService:
             if eid and eid not in in_provider and status == MemoryStatus.ACTIVE
         ]
         report.orphans = sorted(in_provider - mirrored)
-        if lost:
+        triage = bool(report.orphans) and self._triage
+        if lost or triage:
             async with self._sessions() as s, s.begin():
-                await s.execute(
-                    update(ExternalRef)
-                    .where(
-                        ExternalRef.object_type == ObjectType.MEMORY,
-                        ExternalRef.provider == self._provider.name,
-                        ExternalRef.object_id.in_(lost),
+                if lost:
+                    await s.execute(
+                        update(ExternalRef)
+                        .where(
+                            ExternalRef.object_type == ObjectType.MEMORY,
+                            ExternalRef.provider == self._provider.name,
+                            ExternalRef.object_id.in_(lost),
+                        )
+                        .values(external_id=None, sync_status=SyncStatus.PENDING)
                     )
-                    .values(external_id=None, sync_status=SyncStatus.PENDING)
-                )
-                for memory_id in lost:
-                    enqueue(s, namespace_id, JobType.MEMORY_UPSERT, {"memory_id": str(memory_id)})
+                    for memory_id in lost:
+                        enqueue(
+                            s, namespace_id, JobType.MEMORY_UPSERT, {"memory_id": str(memory_id)}
+                        )
+                if triage:
+                    enqueue(s, namespace_id, JobType.RECONCILE_TRIAGE, {"orphans": report.orphans})
             report.requeued = lost
         if lost or report.orphans:
             log.warning(

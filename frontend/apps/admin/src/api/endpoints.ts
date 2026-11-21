@@ -26,6 +26,7 @@ import type {
   NamespaceSettings,
   Page,
   ProviderStatus,
+  ReconcileFinding,
   RetrievalLog,
   RetrievalRequest,
   RetrievalResult,
@@ -98,6 +99,10 @@ export const mockApi = {
     list: (slug: string, q: Query) => request<Page<Job>>(`${ns(slug)}/jobs${qs(q)}`),
     retry: (slug: string, id: string) => request<Job>(`${ns(slug)}/jobs/${id}/retry`, json({})),
     cancel: (slug: string, id: string) => request<Job>(`${ns(slug)}/jobs/${id}/cancel`, json({})),
+  },
+
+  reconcile: {
+    findings: (slug: string, q: Query) => request<Page<ReconcileFinding>>(`${ns(slug)}/reconcile/findings${qs(q)}`),
   },
 
   providers: {
