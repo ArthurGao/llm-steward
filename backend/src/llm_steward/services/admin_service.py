@@ -27,6 +27,7 @@ from llm_steward.models import (
     KbEntry,
     Memory,
     Namespace,
+    ReconcileFinding,
     RetrievalLog,
 )
 from llm_steward.models.base import utcnow
@@ -326,6 +327,14 @@ class AdminService:
             query = query.where(Job.type == job_type)
         async with self._sessions() as s:
             return await page(s, query, Job, cursor, limit)
+
+    async def reconcile_findings(
+        self, namespace_id: uuid.UUID, *, cursor: uuid.UUID | None, limit: int
+    ) -> tuple[list[ReconcileFinding], uuid.UUID | None]:
+        """The triage assistant's proposals for unmirrored provider records, newest first (P11)."""
+        query = select(ReconcileFinding).where(ReconcileFinding.namespace_id == namespace_id)
+        async with self._sessions() as s:
+            return await page(s, query, ReconcileFinding, cursor, limit)
 
     async def retry_job(self, namespace_id: uuid.UUID, job_id: uuid.UUID) -> Job:
         """A failed job, given a fresh set of attempts (handlers are idempotent)."""

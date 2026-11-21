@@ -53,6 +53,19 @@ class CacheSettings(BaseModel):
     db_schema: str = Field(default="steward_cache", pattern=r"^[a-z_][a-z0-9_]{0,62}$")
 
 
+class AgentSettings(BaseModel):
+    """The reconcile triage assistant (design §11 P11): after a reconcile finds provider records no
+    mirror row points at, a lite-agent tool loop reads around each one and proposes an action
+    for a person. Off by default; PostgreSQL only (lite-agent's session store); needs the
+    `agent.triage` role served by a model that can call tools."""
+
+    reconcile_triage: bool = False
+    max_orphans: int = Field(default=20, ge=1, le=200)  # per reconcile; the rest wait for the next
+    turns: int = Field(default=8, ge=2, le=30)  # model calls per orphan
+    # lite-agent's own schema (its sessions and events) in the governance database.
+    db_schema: str = Field(default="steward_agent", pattern=r"^[a-z_][a-z0-9_]{0,62}$")
+
+
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(
         env_prefix="STEWARD_", env_file=".env", env_nested_delimiter="__", extra="ignore"
@@ -123,6 +136,8 @@ class Settings(BaseSettings):
     kb_llm: bool = False
     # STEWARD_CACHE__ENABLED=true: the KB labels' LLM answers are cached per namespace (lite-cache).
     cache: CacheSettings = CacheSettings()
+    # STEWARD_AGENT__RECONCILE_TRIAGE=true: an agent proposes what to do with unmirrored records.
+    agent: AgentSettings = AgentSettings()
     # Memory extraction by llm-steward (role memory.extract, then memory.resolve) for an engine that
     # cannot extract (native): conversations then become memories without mem0. Off: such an
     # engine takes direct writes only (POST /v1/memories). An engine that extracts ignores it.
@@ -172,16 +187,20 @@ class Settings(BaseSettings):
     worker_idle_after_s: float | None = Field(default=None, gt=0)
 
     @model_validator(mode="after")
-    def _cache_needs_postgresql(self) -> "Settings":
-        if self.cache.enabled and not self.database_url.startswith("postgresql"):
-            raise ValueError("STEWARD_CACHE__ENABLED needs PostgreSQL (lite-cache's store)")
-        schema = self.cache.db_schema
-        if schema == self.db_schema or schema.endswith("_test"):
-            # lite-cache migrates its own schema; *_test are the ones test fixtures drop
-            raise ValueError(
-                f"STEWARD_CACHE__DB_SCHEMA {schema!r} must be lite-cache's own schema: not the "
-                "governance schema, not a *_test one"
-            )
+    def _lite_modules_need_their_own_postgresql_schema(self) -> "Settings":
+        on_pg = self.database_url.startswith("postgresql")
+        for key, enabled, schema in (
+            ("CACHE", self.cache.enabled, self.cache.db_schema),
+            ("AGENT", self.agent.reconcile_triage, self.agent.db_schema),
+        ):
+            if enabled and not on_pg:  # lite-cache's store, lite-agent's session store
+                raise ValueError(f"STEWARD_{key} needs PostgreSQL: it is a lite module's PG store")
+            if schema == self.db_schema or schema.endswith("_test"):
+                # each lite module migrates its own schema; *_test are the ones fixtures drop
+                raise ValueError(
+                    f"STEWARD_{key}__DB_SCHEMA {schema!r} must be the module's own schema: not "
+                    "the governance schema, not a *_test one"
+                )
         return self
 
     @field_validator("db_schema")

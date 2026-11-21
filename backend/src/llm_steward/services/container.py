@@ -18,7 +18,7 @@ import httpx2
 from sqlalchemy.ext.asyncio import AsyncEngine
 
 from llm_steward.config import Settings
-from llm_steward.llm.client import LLM, LiteModelLLM, open_cache_store, role_llm
+from llm_steward.llm.client import LLM, LiteModelLLM, open_cache_store, role_llm, tool_model
 from llm_steward.llm.roles import Role
 from llm_steward.models.enums import JobType
 from llm_steward.namespace_config import read_config
@@ -49,9 +49,10 @@ from llm_steward.services.rate_limit import RateLimiter
 from llm_steward.services.reconcile_service import ReconcileService, schedule_reconcile
 from llm_steward.services.retrieval_service import RetrievalService
 from llm_steward.services.sync_service import SyncService
+from llm_steward.services.triage_service import TriageService
 from llm_steward.services.webhook_service import WebhookService
 from llm_steward.services.worker import Tick, Worker
-from llm_steward.storage.db import engine_scope, session_factory
+from llm_steward.storage.db import engine_scope, libpq_url, session_factory
 
 if TYPE_CHECKING:  # the `cache` extra
     from lite_cache.store import PgStore
@@ -118,6 +119,45 @@ def caches(settings: Settings) -> bool:
     return settings.cache.enabled and settings.kb_llm
 
 
+async def _triage_off(job: ClaimedJob) -> int:
+    log.info("reconcile triage is off (STEWARD_AGENT__RECONCILE_TRIAGE): job %s dropped", job.id)
+    return 0
+
+
+async def open_triage(
+    settings: Settings, engine: AsyncEngine, providers: Providers, stack: AsyncExitStack
+) -> TriageService | None:
+    """The reconcile triage assistant when it is on (P11): its model, and lite-agent's session
+    store in its own schema (migrated when behind, off the event loop), closed by `stack`."""
+    if not settings.agent.reconcile_triage:
+        return None
+    from lite_agent.pg import PgSessionStore
+
+    model, tag = tool_model(settings, Role.AGENT_TRIAGE)
+    url = libpq_url(settings.database_url)
+    assert url is not None  # Settings refuse the assistant on SQLite
+    await asyncio.to_thread(_migrate_agent_schema, url, settings.agent.db_schema)
+    store = PgSessionStore(url, schema=settings.agent.db_schema)
+    stack.push_async_callback(store.close)
+    return TriageService(
+        session_factory(engine),
+        providers.memory,
+        model,
+        store,
+        model_tag=tag,
+        max_orphans=settings.agent.max_orphans,
+        turns=settings.agent.turns,
+    )
+
+
+def _migrate_agent_schema(url: str, schema: str) -> None:
+    import psycopg
+    from lite_agent.pg import migrate
+
+    with psycopg.connect(url) as conn:
+        migrate(conn, schema)
+
+
 def build_services(
     settings: Settings,
     engine: AsyncEngine,
@@ -126,6 +166,7 @@ def build_services(
     llm: LLM | None,
     *,
     reranker: Reranker | None,
+    triage: TriageService | None = None,
 ) -> Services:
     sessions = session_factory(engine)
     governance = GovernanceService(
@@ -142,7 +183,7 @@ def build_services(
         on_extracted=kb.queue_suggestions,
     )
     extracts = extraction.mode != "none"
-    reconcile = ReconcileService(sessions, providers.memory)
+    reconcile = ReconcileService(sessions, providers.memory, triage=triage is not None)
     idempotency = IdempotencyService(sessions)
     out = Outbound(allow_private=settings.allow_private_urls)  # user-supplied URLs only
     webhooks = WebhookService(sessions, out)
@@ -172,6 +213,8 @@ def build_services(
         JobType.KB_SUGGEST: kb.handle,
         JobType.WEBHOOK_DELIVER: webhooks.handle,
         JobType.DOC_FETCH: documents.handle_fetch,
+        # a job queued while the assistant was on, after it was turned off: dropped
+        JobType.RECONCILE_TRIAGE: triage.handle if triage else _triage_off,
     }
     missing = set(JobType) - set(handlers)
     if missing:
@@ -269,4 +312,7 @@ async def runtime(
                 stack.push_async_callback(asyncio.to_thread, store.close)
             llm = build_llm(settings, providers, store)
         rerank = reranker or build_reranker(settings)
-        yield build_services(settings, engine, providers, embed, llm, reranker=rerank)
+        triage = await open_triage(settings, engine, providers, stack)
+        yield build_services(
+            settings, engine, providers, embed, llm, reranker=rerank, triage=triage
+        )

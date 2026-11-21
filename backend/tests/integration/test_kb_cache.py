@@ -128,7 +128,7 @@ def test_the_cache_opens_only_when_a_kb_label_can_use_it(cache_url: str) -> None
 
 
 def test_the_cache_needs_postgresql() -> None:
-    with pytest.raises(ValidationError, match="needs PostgreSQL"):
+    with pytest.raises(ValidationError, match="STEWARD_CACHE needs PostgreSQL"):
         _settings(SQLITE)
 
 

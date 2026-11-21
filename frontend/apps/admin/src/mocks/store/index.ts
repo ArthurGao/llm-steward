@@ -23,6 +23,7 @@ import type {
   NamespaceSettings,
   Page,
   ProviderStatus,
+  ReconcileFinding,
   RetrievalLog,
   RetrievalRequest,
   RetrievalResult,
@@ -604,6 +605,10 @@ export class Store {
 
   activity(slug: string, q: ChangeQuery): Page<Change> {
     return paginate(this.listChanges(slug, q), q)
+  }
+
+  listFindings(slug: string, q: PageQuery): Page<ReconcileFinding> {
+    return paginate(this.ns(slug).findings, q)
   }
 
   listJobs(slug: string, q: JobQuery): Page<Job> {

@@ -32,6 +32,7 @@ from llm_steward.models.enums import (
     ObjectType,
     RiskLevel,
     SyncStatus,
+    TriageAction,
 )
 
 
@@ -369,3 +370,26 @@ class IdempotencyKey(IdMixin, CreatedMixin, Base):
     status_code: Mapped[int | None]
     content_type: Mapped[str | None] = mapped_column(String(200))
     body: Mapped[bytes | None] = mapped_column(LargeBinary)
+
+
+class ReconcileFinding(IdMixin, CreatedMixin, Base):
+    """The reconcile triage assistant's diagnosis of one provider record no mirror row points at
+    (design §11 P11). A proposal for a person, never applied by itself; not governed data, so it
+    is written directly (like `retrieval_logs`), not through the governance service."""
+
+    __tablename__ = "reconcile_findings"
+    __table_args__ = (
+        Index("ix_reconcile_findings_recent", "namespace_id", "created_at"),
+        # one finding per record: concurrent triage jobs store it once
+        UniqueConstraint("namespace_id", "provider", "external_id", name="uq_reconcile_finding"),
+    )
+    namespace_id: Mapped[uuid.UUID] = _namespace_fk()
+    provider: Mapped[str] = mapped_column(String(64))
+    external_id: Mapped[str] = mapped_column(String(200))
+    diagnosis: Mapped[str] = mapped_column(Text)
+    proposed_action: Mapped[TriageAction] = mapped_column(
+        enum_column(TriageAction, "triage_action")
+    )
+    evidence: Mapped[list[str]] = mapped_column(default=list)
+    model: Mapped[str] = mapped_column(String(200))  # role:model as configured (the log: per turn)
+    session_id: Mapped[str] = mapped_column(String(64))  # the agent's log (lite-agent session)

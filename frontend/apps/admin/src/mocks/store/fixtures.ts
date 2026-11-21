@@ -14,6 +14,7 @@ import type {
   Namespace,
   NamespaceSettings,
   ProviderStatus,
+  ReconcileFinding,
   RetrievalLog,
   SyncRef,
 } from '@/api/types'
@@ -50,6 +51,7 @@ export interface NsData {
   candidates: Candidate[]
   changes: Change[] // newest first
   jobs: Job[]
+  findings: ReconcileFinding[]
   syncRefs: SyncRef[]
   providers: ProviderStatus[]
   retrievalLogs: RetrievalLog[] // newest first
@@ -504,6 +506,13 @@ function buildSupport(): NsData {
     candidates: cands,
     changes: changesFor(memories, entries, cands),
     jobs: jobs(),
+    findings: [
+      {
+        id: 'rf_01', provider: 'litemem', external_id: 'mem_ext_7f3a', created_at: ago(5 * H), model: 'agent.triage:qwen3:8b', session_id: 'ses_01',
+        diagnosis: 'An extraction for u_0042 died before mirroring; no governed memory says the same.',
+        proposed_action: 'remirror', evidence: ['text: "Prefers email over phone"', 'no external ref ever pointed at it'],
+      },
+    ],
     syncRefs: syncRefsFor(memories, entries, documents),
     providers: providers(),
     retrievalLogs: retrievalLogs(),
@@ -539,6 +548,7 @@ function buildSales(): NsData {
     candidates: [],
     changes: changesFor(memories, entries, []),
     jobs: [],
+    findings: [],
     syncRefs: syncRefsFor(memories, entries, []),
     providers: [
       { name: 'memory', kind: 'memory', engine: 'mem0', version: '2.2.1', capabilities: ['extract', 'update', 'delete', 'search', 'history'], health: 'healthy', latency_p95_ms: 170, error_rate: 0, queue: { pending: 0, failed: 0 }, last_reconciled_at: ago(9 * H), reconcile_drift: 0 },
