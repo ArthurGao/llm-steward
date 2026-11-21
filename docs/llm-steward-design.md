@@ -1083,6 +1083,29 @@ llm-steward/
        有测试）；"compose 里 `api_key_env: STEWARD_LLM_KEY` 取不到"（这个变量本身就传进了容器，`docker compose config` 可见）；
        `env_nested_delimiter` 影响别的变量（没有别的 `STEWARD_*__*` 字段，env 测试通过）。
 
+11. **P10 KB 风险标签的 LLM 响应缓存**（lite-cache L1，2026-11-22；架构评审 2026-11-21 定的）
+   - [x] 依赖：extra `cache`（lite-cache 0.3.0，release wheel）；lite-model 0.5.1、lite-rag `85ec2f3`、lite-mem `4918d09`（S14：
+     embedding 走 lite-model，身份和向量都不变）；extra `agent`（lite-agent 0.2.1，P11 用）。四者共用 lite-model 0.5.1。
+   - [x] `STEWARD_CACHE__ENABLED`（默认关）、`__TTL_S`（默认 30 天）、`__DB_SCHEMA`（默认 `steward_cache`，在治理库里）。只能用
+     PostgreSQL：SQLite 上开了，加载配置时就报错；缺 `cache` extra 时启动失败。`STEWARD_KB_LLM` 关着时不打开 store（没有能用它的
+     role，只记一条日志）。store 在 `runtime()` 里用线程打开（同步的连接和迁移检查不占事件循环），退出时经同一个 exit stack 关闭；
+     `AsyncCacheHook` 注册在 `role_llm` 建的 lite-model 客户端上。
+   - [x] 缓存哪些 role 集中在 `llm/client.py` 的 `CACHED_ROLES`：只有 `kb.risk`，而且调用要带 `cache_scope`（`steward/<namespace id>`）：
+     同一个 namespace 里同样的模型、prompt 和文本才命中，不跨 namespace。命中时 provenance 还是最初回答的模型。不缓存
+     `kb.worthiness`：一批记忆合成一个 prompt，key 是整批，几乎不会重复，每次调用却要多一次查询和一次写入；`kb.draft` 是改写；
+     memory 的两个 role 输入是一次对话。
+   - [x] 测试：`tests/integration/test_kb_cache.py`（真实 store 在测试库，模型是 mock HTTP 端点）：同一 namespace 第二次不发请求、
+     换 namespace 或换文本会发、不带 scope 或别的 role 不缓存、没有 policy 不缓存、KB LLM 关着不开 store、SQLite 报错；
+     `test_kb_suggestions.py` 确认 KB 调用点传的 scope。新测试都改实现看过变红。`runtime()` 里打开和关闭 store 的接线没有单独的
+     测试（要真实的 LLM 配置才走到），由类型检查和上面的单元覆盖。
+   - [x] 收尾：/simplify 采纳：providers 在建 LLM 失败时也会关闭（改用 `AsyncExitStack`；改动中间版本漏了）；store 在线程里开关；
+     KB LLM 关着不开 store；缓存的 role 集中成 `CACHED_ROLES`；只缓存 `kb.risk`；SQLite 在配置层拒绝；测试共用 `chat_reply`、
+     `mock_http`。
+   - [x] Codex：采纳 1 条——缓存的 schema 不能是治理 schema，也不能以 `_test` 结尾（测试 fixture 会删这些），配置层拒绝（先写失败的
+     测试）。没改、记下：lite-model 建的 SDK 客户端在 `runtime()` 退出时没有关闭——P10 之前就是这样，lite-model 也还没有关闭的
+     API，要先给 lite-model 加（后续）。
+   - 为什么不做 L2（语义匹配）：lite-cache 的校准没找到既安全又有用的阈值，关着（lite-cache 设计 §8）。
+
 ### 给 Claude Code 的第一条指令（参考）
 
 ```text

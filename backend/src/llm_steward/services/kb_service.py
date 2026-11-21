@@ -16,7 +16,7 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from llm_steward.errors import NotFound, Unprocessable
-from llm_steward.llm.client import LLM
+from llm_steward.llm.client import LLM, cache_scope
 from llm_steward.llm.roles import Provenance
 from llm_steward.models import Candidate, KbCollection, KbEntry, Memory
 from llm_steward.models.base import utcnow
@@ -152,7 +152,7 @@ class KbService:
         only raise it. `labelled`: the risk already comes from a model (a draft labels itself)."""
         reasons = [reason] if reason else []
         if not labelled:
-            risk_level, notes = await self._label(title, content, risk_level)
+            risk_level, notes = await self._label(namespace_id, title, content, risk_level)
             reasons += notes
         op = SubmitKbEntry(
             namespace_id=namespace_id,
@@ -171,13 +171,13 @@ class KbService:
         return Submitted.of(await self._governance.apply(op, actor))
 
     async def _label(
-        self, title: str, content: str, floor: RiskLevel
+        self, namespace_id: uuid.UUID, title: str, content: str, floor: RiskLevel
     ) -> tuple[RiskLevel, list[str]]:
         """The KB LLM's risk label on text that changes (submit, revise, an edited draft): it can
         only raise `floor`. No call when the LLM is off or the risk is already high."""
         if self._llm is None or floor == RiskLevel.HIGH:
             return floor, []
-        label = await label_risk(self._llm, title, content)
+        label = await label_risk(self._llm, title, content, cache_scope=cache_scope(namespace_id))
         return max_risk(floor, label.level), [f"{label.provenance.tag}: {label.reason}"]
 
     async def _drafted(
@@ -442,7 +442,7 @@ class KbService:
         title: str | None = None,
         content: str | None = None,
     ) -> Submitted:
-        floor, notes = await self._label(title or "", content or "", RiskLevel.LOW)
+        floor, notes = await self._label(namespace_id, title or "", content or "", RiskLevel.LOW)
         op = ReviseKbEntry(
             namespace_id,
             entry_id,
@@ -553,7 +553,7 @@ class KbService:
         floor: RiskLevel | None = None
         if draft and to == CandidateStatus.ACCEPTED:
             floor, _ = await self._label(
-                draft.get("title", ""), draft.get("content", ""), RiskLevel.LOW
+                namespace_id, draft.get("title", ""), draft.get("content", ""), RiskLevel.LOW
             )
         op = DecideCandidate(
             namespace_id,

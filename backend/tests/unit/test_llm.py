@@ -13,6 +13,7 @@ from pydantic import BaseModel, ValidationError
 from llm_steward.config import Settings
 from llm_steward.llm.client import LiteModelLLM, LLMError, LLMOutputError, openai_endpoint, role_llm
 from llm_steward.llm.roles import ROLES, LLMConfigError, Provenance, Role
+from tests.fakes.http import chat_reply
 from tests.fakes.llm import FakeLLM
 
 DB = "sqlite+aiosqlite:///./x.db"
@@ -32,13 +33,7 @@ def _settings(**llm: Any) -> Settings:
     return Settings(_env_file=None, database_url=DB, llm=llm or None)  # type: ignore[call-arg]
 
 
-def _chat(model: str, content: str, finish: str = "stop") -> httpx2.Response:
-    return httpx2.Response(200, json={
-        "id": "c", "object": "chat.completion", "created": 0, "model": model,
-        "choices": [{"index": 0, "finish_reason": finish,
-                     "message": {"role": "assistant", "content": content}}],
-        "usage": {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2},
-    })  # fmt: skip
+_chat = chat_reply
 
 
 def _llm(handler: Any) -> LiteModelLLM:

@@ -5,19 +5,20 @@ from, so they can never drift apart in how providers are configured. A configura
 serve a needed LLM role fails here, at startup (KB llm-app-architecture §1.5).
 """
 
+import asyncio
 import logging
 import uuid
 from collections.abc import AsyncIterator, Awaitable, Callable
-from contextlib import asynccontextmanager
+from contextlib import AsyncExitStack, asynccontextmanager
 from dataclasses import dataclass
 from datetime import timedelta
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import httpx2
 from sqlalchemy.ext.asyncio import AsyncEngine
 
 from llm_steward.config import Settings
-from llm_steward.llm.client import LLM, role_llm
+from llm_steward.llm.client import LLM, LiteModelLLM, open_cache_store, role_llm
 from llm_steward.llm.roles import Role
 from llm_steward.models.enums import JobType
 from llm_steward.namespace_config import read_config
@@ -51,6 +52,9 @@ from llm_steward.services.sync_service import SyncService
 from llm_steward.services.webhook_service import WebhookService
 from llm_steward.services.worker import Tick, Worker
 from llm_steward.storage.db import engine_scope, session_factory
+
+if TYPE_CHECKING:  # the `cache` extra
+    from lite_cache.store import PgStore
 
 Handler = Callable[[ClaimedJob], Awaitable[Any]]
 
@@ -87,10 +91,13 @@ class Services:
     embedding_model: str | None  # what the native engine embeds with (the Admin shows it)
 
 
-def build_llm(settings: Settings, providers: Providers) -> LLM | None:
+def build_llm(
+    settings: Settings, providers: Providers, cache_store: "PgStore | None" = None
+) -> LiteModelLLM | None:
     """Exactly the roles that will be used, resolved now (a missing model fails at startup):
     `memory.extract` when llm-steward extracts for the engine (`memory_llm`), `memory.resolve`
-    when conflict compensation runs, the KB roles when `kb_llm` is on."""
+    when conflict compensation runs, the KB roles when `kb_llm` is on. `cache_store`: the
+    response cache's store (`caches`)."""
     memory = providers.memory
     mode = extraction_mode(memory, settings.memory_llm)
     roles = [Role.MEMORY_EXTRACT] if mode == "steward" else []
@@ -101,7 +108,14 @@ def build_llm(settings: Settings, providers: Providers) -> LLM | None:
         roles += [Role.KB_RISK, Role.KB_WORTHINESS, Role.KB_DRAFT]
     else:
         log.info("KB LLM steps are off (STEWARD_KB_LLM): rules-only risk, no suggestions")
-    return role_llm(settings, tuple(roles)) if roles else None
+    return role_llm(settings, tuple(roles), cache_store) if roles else None
+
+
+def caches(settings: Settings) -> bool:
+    """Whether the response cache has a role to serve: it caches only KB labels (P10)."""
+    if settings.cache.enabled and not settings.kb_llm:
+        log.info("STEWARD_CACHE__ENABLED is unused: it caches KB labels and STEWARD_KB_LLM is off")
+    return settings.cache.enabled and settings.kb_llm
 
 
 def build_services(
@@ -238,17 +252,21 @@ async def runtime(
 ) -> AsyncIterator[Services]:
     """`http`, `embedder`, `memory_provider`, `llm` and `reranker` are injectable (tests stub the
     network, the models and the engine); whatever is created here is also closed here."""
-    async with engine_scope(settings.database_url, schema=settings.db_schema) as engine:
+    async with (
+        engine_scope(settings.database_url, schema=settings.db_schema) as engine,
+        AsyncExitStack() as stack,
+    ):
         client = http or httpx2.AsyncClient()
-        try:
-            embed = embedder or (build_embedder(settings) if uses_native(settings) else None)
-            providers = build_providers(settings, client, engine, embed, memory=memory_provider)
-            try:
-                roles = llm or build_llm(settings, providers)
-                rerank = reranker or build_reranker(settings)
-                yield build_services(settings, engine, providers, embed, roles, reranker=rerank)
-            finally:
-                await providers.aclose()
-        finally:
-            if http is None:
-                await client.aclose()
+        if http is None:
+            stack.push_async_callback(client.aclose)
+        embed = embedder or (build_embedder(settings) if uses_native(settings) else None)
+        providers = build_providers(settings, client, engine, embed, memory=memory_provider)
+        stack.push_async_callback(providers.aclose)
+        if llm is None:
+            store = None
+            if caches(settings):  # a blocking connect and migration check: off the event loop
+                store = await asyncio.to_thread(open_cache_store, settings)
+                stack.push_async_callback(asyncio.to_thread, store.close)
+            llm = build_llm(settings, providers, store)
+        rerank = reranker or build_reranker(settings)
+        yield build_services(settings, engine, providers, embed, llm, reranker=rerank)

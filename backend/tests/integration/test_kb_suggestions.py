@@ -108,6 +108,22 @@ def test_a_general_fact_from_a_conversation_becomes_a_card_for_the_user(app: App
     assert accepted.json()["entry"]["status"] == "active"
 
 
+def test_the_risk_label_names_its_namespace_as_cache_scope(app: AppClient) -> None:
+    # design §11 P10: kb.risk may be answered from the response cache, never across namespaces;
+    # the batched kb.worthiness and kb.draft (a rewrite) are never cached
+    h, ns = app.new_tenant("acme")
+    llm = app.services.kb._llm
+    assert isinstance(llm, FakeLLM)
+    _episode(app, h, "Refunds take 5 business days.")
+    app.drain()
+    body = {"collection_id": _collection(app, ns), "title": "Refunds", "content": "5 days"}
+    assert app.http.post("/v1/kb/entries", json=body, headers=h).status_code in (201, 202)
+    scopes = {role: scope for role, scope in llm.scopes if role.startswith("kb.")}
+    assert scopes == {
+        "kb.worthiness": None, "kb.draft": None, "kb.risk": f"steward/{ns}",
+    }  # fmt: skip
+
+
 def test_scoring_a_memory_twice_never_makes_two_cards(app: AppClient) -> None:
     h, ns = app.new_tenant("acme")
     _episode(app, h, "Refunds take 5 business days.")

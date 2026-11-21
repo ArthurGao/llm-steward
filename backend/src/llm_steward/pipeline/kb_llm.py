@@ -60,12 +60,15 @@ class Labelled:
     provenance: Provenance
 
 
-async def label_risk(llm: LLM, title: str, content: str) -> Labelled:
+async def label_risk(
+    llm: LLM, title: str, content: str, *, cache_scope: str | None = None
+) -> Labelled:
     reply, provenance = await llm.structured(
         Role.KB_RISK,
         RISK_PROMPT,
         json.dumps({"title": title, "content": content}, ensure_ascii=False),
         RiskLabel,
+        cache_scope=cache_scope,
     )
     return Labelled(RiskLevel(reply.risk_level), reply.reason, provenance)
 

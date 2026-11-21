@@ -13,6 +13,16 @@ def mock_http(handler: Callable[[httpx2.Request], httpx2.Response]) -> httpx2.As
     return httpx2.AsyncClient(transport=httpx2.MockTransport(handler))
 
 
+def chat_reply(model: str, content: str, finish: str = "stop") -> httpx2.Response:
+    """An OpenAI-compatible chat completion answering `content`."""
+    return httpx2.Response(200, json={
+        "id": "c", "object": "chat.completion", "created": 0, "model": model,
+        "choices": [{"index": 0, "finish_reason": finish,
+                     "message": {"role": "assistant", "content": content}}],
+        "usage": {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2},
+    })  # fmt: skip
+
+
 class Router:
     """A scripted engine API: routes (method, path) to a handler and records every request. A
     route it does not know gets HTTP 404 with the engine's own error body (`not_found`)."""
