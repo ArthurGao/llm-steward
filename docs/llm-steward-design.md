@@ -4,7 +4,7 @@ Nov 7, 2026 · @Arthur Gao
 
 ## 1. 概述
 
-**llm-steward** 是 AI 记忆与知识的治理层：它让 agent 产生的记忆经过筛选、确认和审核，变成可信、可追溯的团队知识。它本身不重新实现 memory 或 RAG 引擎，而是通过 adapter 接入成熟的开源项目——默认 memory 用 **mem0**，默认 KB 用 **WeKnora**，文档复杂时可以换 **RAGFlow**，测试和单机场景用内置的 **native** 实现（SQLite + sqlite-vec）。任何 app 或 agent 都可以通过 REST、Python SDK 或 MCP 接入。仓库包含 `backend/`（FastAPI）和 `frontend/`（Admin）两个目录。
+**llm-steward** 是 AI 记忆与知识的治理层：它让 agent 产生的记忆经过筛选、确认和审核，变成可信、可追溯的团队知识。它本身不重新实现 memory 或 RAG 引擎，而是通过 adapter 接入成熟的开源项目——默认 memory 用 **lite-mem**（2026-11-12 起，之前是 mem0，mem0 仍可选），默认 KB 用 **WeKnora**（**lite-rag** 可选），文档复杂时可以换 **RAGFlow**，测试和单机场景用内置的 **native** 实现（SQLite + sqlite-vec）。任何 app 或 agent 都可以通过 REST、Python SDK 或 MCP 接入。仓库包含 `backend/`（FastAPI）和 `frontend/`（Admin）两个目录。
 
 > 命名：steward 取自数据治理里的 data steward（数据管家），也就是负责数据质量、口径和合规的角色。仓库名 `llm-steward`，Python 包 `llm_steward`，CLI `steward`，环境变量前缀 `STEWARD_`。
 
@@ -104,7 +104,7 @@ Redis agent-memory-server 和 Microsoft Kernel Memory 曾经最接近这个定�
 
 | 角色 | 项目 | 协议 | 社区与维护 | 选它的理由 | 注意 |
 | --- | --- | --- | --- | --- | --- |
-| Memory（默认） | [mem0](https://github.com/mem0ai/mem0) OSS | Apache-2.0 | 约 6.8 万 star；AWS Strands Agents 默认的 memory 提供方 | 使用最广；支持 [pgvector](https://docs.mem0.ai/components/vectordbs/dbs/pgvector)；按 user/agent/run 分 scope | 2026 年 4 月起抽取算法改为"只 ADD"，冲突和取代需要治理层自己补 |
+| Memory（2026-11-12 前的默认，现为选项；默认改为 lite-mem，见 §11） | [mem0](https://github.com/mem0ai/mem0) OSS | Apache-2.0 | 约 6.8 万 star；AWS Strands Agents 默认的 memory 提供方 | 使用最广；支持 [pgvector](https://docs.mem0.ai/components/vectordbs/dbs/pgvector)；按 user/agent/run 分 scope | 2026 年 4 月起抽取算法改为"只 ADD"，冲突和取代需要治理层自己补 |
 | KB（默认） | [WeKnora](https://github.com/Tencent/WeKnora)（腾讯） | MIT | 约 3.7 万 star；v0.9.0 于 2026-10-29 发布，发版频繁 | 支持 PostgreSQL + pgvector；有 SQLite 单文件的 Lite 版；内置 MCP；约 360 个 REST 端点；中文友好 | 仍是 0.x，API 变化快，需要锁定版本并写合约测试 |
 | KB（备选） | [RAGFlow](https://github.com/infiniflow/ragflow) | Apache-2.0 | 约 9.4 万 star；1.0.0-rc1 于 2026-09-29 发布 | 文档解析最强（版面、表格、扫描件）；有 HTTP API 和 Python SDK | 依赖重：Elasticsearch / Infinity、MySQL、MinIO 等；建议 4 核 16 GB 起步 |
 | 图谱（v2） | [LightRAG](https://github.com/HKUDS/LightRAG) 或 WeKnora 自带 GraphRAG | MIT | 约 4 万 star | 有 REST server，可以只用 PostgreSQL 存储；自称 LLM 调用比 Microsoft GraphRAG 少得多 | 默认没有鉴权，必须放在内网 |
@@ -301,6 +301,50 @@ CREATE TABLE external_refs (
 - **检索安全网**：provider 返回的结果如果在自有库中找不到，或已经失效，一律丢弃并记录告警。这保证了即使同步延迟，已废弃的知识也不会被使用。
 - **文档**：整篇文档由 KB provider 解析和切块。llm-steward 只记录文档级的状态和风险，文档的生效与下线也经过治理层。
 - **统计不走治理写入路径**（P4e）：`memories.access_count` / `last_accessed_at`、`kb_entries.hit_count` / `helpful_count` / `unhelpful_count` 是统计数据，不是受治理的状态。它们由检索服务直接更新：不写 `change_log`，也不改 `updated_at`（被读到不等于被编辑）。和 Syncer 记录同步状态一样，这是规则 1"所有写入经过 `GovernanceService.apply()`"仅有的例外，不能拿来给受治理的字段开口子。
+
+### 租户隔离：PostgreSQL RLS 作为第二道防线（设计，2026-11-21，未实施）
+
+现状：隔离只在应用层（规则 7）。每张业务表带 `namespace_id`，每个查询手写过滤，`services/` 和 `storage/` 里约 65 处。
+测试用的是表 owner 角色 `llm_steward`。一处漏写的过滤就会跨租户读写，而且没有任何东西能发现它。方案是在 PG 上加
+RLS 作为第二道防线，**应用层过滤保留**（KB `global/engineering/postgres-guide.md` §1.4：两道缺一不可）。SQLite
+（`native`）没有 RLS，仍然只靠应用层。
+
+- **租户 GUC**：
+  - 每个请求、每个 job 的事务开头执行 `SELECT set_config('app.namespace_id', :ns, true)`，第三个参数 `true` 表示只在本事务内有效。
+  - 放在 `storage/db.py` 的 session 工厂里，由 API 依赖（API key 解析出的 namespace）和 worker 的 `ClaimedJob.namespace_id` 提供值。
+  - 没有设置时 `current_setting('app.namespace_id', true)` 为 NULL，policy 判为假，查询返回 0 行。这是 fail-closed，不会报错放行。
+- **policy**：每张带 `namespace_id` 的业务表都加：
+  ```sql
+  ALTER TABLE <t> ENABLE ROW LEVEL SECURITY;
+  ALTER TABLE <t> FORCE ROW LEVEL SECURITY;
+  CREATE POLICY ns_isolation ON <t>
+    USING (namespace_id = current_setting('app.namespace_id', true)::uuid)
+    WITH CHECK (namespace_id = current_setting('app.namespace_id', true)::uuid);
+  ```
+  `namespaces` 和 `api_keys` 不加，因为鉴权要在知道 namespace 之前先查到 key。它们只能经 `auth` 路径访问。
+- **角色**：
+  - 拆成三个角色：`llm_steward_owner`（迁移，`STEWARD_MIGRATION_DATABASE_URL`）、`llm_steward_app`（运行时，非 owner）、`llm_steward_admin`（BYPASSRLS）。
+  - `llm_steward_admin` 只给跨 namespace 的路径用：Admin 总览、`steward resync`、erasure 的跨表清理、reconcile 的全量扫描。
+  - 这些路径要显式取这个 session，代码里一眼能看出来。
+  - 启动时断言运行时角色不是 owner：`STEWARD_REQUIRE_NON_OWNER=true` 时拒绝启动。默认关，以免挡住本地开发；生产部署文档要求打开（KB 指南 §1.2）。
+- **迁移**：
+  - Alembic 0016 只在 PG 上执行（`op.get_context().dialect.name == "postgresql"`），按表 `ENABLE` / `FORCE` / `CREATE POLICY`，并给 `llm_steward_app` 授权。
+  - `downgrade()` 按相反顺序 `DROP POLICY`、`DISABLE`。
+  - 另写回滚 runbook：先把运行时 URL 换回 owner，再降级。
+  - 上线前先看 `alembic upgrade --sql` 的输出。
+- **测试**：
+  - 新增隔离测试，用 `llm_steward_app` 角色连接，验证三件事：
+    - 不设 GUC 时 `count(*) == 0`；
+    - 设成 A 只看到 A 的行；
+    - 往 B 写会被 `WITH CHECK` 拒绝。
+  - 既有的 owner 角色测试照常跑，保证应用层过滤仍然有效。
+  - CI 必须创建非 owner 角色；隔离测试被 skip 就算失败（KB `testing-and-ci.md` §1–§3）。
+- **受影响的代码**：
+  - `storage/db.py`（session 工厂设 GUC）；
+  - worker 和 job_queue（claim 跨 namespace，走 admin session；处理单个 job 时设 GUC）；
+  - `admin_service`、`erasure`、`resync`、`reconcile`（改用 admin session）；
+  - compose 和 `.env.example`（三个 URL）。
+- **阶段**：排在 P11 之后，作为单独一个阶段（P12）。动手前进 plan mode，因为它同时改到 storage、worker 和部署三层。
 
 ## 5. 写入流水线与治理
 
