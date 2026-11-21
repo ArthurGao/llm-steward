@@ -205,7 +205,8 @@ class AppClient:
 
     @property
     def sessions(self) -> "async_sessionmaker[AsyncSession]":
-        """Sessions on the app's own engine (use them inside `call`)."""
+        """Sessions on the app's own engine (use them inside `call`, which runs unscoped: the
+        test reads and seeds every namespace, as an operator would)."""
         from llm_steward.storage.db import session_factory
 
         return session_factory(self.services.engine)
@@ -234,9 +235,13 @@ class AppClient:
         return self.call(read)
 
     def call(self, fn: Callable[..., Awaitable[T]], *args: object, **kwargs: object) -> T:
+        """`fn` on the app's loop, unscoped (row-level security, P12): a test's direct calls
+        act across namespaces. What runs scoped in the app (a request, a job) scopes itself."""
         portal = self.http.portal
         assert portal is not None
-        return portal.call(functools.partial(fn, *args, **kwargs))
+        from llm_steward.storage.db import run_unscoped
+
+        return portal.call(functools.partial(run_unscoped(fn), *args, **kwargs))
 
     def new_tenant(self, slug: str, *scopes: "ApiScope") -> tuple[dict[str, str], uuid.UUID]:
         """Create a namespace and an API key; returns auth headers and the namespace id."""
@@ -336,8 +341,12 @@ class AppClient:
 
 @pytest.fixture
 async def sessions(migrated_url: str) -> AsyncIterator["async_sessionmaker[AsyncSession]"]:
+    """Unscoped sessions (P12): the tests that use them seed and read every namespace."""
+    from llm_steward.storage.db import unscoped
+
     async with engine_scope(migrated_url, schema=TEST_SCHEMA) as engine:
-        yield session_factory(engine)
+        with unscoped():
+            yield session_factory(engine)
 
 
 @pytest.fixture

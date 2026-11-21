@@ -288,6 +288,13 @@ them once the worker has pushed them. Both directions run on the real engines in
 The Admin (reviews, memories, knowledge, gaps, jobs) is a separate SPA in `frontend/apps/admin`. It
 has no accounts: it connects to a backend with the static `STEWARD_ADMIN_TOKEN`.
 
+**Tenant isolation on PostgreSQL.** Besides every query's own `namespace_id` filter, row-level
+security policies (migration 0017) let a transaction see only its namespace's rows. They hold any
+role that is not a superuser and has no BYPASSRLS, the table owner included. The compose database
+(`steward-db`) runs as its superuser, so there they do not apply: in production connect with an
+ordinary role that owns the database and set `STEWARD_REQUIRE_RLS=true`, which refuses to start
+otherwise (design §4).
+
 ## Development
 
 ```sh

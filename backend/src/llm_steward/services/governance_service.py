@@ -60,6 +60,7 @@ from llm_steward.services.erasure import Erased, erase_user
 from llm_steward.services.job_queue import enqueue, mark_ref, queue_removal, queue_sync
 from llm_steward.services.scoping import exact
 from llm_steward.services.webhook_service import candidate_event, entry_event, queue_event
+from llm_steward.storage.db import per_namespace, unscoped
 
 # Allowed state changes (design §5). Anything else is a 409.
 KB_TRANSITIONS: dict[KbStatus, frozenset[KbStatus]] = {
@@ -1236,26 +1237,23 @@ class GovernanceService:
     async def expire_candidates(self) -> int:
         """Pending candidates past their expiry become `expired` (a daily worker tick), each in
         its own transaction: one decided meanwhile is skipped, not the whole sweep."""
-        async with self._sessions() as s:
-            due = list(
-                await s.execute(
-                    select(Candidate.namespace_id, Candidate.id).where(
-                        Candidate.status == CandidateStatus.PENDING,
-                        Candidate.expires_at <= utcnow(),
+        with unscoped():  # the scan crosses namespaces; each decision runs in its own (P12)
+            async with self._sessions() as s:
+                due = list(
+                    await s.execute(
+                        select(Candidate.namespace_id, Candidate.id).where(
+                            Candidate.status == CandidateStatus.PENDING,
+                            Candidate.expires_at <= utcnow(),
+                        )
                     )
                 )
-            )
-        expired = 0
-        for namespace_id, candidate_id in due:
-            op = DecideCandidate(
-                namespace_id, candidate_id, CandidateStatus.EXPIRED, note="expired"
-            )
-            try:
-                await self.apply(op, SYSTEM)
-            except Conflict:
-                continue  # decided between the scan and now
-            expired += 1
-        return expired
+
+        async def expire(item: tuple[uuid.UUID, uuid.UUID]) -> None:
+            op = DecideCandidate(*item, CandidateStatus.EXPIRED, note="expired")
+            await self.apply(op, SYSTEM)
+
+        items = [(ns, (ns, candidate)) for ns, candidate in due]
+        return await per_namespace(items, expire, skip=(Conflict,))  # decided meanwhile
 
     # change log
 

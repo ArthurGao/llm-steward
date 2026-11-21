@@ -302,49 +302,39 @@ CREATE TABLE external_refs (
 - **文档**：整篇文档由 KB provider 解析和切块。llm-steward 只记录文档级的状态和风险，文档的生效与下线也经过治理层。
 - **统计不走治理写入路径**（P4e）：`memories.access_count` / `last_accessed_at`、`kb_entries.hit_count` / `helpful_count` / `unhelpful_count` 是统计数据，不是受治理的状态。它们由检索服务直接更新：不写 `change_log`，也不改 `updated_at`（被读到不等于被编辑）。和 Syncer 记录同步状态一样，这是规则 1"所有写入经过 `GovernanceService.apply()`"仅有的例外，不能拿来给受治理的字段开口子。
 
-### 租户隔离：PostgreSQL RLS 作为第二道防线（设计，2026-11-21，未实施）
+### 租户隔离：PostgreSQL RLS 作为第二道防线（P12，2026-11-22 实施）
 
-现状：隔离只在应用层（规则 7）。每张业务表带 `namespace_id`，每个查询手写过滤，`services/` 和 `storage/` 里约 65 处。
-测试用的是表 owner 角色 `llm_steward`。一处漏写的过滤就会跨租户读写，而且没有任何东西能发现它。方案是在 PG 上加
-RLS 作为第二道防线，**应用层过滤保留**（KB `global/engineering/postgres-guide.md` §1.4：两道缺一不可）。SQLite
-（`native`）没有 RLS，仍然只靠应用层。
+隔离仍然首先靠应用层（规则 7：每张业务表带 `namespace_id`，每个查询都写过滤）。PG 上再加一层行级安全（RLS），用来兜住漏写的那一个过滤（KB `global/engineering/postgres-guide.md` §1.4：两道防线缺一不可）。SQLite（`native`）没有 RLS，仍然只靠应用层。
 
-- **租户 GUC**：
-  - 每个请求、每个 job 的事务开头执行 `SELECT set_config('app.namespace_id', :ns, true)`，第三个参数 `true` 表示只在本事务内有效。
-  - 放在 `storage/db.py` 的 session 工厂里，由 API 依赖（API key 解析出的 namespace）和 worker 的 `ClaimedJob.namespace_id` 提供值。
-  - 没有设置时 `current_setting('app.namespace_id', true)` 为 NULL，policy 判为假，查询返回 0 行。这是 fail-closed，不会报错放行。
-- **policy**：每张带 `namespace_id` 的业务表都加：
-  ```sql
-  ALTER TABLE <t> ENABLE ROW LEVEL SECURITY;
-  ALTER TABLE <t> FORCE ROW LEVEL SECURITY;
-  CREATE POLICY ns_isolation ON <t>
-    USING (namespace_id = current_setting('app.namespace_id', true)::uuid)
-    WITH CHECK (namespace_id = current_setting('app.namespace_id', true)::uuid);
-  ```
-  `namespaces` 和 `api_keys` 不加，因为鉴权要在知道 namespace 之前先查到 key。它们只能经 `auth` 路径访问。
-- **角色**：
-  - 拆成三个角色：`llm_steward_owner`（迁移，`STEWARD_MIGRATION_DATABASE_URL`）、`llm_steward_app`（运行时，非 owner）、`llm_steward_admin`（BYPASSRLS）。
-  - `llm_steward_admin` 只给跨 namespace 的路径用：Admin 总览、`steward resync`、erasure 的跨表清理、reconcile 的全量扫描。
-  - 这些路径要显式取这个 session，代码里一眼能看出来。
-  - 启动时断言运行时角色不是 owner：`STEWARD_REQUIRE_NON_OWNER=true` 时拒绝启动。默认关，以免挡住本地开发；生产部署文档要求打开（KB 指南 §1.2）。
-- **迁移**：
-  - Alembic 0016 只在 PG 上执行（`op.get_context().dialect.name == "postgresql"`），按表 `ENABLE` / `FORCE` / `CREATE POLICY`，并给 `llm_steward_app` 授权。
-  - `downgrade()` 按相反顺序 `DROP POLICY`、`DISABLE`。
-  - 另写回滚 runbook：先把运行时 URL 换回 owner，再降级。
-  - 上线前先看 `alembic upgrade --sql` 的输出。
+- **policy（迁移 0017，只在 PG 上执行）**：
+  - 14 张存 namespace 数据的表都 `ENABLE` + `FORCE ROW LEVEL SECURITY`。
+  - 每张表一个 `ns_isolation` policy，USING 和 WITH CHECK 相同：
+    `current_setting('app.rls_bypass', true) = 'on' OR namespace_id = nullif(current_setting('app.namespace_id', true), '')::uuid`。
+  - FORCE 的意思是表的 owner 也受约束。llm-steward 和它的测试都以 owner 连库，所以整套 PG 测试都在 RLS 生效的情况下跑。
+  - `namespaces` 和 `api_keys` 不加 policy：鉴权要在知道 namespace 之前先查它们。
+- **GUC（`storage/db.py`）**：
+  - `GovernanceSession` 的 `after_begin` 钩子在每个事务开头设置 `app.namespace_id` 和 `app.rls_bypass`，第三个参数 `true`，只在本事务内有效。autobegin 的读也覆盖到。
+  - 值来自两个 ContextVar：
+    - `namespace_scope(ns)`：只看、只写这个 namespace。用于每个请求（`api/deps.resolve_principal` 和 Admin 的 `/ns/{slug}` 依赖，经 `enter_namespace`；MCP 走同一个 principal）、worker 处理的每个 job，以及扫描之后对每个 namespace 的那一次 apply。
+    - `unscoped()`：能看到所有 namespace，只给天生跨 namespace 的路径用：job 队列（`JobQueue` 的 session 全部 unscoped）、`schedule_reconcile`、`count_hits`、`idempotency.purge`、`flag_for_review` / `expire_candidates` / `flush_idle` 的扫描部分、CLI 的维护命令、迁移（`env.py`）。
+  - `namespace_scope` 嵌在 `unscoped` 里时会重新收窄：worker 循环是 unscoped 的，它处理的每个 job 是 scoped 的。两个都没设时什么都看不到（fail-closed）。
+  - erasure 只操作一个 namespace，不在上面的清单里（之前的设计稿写错了）。
+- **和 2026-11-21 设计稿的差别**：原计划是三个角色（运行时 / BYPASSRLS 的 admin / owner）加三个 URL。实施时改成了 FORCE 加 `app.rls_bypass` 这个 GUC，不用先建角色：
+  - 本地、CI、compose 现在都是 owner 角色，FORCE 已经让它受约束；
+  - 跨 namespace 的路径在代码里显式写成 `unscoped()`，一眼能看出来。
+  - 代价：运行时角色自己也能设这个 GUC，所以 RLS 防的是"漏写过滤"这类 bug，防不了恶意 SQL。要防后者，就得把 bypass 换成 BYPASSRLS 的独立角色，这留作以后的加固项。
+- **`STEWARD_REQUIRE_RLS`**（默认关）：开着时，如果 RLS 拦不住当前角色就拒绝启动，包括 SQLite、superuser、BYPASSRLS 三种情况。superuser 不论有没有 FORCE 都会跳过 RLS，而 compose 自带的 `steward-db` 用的就是 superuser，所以生产要换成普通角色，再把这个开关打开。
 - **测试**：
-  - 新增隔离测试，用 `llm_steward_app` 角色连接，验证三件事：
-    - 不设 GUC 时 `count(*) == 0`；
-    - 设成 A 只看到 A 的行；
-    - 往 B 写会被 `WITH CHECK` 拒绝。
-  - 既有的 owner 角色测试照常跑，保证应用层过滤仍然有效。
-  - CI 必须创建非 owner 角色；隔离测试被 skip 就算失败（KB `testing-and-ci.md` §1–§3）。
-- **受影响的代码**：
-  - `storage/db.py`（session 工厂设 GUC）；
-  - worker 和 job_queue（claim 跨 namespace，走 admin session；处理单个 job 时设 GUC）；
-  - `admin_service`、`erasure`、`resync`、`reconcile`（改用 admin session）；
-  - compose 和 `.env.example`（三个 URL）。
-- **阶段**：排在 P11 之后，作为单独一个阶段（P12）。动手前进 plan mode，因为它同时改到 storage、worker 和部署三层。
+  - `tests/integration/test_rls.py`（只在 PG 上跑）验证：
+    - 测试角色不是 superuser 也不是 BYPASSRLS，否则测试失败；
+    - policy 有 14 个；
+    - 只能看到自己 namespace 的行；
+    - 没设作用域时看到 0 行；
+    - 往别的 namespace 写被 WITH CHECK 拒绝；
+    - unscoped 里再套 scope 会重新收窄；
+    - `REQUIRE_RLS` 生效。
+  - CI 改成用一个非 superuser 的 owner 角色连库，和开发机一样（`.github/workflows/ci.yml`）。
+  - 测试自己的 `AppClient.call` 和 `sessions` fixture 是 unscoped 的，相当于运维直接读写。被测的请求和 job 则照常 scoped。
 
 ## 5. 写入流水线与治理
 
@@ -1134,6 +1124,15 @@ llm-steward/
      Codex 采纳 2 条（都先写失败的测试）：工具收模型给的 `user_id`，记录文本可以诱导它读同一 namespace 里别的用户——改成取记录
      自己的用户；并发的重复 job 会存两条——加唯一约束、冲突时当作已有。
    - 还没做：在 Admin 里按一个按钮执行提议（走治理服务）；用真实模型评测诊断的质量（要一组带标注的 orphan）。
+
+13. **P12 PostgreSQL 行级安全**（2026-11-22；§4"租户隔离"）
+   - [x] 迁移 0017：14 张表 ENABLE + FORCE，各一个 `ns_isolation` policy。GUC 由 `GovernanceSession` 在每个事务开头设置；`namespace_scope` / `unscoped` 用法见 §4。
+   - [x] 作用域接到了请求（principal、Admin 的 namespace）、每个 job、各个 tick 的扫描和逐个 namespace 的 apply、CLI 和迁移上；`STEWARD_REQUIRE_RLS` 已加。
+   - [x] 整套 PG 测试都在 RLS 下跑（owner 受 FORCE 约束），1059 passed。改之前 RLS 一开就有 188 个失败和 165 个 error，正好抓出了每一处没设作用域的地方。测试 helper 里直接用 `engine.begin()` 的 3 处改成走 governance session。`-m contract` 结果不变。CI 改用非 superuser 的 owner。
+   - [x] 收尾：/simplify 采纳：三个 sweep 共用 `per_namespace`；只为套一层 with 的私有方法换成 `@run_unscoped`；两个 ContextVar 合成一个
+     `_SCOPE`（namespace、`EVERY` 或 None）；删掉死代码 `current_namespace`。不采纳：把 `enter_namespace` 换成 yield 依赖（FastAPI
+     yield 依赖的清理时机对流式响应不合适，现在每个请求跑在自己的 task 里，不会泄漏）。Codex：没有 finding。
+   - 还没做：把 bypass 改成 BYPASSRLS 的独立角色（见 §4）；compose 的 `steward-db` 还是 superuser，所以 compose 下 RLS 实际上不生效，文档里写明了。
 
 ### 给 Claude Code 的第一条指令（参考）
 

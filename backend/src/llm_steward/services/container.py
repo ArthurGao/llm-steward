@@ -52,7 +52,7 @@ from llm_steward.services.sync_service import SyncService
 from llm_steward.services.triage_service import TriageService
 from llm_steward.services.webhook_service import WebhookService
 from llm_steward.services.worker import Tick, Worker
-from llm_steward.storage.db import engine_scope, libpq_url, session_factory
+from llm_steward.storage.db import engine_scope, libpq_url, rls_bypassed, session_factory
 
 if TYPE_CHECKING:  # the `cache` extra
     from lite_cache.store import PgStore
@@ -300,6 +300,8 @@ async def runtime(
         engine_scope(settings.database_url, schema=settings.db_schema) as engine,
         AsyncExitStack() as stack,
     ):
+        if settings.require_rls and (why := await rls_bypassed(engine)) is not None:
+            raise RuntimeError(f"STEWARD_REQUIRE_RLS: {why}")
         client = http or httpx2.AsyncClient()
         if http is None:
             stack.push_async_callback(client.aclose)

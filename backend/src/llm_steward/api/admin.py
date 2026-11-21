@@ -77,6 +77,7 @@ from llm_steward.services.health_service import check_health
 from llm_steward.services.kb_service import CandidateFilter, EntryFilter, ReviewFilter, Submitted
 from llm_steward.services.memory_service import MemoryFilter
 from llm_steward.services.paging import MAX_PAGE
+from llm_steward.storage.db import enter_namespace
 
 ADMIN = Actor(ActorType.ADMIN, "admin")
 
@@ -106,7 +107,9 @@ router = APIRouter(prefix="/admin/v1", tags=["admin"], dependencies=[Depends(adm
 
 
 async def _namespace(slug: str, services: ServicesDep) -> Namespace:
-    return await services.namespaces.get_namespace(slug)
+    ns = await services.namespaces.get_namespace(slug)
+    enter_namespace(ns.id)  # row-level security: the Admin works in one namespace per request
+    return ns
 
 
 Ns = Annotated[Namespace, Depends(_namespace)]

@@ -20,6 +20,7 @@ from llm_steward.errors import Conflict, Unprocessable
 from llm_steward.models import IdempotencyKey
 from llm_steward.models.base import utcnow
 from llm_steward.services.namespace_service import Principal
+from llm_steward.storage.db import run_unscoped
 
 KEEP = timedelta(hours=24)
 
@@ -106,6 +107,7 @@ class IdempotencyService:
         async with self._sessions() as s, s.begin():
             await s.execute(delete(IdempotencyKey).where(IdempotencyKey.id == reservation))
 
+    @run_unscoped  # every namespace's keys (P12)
     async def purge(self) -> int:
         """Forget keys older than a day (a worker tick)."""
         async with self._sessions() as s, s.begin():

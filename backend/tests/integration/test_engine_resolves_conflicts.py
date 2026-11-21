@@ -162,7 +162,7 @@ def _external_id(c: AppClient, memory_id: str) -> str:
 
         from llm_steward.models import ExternalRef
 
-        async with c.services.engine.connect() as conn:
+        async with c.sessions() as conn:  # a governance session: unscoped inside `call` (P12)
             row = await conn.scalar(
                 select(ExternalRef.external_id).where(ExternalRef.object_id == uuid.UUID(memory_id))
             )

@@ -84,8 +84,8 @@ def test_a_retry_resumes_from_the_mirror_and_extracts_once(migrated_url: str) ->
         assert _episode(c, h, "我搬到上海了").status_code == 503  # the resolve call failed
 
         async def due_now() -> None:
-            async with c.services.engine.begin() as conn:
-                await conn.execute(update(Job).values(run_after=utcnow()))
+            async with c.sessions() as s, s.begin():  # unscoped inside `call` (P12)
+                await s.execute(update(Job).values(run_after=utcnow()))
 
         c.call(due_now)
         c.drain()

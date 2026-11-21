@@ -29,7 +29,7 @@ from llm_steward.services.container import runtime
 from llm_steward.services.job_queue import JobQueue
 from llm_steward.services.namespace_service import DEFAULT_SCOPES, NamespaceService
 from llm_steward.services.resync import ResyncReport, resync
-from llm_steward.storage.db import engine_scope, session_factory
+from llm_steward.storage.db import engine_scope, session_factory, unscoped
 
 app = typer.Typer(no_args_is_help=True, add_completion=False)
 ns_app = typer.Typer(no_args_is_help=True, help="Namespaces (one per integrating project).")
@@ -60,7 +60,8 @@ def _with_sessions[T](action: Callable[[async_sessionmaker[AsyncSession]], Await
 
     async def run() -> T:
         async with engine_scope(settings.database_url, schema=settings.db_schema) as engine:
-            return await action(session_factory(engine))
+            with unscoped():  # maintenance commands cross namespaces (P12)
+                return await action(session_factory(engine))
 
     try:
         return asyncio.run(run())

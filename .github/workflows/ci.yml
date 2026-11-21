@@ -14,13 +14,14 @@ jobs:
       postgres:
         image: pgvector/pgvector:pg18
         env:
-          POSTGRES_USER: llm_steward
+          # the image's superuser; the tests connect as llm_steward below, which is not one:
+          # a superuser skips every row-level security policy (P12, tests/integration/test_rls.py)
+          POSTGRES_USER: postgres
           POSTGRES_PASSWORD: ci
-          POSTGRES_DB: llm_steward
         ports:
           - 5432:5432
         options: >-
-          --health-cmd "pg_isready -U llm_steward -d llm_steward"
+          --health-cmd "pg_isready -U postgres"
           --health-interval 5s --health-timeout 5s --health-retries 10
     env:
       STEWARD_TEST_DATABASE_URL: postgresql+asyncpg://llm_steward:ci@localhost:5432/llm_steward
@@ -32,6 +33,13 @@ jobs:
       - uses: astral-sh/setup-uv@v10.3.3   # setup-uv has no moving v10 tag
         with:
           version: "0.10.8"
+      - name: the test role, as on a developer machine (owner of its database, not a superuser)
+        env:
+          PGPASSWORD: ci
+        run: |
+          psql -h localhost -U postgres -c "CREATE ROLE llm_steward LOGIN PASSWORD 'ci'"
+          psql -h localhost -U postgres -c "CREATE DATABASE llm_steward OWNER llm_steward"
+          psql -h localhost -U postgres -d llm_steward -c "CREATE EXTENSION vector"
       - run: uv sync --locked --all-extras   # Python from backend/.python-version
       - run: uv run ruff check
       - run: uv run ruff format --check

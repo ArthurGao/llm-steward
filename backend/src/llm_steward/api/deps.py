@@ -20,6 +20,7 @@ from starlette.datastructures import Headers
 from llm_steward.models.enums import ApiScope
 from llm_steward.services.container import Services
 from llm_steward.services.namespace_service import PRINCIPAL_STATE_KEY, Principal
+from llm_steward.storage.db import enter_namespace
 
 # Deliberately open: liveness for Docker/monitoring, and the API description itself.
 UNAUTHENTICATED_PATHS = frozenset(
@@ -82,6 +83,7 @@ async def resolve_principal(
     state = scope.setdefault("state", {})
     cached: Principal | None = state.get(PRINCIPAL_STATE_KEY)
     if cached is not None:
+        enter_namespace(cached.namespace_id)  # the middleware's task may not be this one
         return cached
     if not token:
         raise HTTPException(401, "missing API key or user token", headers=_CHALLENGE)
@@ -93,6 +95,7 @@ async def resolve_principal(
         headers = {"Retry-After": str(max(1, math.ceil(wait)))}
         raise HTTPException(429, "rate limit exceeded for this API key", headers=headers)
     state[PRINCIPAL_STATE_KEY] = principal
+    enter_namespace(principal.namespace_id)  # row-level security for the rest of the request
     return principal
 
 

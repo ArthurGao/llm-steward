@@ -136,6 +136,9 @@ class Settings(BaseSettings):
     kb_llm: bool = False
     # STEWARD_CACHE__ENABLED=true: the KB labels' LLM answers are cached per namespace (lite-cache).
     cache: CacheSettings = CacheSettings()
+    # Refuse to start where row-level security would not hold (P12): SQLite, or a PostgreSQL role
+    # that is a superuser or has BYPASSRLS. Off by default (local development); on in production.
+    require_rls: bool = False
     # STEWARD_AGENT__RECONCILE_TRIAGE=true: an agent proposes what to do with unmirrored records.
     agent: AgentSettings = AgentSettings()
     # Memory extraction by llm-steward (role memory.extract, then memory.resolve) for an engine that

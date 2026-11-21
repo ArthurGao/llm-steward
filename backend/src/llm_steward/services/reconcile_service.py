@@ -16,6 +16,7 @@ from llm_steward.models import ExternalRef, Job, Memory, Namespace
 from llm_steward.models.enums import JobStatus, JobType, MemoryStatus, ObjectType, SyncStatus
 from llm_steward.providers.base import MemoryProvider, Scope
 from llm_steward.services.job_queue import ClaimedJob, enqueue
+from llm_steward.storage.db import run_unscoped
 
 log = logging.getLogger(__name__)
 
@@ -105,6 +106,7 @@ class ReconcileService:
         return report
 
 
+@run_unscoped  # every namespace's jobs (P12)
 async def schedule_reconcile(sessions: async_sessionmaker[AsyncSession]) -> int:
     """Queue one reconcile job per namespace unless one is already waiting or running."""
     queued = 0
