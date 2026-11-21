@@ -166,7 +166,13 @@ def _triage_settings(database_url: str, **agent: Any) -> Settings:
     return Settings(  # type: ignore[call-arg]
         _env_file=None,
         database_url=database_url,
-        llm={"backend": "ollama", "model": "qwen3:8b"},
+        # nothing listens on port 1: no test here can reach a real model
+        llm={
+            "backend": "ollama",
+            "model": "qwen3:8b",
+            "max_retries": 0,
+            "backends": {"ollama": {"base_url": "http://127.0.0.1:1/v1"}},
+        },
         agent={"reconcile_triage": True, "db_schema": AGENT_SCHEMA, **agent},
     )
 
@@ -209,6 +215,8 @@ def test_the_runtime_opens_the_assistant_over_lite_agents_store(pg_url: str) -> 
         drop()
     assert isinstance(triage, TriageService)
     assert {"sessions", "events"} <= set(tables)  # migrated by lite-agent
+    with pytest.raises(RuntimeError, match="closed"):  # the runtime's exit closed its model
+        asyncio.run(triage._model.turn("agent.triage", [], []))
     off = Settings(_env_file=None, database_url=pg_url)  # type: ignore[call-arg]
 
     async def closed() -> TriageService | None:
