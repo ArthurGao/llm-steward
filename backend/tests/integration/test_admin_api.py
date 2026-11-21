@@ -354,3 +354,25 @@ def test_only_configured_origins_may_call_from_a_browser(migrated_url: str) -> N
     with running_app(migrated_url, settings={"admin_token": TOKEN}) as client:  # none configured
         r = client.http.options("/admin/v1/namespaces", headers=preflight)
         assert "access-control-allow-origin" not in r.headers
+
+
+def test_reconcile_findings_are_listed_per_namespace(c: AppClient, t: Tenant) -> None:
+    from llm_steward.models import ReconcileFinding
+    from llm_steward.models.enums import TriageAction
+
+    _, other = c.new_tenant("globex")
+
+    async def seed() -> None:
+        async with c.sessions() as s, s.begin():
+            for ns, eid in ((t.ns, "e-acme"), (other, "e-globex")):
+                s.add(ReconcileFinding(
+                    namespace_id=ns, provider="fake-mem", external_id=eid, diagnosis="d",
+                    proposed_action=TriageAction.IGNORE, evidence=["x"],
+                    model="agent.triage:m", session_id="s1",
+                ))  # fmt: skip
+
+    c.call(seed)
+    [finding] = get(c, "/ns/acme/reconcile/findings")["items"]
+    assert (finding["external_id"], finding["proposed_action"], finding["evidence"]) == (
+        "e-acme", "ignore", ["x"],
+    )  # fmt: skip

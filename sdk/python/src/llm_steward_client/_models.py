@@ -779,6 +779,7 @@ class JobOut(BaseModel):
             "kb.doc_remove",
             "kb.doc_fetch",
             "webhook.deliver",
+            "memory.reconcile_triage",
         ],
         Field(title="JobType"),
     ]
@@ -844,6 +845,34 @@ class ProfileOut(BaseModel):
     pinned: Annotated[list[MemoryBrief], Field(title="Pinned")]
     user_id: Annotated[str, Field(title="User Id")]
     values: Annotated[dict[str, str], Field(title="Values")]
+
+
+class ReconcileFindingOut(BaseModel):
+    """
+    What the reconcile triage assistant proposes for one unmirrored provider record (P11): a
+    proposal for a person, never applied by itself.
+    """
+
+    created_at: Annotated[AwareDatetime, Field(title="Created At")]
+    diagnosis: Annotated[str, Field(title="Diagnosis")]
+    evidence: Annotated[list[str], Field(title="Evidence")]
+    external_id: Annotated[str, Field(title="External Id")]
+    id: Annotated[UUID, Field(title="Id")]
+    model: Annotated[str, Field(title="Model")]
+    proposed_action: Annotated[
+        Literal["ignore", "remirror", "erase"],
+        Field(
+            description="What the reconcile triage assistant proposes for an unmirrored provider record (P11). A\nproposal only: a person decides, and any change goes through the governance service.",
+            title="TriageAction",
+        ),
+    ]
+    provider: Annotated[str, Field(title="Provider")]
+    session_id: Annotated[str, Field(title="Session Id")]
+
+
+class ReconcileFindingPage(BaseModel):
+    items: Annotated[list[ReconcileFindingOut], Field(title="Items")]
+    next_cursor: Annotated[UUID | None, Field(title="Next Cursor")]
 
 
 class RetrieveIn(BaseModel):

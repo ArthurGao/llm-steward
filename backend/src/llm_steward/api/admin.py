@@ -530,6 +530,16 @@ async def jobs(
     return out.AdminJobPage(items=[JobOut.model_validate(j) for j in rows], next_cursor=next_cursor)
 
 
+@router.get("/ns/{slug}/reconcile/findings")
+async def reconcile_findings(
+    ns: Ns, services: ServicesDep, cursor: uuid.UUID | None = None, limit: Limit = 50
+) -> out.ReconcileFindingPage:
+    rows, next_cursor = await services.admin.reconcile_findings(ns.id, cursor=cursor, limit=limit)
+    return out.ReconcileFindingPage(
+        items=[out.ReconcileFindingOut.model_validate(f) for f in rows], next_cursor=next_cursor
+    )
+
+
 @router.post("/ns/{slug}/jobs/{job_id}/retry")
 async def retry_job(ns: Ns, job_id: uuid.UUID, services: ServicesDep) -> JobOut:
     return JobOut.model_validate(await services.admin.retry_job(ns.id, job_id))

@@ -36,3 +36,9 @@ test('an unknown id is 404', async () => {
 })
 
 
+
+test('reconcile findings are listed per namespace', async () => {
+  const acme = await api.reconcile.findings(NS, {})
+  expect(acme.items.map((f) => [f.external_id, f.proposed_action])).toEqual([['mem_ext_7f3a', 'remirror']])
+  expect((await api.reconcile.findings('acme-sales', {})).items).toEqual([])
+})

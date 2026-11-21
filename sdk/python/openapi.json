@@ -2262,7 +2262,8 @@
           "kb.doc_status",
           "kb.doc_remove",
           "kb.doc_fetch",
-          "webhook.deliver"
+          "webhook.deliver",
+          "memory.reconcile_triage"
         ],
         "title": "JobType",
         "type": "string"
@@ -2942,6 +2943,93 @@
           "items"
         ],
         "title": "ProviderPage",
+        "type": "object"
+      },
+      "ReconcileFindingOut": {
+        "description": "What the reconcile triage assistant proposes for one unmirrored provider record (P11): a\nproposal for a person, never applied by itself.",
+        "properties": {
+          "created_at": {
+            "format": "date-time",
+            "title": "Created At",
+            "type": "string"
+          },
+          "diagnosis": {
+            "title": "Diagnosis",
+            "type": "string"
+          },
+          "evidence": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Evidence",
+            "type": "array"
+          },
+          "external_id": {
+            "title": "External Id",
+            "type": "string"
+          },
+          "id": {
+            "format": "uuid",
+            "title": "Id",
+            "type": "string"
+          },
+          "model": {
+            "title": "Model",
+            "type": "string"
+          },
+          "proposed_action": {
+            "$ref": "#/components/schemas/TriageAction"
+          },
+          "provider": {
+            "title": "Provider",
+            "type": "string"
+          },
+          "session_id": {
+            "title": "Session Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "provider",
+          "external_id",
+          "diagnosis",
+          "proposed_action",
+          "evidence",
+          "model",
+          "session_id",
+          "created_at"
+        ],
+        "title": "ReconcileFindingOut",
+        "type": "object"
+      },
+      "ReconcileFindingPage": {
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/ReconcileFindingOut"
+            },
+            "title": "Items",
+            "type": "array"
+          },
+          "next_cursor": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Next Cursor"
+          }
+        },
+        "required": [
+          "items",
+          "next_cursor"
+        ],
+        "title": "ReconcileFindingPage",
         "type": "object"
       },
       "RetrievalLogOut": {
@@ -3764,6 +3852,16 @@
         ],
         "title": "TemplateOut",
         "type": "object"
+      },
+      "TriageAction": {
+        "description": "What the reconcile triage assistant proposes for an unmirrored provider record (P11). A\nproposal only: a person decides, and any change goes through the governance service.",
+        "enum": [
+          "ignore",
+          "remirror",
+          "erase"
+        ],
+        "title": "TriageAction",
+        "type": "string"
       },
       "UserDetailOut": {
         "properties": {
@@ -6037,6 +6135,82 @@
           }
         ],
         "summary": "Providers",
+        "tags": [
+          "admin"
+        ]
+      }
+    },
+    "/admin/v1/ns/{slug}/reconcile/findings": {
+      "get": {
+        "operationId": "reconcile_findings_admin_v1_ns__slug__reconcile_findings_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "slug",
+            "required": true,
+            "schema": {
+              "title": "Slug",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "cursor",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Cursor"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 50,
+              "maximum": 200,
+              "minimum": 1,
+              "title": "Limit",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ReconcileFindingPage"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "AdminToken": []
+          }
+        ],
+        "summary": "Reconcile Findings",
         "tags": [
           "admin"
         ]

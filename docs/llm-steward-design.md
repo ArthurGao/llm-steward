@@ -1106,6 +1106,35 @@ llm-steward/
      API，要先给 lite-model 加（后续）。
    - 为什么不做 L2（语义匹配）：lite-cache 的校准没找到既安全又有用的阈值，关着（lite-cache 设计 §8）。
 
+12. **P11 Reconcile 排查助手**（lite-agent 的第一个宿主，2026-11-22；架构评审 2026-11-21 定的）
+   - [x] reconcile 找到 provider 里有、镜像里没有的记录（orphan）时，以前只记日志、等人去看。现在 `STEWARD_AGENT__RECONCILE_TRIAGE`
+     开着时，reconcile 会排一个 `memory.reconcile_triage` job（最多 `__MAX_ORPHANS` 条，默认 20）。worker 对每条 orphan 跑一次
+     lite-agent 的工具循环（role `agent.triage`，不可路由，模型要能调工具；`__TURNS` 次模型调用，默认 8）。
+   - [x] 工具全部只读，都不收参数：记录在代码里读一次，namespace 和用户都取自记录本身，模型（或记录文本里的注入）选不了别的
+     namespace 或别的用户（规则 7）：`get_orphan`（记录本身；不属于这个 namespace 就说已不存在）、`find_external_refs`、
+     `list_mirrored_memories` 和 `recent_changes`（都只看这条记录的用户），最后
+     `report_finding`（terminal）。没有写受治理数据的工具；模型叫一个不存在的工具，lite-agent 回 "no tool named …"，什么也不执行。
+     没报告就要一次（`done`），仍然没有就不存结果、记日志。
+   - [x] 结果存进 `reconcile_findings`（迁移 0016，两种数据库都跑；同一个迁移把新的 job 类型加进 `jobs.type` 的 CHECK）：
+     diagnosis、`proposed_action`（`ignore` / `remirror` / `erase`）、evidence、`agent.triage:<model>`、lite-agent 的 session id。
+     只是提议，不是受治理数据，所以像 `retrieval_logs` 一样直接写，不经过治理服务；人决定后，改动照常走治理服务。
+   - [x] lite-agent 的 session 存在它自己的 schema（`__DB_SCHEMA`，默认 `steward_agent`，启动时在线程里迁移），用
+     `PgSessionStore`。只能用 PostgreSQL：SQLite 上开了加载配置时就报错；schema 不能是治理 schema 或 `*_test`。
+   - [x] Admin：`GET /admin/v1/ns/{slug}/reconcile/findings`；Jobs 页下面一个只读列表（mock 和 live 两种模式都接了）；SDK 的
+     `openapi.json` 和前端 client 重新生成。
+   - [x] 测试：`tests/integration/test_reconcile_triage.py`（两种数据库；模型是 lite-model 的 `AsyncFakeModel` 按脚本发工具调用）：
+     先读后报、工具调用顺序和看到的结果、结果的每个字段；不存在的工具被拒、记录没被动过；没报告就没有结果；别的 namespace 的
+     orphan 看不到；开关关着 reconcile 不排 job；一个 job 最多看 `max_orphans` 条；配置校验；真实 PG 上 `open_triage` 迁移了
+     lite-agent 的表。`test_admin_api.py` 按 namespace 列出结果；前端 `handlers.test.ts`。新测试都改实现看过变红。
+   - [x] 每条记录只排查一次：已有结果的不再排查（每次 reconcile 都会交出同一批 orphan，上限要轮到还没看过的），
+     `(namespace_id, provider, external_id)` 唯一，并发的两个 job 只存一条。
+   - [x] 收尾：/simplify 采纳：已排查的跳过（上面）；lite-model 客户端的构建和错误转换与 `role_llm` 共用；reconcile 的两次
+     enqueue 合成一个事务；配置校验合成一个循环；`model` 注明是配置的模型（每一轮实际回答的模型在 lite-agent 的日志里）。不采纳：
+     LLM 和排查共用一个 lite-model 客户端（两者可以分别开关，各建一个更简单）；测试的删 schema fixture 搬进 conftest（只有两处）。
+     Codex 采纳 2 条（都先写失败的测试）：工具收模型给的 `user_id`，记录文本可以诱导它读同一 namespace 里别的用户——改成取记录
+     自己的用户；并发的重复 job 会存两条——加唯一约束、冲突时当作已有。
+   - 还没做：在 Admin 里按一个按钮执行提议（走治理服务）；用真实模型评测诊断的质量（要一组带标注的 orphan）。
+
 ### 给 Claude Code 的第一条指令（参考）
 
 ```text

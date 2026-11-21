@@ -130,6 +130,7 @@ class JobType(StrEnum):
     DOC_REMOVE = "kb.doc_remove"
     DOC_FETCH = "kb.doc_fetch"  # fetch a document imported by URL (through the outbound guard)
     WEBHOOK_DELIVER = "webhook.deliver"  # one event to one endpoint (design §7)
+    RECONCILE_TRIAGE = "memory.reconcile_triage"  # an agent looks at unmirrored records (P11)
 
 
 class JobStatus(StrEnum):
@@ -150,3 +151,12 @@ class ApiScope(StrEnum):
     WRITE = "write"
     REVIEW = "review"
     ADMIN = "admin"
+
+
+class TriageAction(StrEnum):
+    """What the reconcile triage assistant proposes for an unmirrored provider record (P11). A
+    proposal only: a person decides, and any change goes through the governance service."""
+
+    IGNORE = "ignore"  # leave it: nothing to mirror or remove
+    REMIRROR = "remirror"  # it is a memory the mirror should have: bring it under governance
+    ERASE = "erase"  # it should not exist (e.g. a user's data after erasure): remove it

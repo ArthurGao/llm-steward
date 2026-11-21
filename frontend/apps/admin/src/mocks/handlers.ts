@@ -119,6 +119,7 @@ export function createHandlers(store: Store) {
       return store.activity(ns(params), { ...q, object_type: objectType(q.object_type), actor_type: actorType(q.actor_type), op: changeOp(q.op) })
     })),
 
+    http.get(`${BASE}/ns/:ns/reconcile/findings`, route(({ params, url }) => store.listFindings(ns(params), query(url)))),
     http.get(`${BASE}/ns/:ns/jobs`, route(({ params, url }) => store.listJobs(ns(params), { ...query(url), status: jobStatus(url.searchParams.get('status')) }))),
     http.post(`${BASE}/ns/:ns/jobs/:id/retry`, route(({ params }) => store.retryJob(ns(params), params.id ?? ''))),
     http.post(`${BASE}/ns/:ns/jobs/:id/cancel`, route(({ params }) => store.cancelJob(ns(params), params.id ?? ''))),

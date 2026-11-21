@@ -87,16 +87,21 @@ def role_llm(
     """The LLM for `roles`, the ones that will be used. Every configured role is checked now (an
     unknown role, a missing key, a missing extra): a misconfiguration fails at startup.
     `cache_store` (`open_cache_store`): lite-cache's hook is registered over it."""
+    model = _build(settings, roles)
+    return LiteModelLLM(model, cache=register_cache(model, cache_store, settings.cache.ttl_s))
+
+
+def _build(settings: Settings, roles: tuple[Role, ...]) -> AsyncLiteModel:
+    """lite-model over llm-steward's roles; a missing model or a bad config fails here."""
     if settings.llm is None:
         names = ", ".join(r.value for r in roles)
         raise LLMConfigError(
             f"no model for LLM roles {names}: set STEWARD_LLM__BACKEND and STEWARD_LLM__MODEL"
         )
     try:
-        model = lite_model.build_async(settings.llm, ROLES)
+        return lite_model.build_async(settings.llm, ROLES)
     except lite_model.ConfigError as exc:
         raise LLMConfigError(str(exc)) from exc
-    return LiteModelLLM(model, cache=register_cache(model, cache_store, settings.cache.ttl_s))
 
 
 def register_cache(
@@ -125,6 +130,13 @@ def open_cache_store(settings: Settings) -> "PgStore":
     return open_store(
         CacheStoreSettings(database_url=url, LITECACHE_SCHEMA=settings.cache.db_schema)
     )
+
+
+def tool_model(settings: Settings, role: Role) -> tuple[AsyncLiteModel, str]:
+    """A lite-model client for an agent role (tool calls through `turn()`), and the `role:model`
+    tag its products record (the configured model). Checked now, like every role."""
+    model = _build(settings, (role,))
+    return model, f"{role.value}:{model.target(role.value).model}"
 
 
 def openai_endpoint(settings: Settings, role: Role) -> tuple[str, str | None, str]:

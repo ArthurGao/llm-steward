@@ -16,6 +16,8 @@ class Role(StrEnum):
     KB_RISK = "kb.risk"  # label the risk of knowledge text (rules may raise it further)
     KB_WORTHINESS = "kb.worthiness"  # five scores per new memory: is it worth a KB entry?
     KB_DRAFT = "kb.draft"  # rewrite a memory / a suggestion as general knowledge
+    # the reconcile triage assistant (P11): a tool loop that reads, then proposes an action
+    AGENT_TRIAGE = "agent.triage"
 
 
 # lite-model's declaration of the roles. None may go through a routing alias: each one decides or
