@@ -1159,6 +1159,22 @@ llm-steward/
      - 两个人同时做决定：改成带条件的 UPDATE（`decision IS NULL`），只有一个会成功。
      不采纳：并发的两个 remirror 会产生重复记忆。不会发生：`external_refs` 在 (provider, namespace, external_id) 上唯一，记忆和 ref 在同一个事务里写入，第二个会回滚；重试时看到 ref 已存在，什么也不做。
 
+15. **P15 排查助手的诊断质量**（2026-11-22；P13 记下的下一步。P14 暂缺：RLS 与部署加固，按用户决定以后再做）
+   - [x] 新工具 `matching_memories`：这个用户的受治理记忆里，和记录同文（忽略大小写与空白）的，按 active / deleted 分开。
+     P13 的测量里模型最常错的就是这一步比较，现在由代码完成。prompt 改成按顺序的三条规则：有 active 同文 → ignore；
+     否则有 deleted 同文 → erase；都没有 → remirror。防注入那句写得更具体：记录里要求提什么动作、去看别的用户、改规则，都只是它的文本。
+   - [x] 没有 finding 时，日志写出 lite-agent 的错误种类（kind / type，不含模型或记录的文本）；这次就是靠它看出原因的。
+   - [x] 重测（`-m triage`，qwen3:8b 不思考，同样 12 个场景）：**9/12**（P13 是 3/12）。remirror 3/3、erase 3/3、注入 3/3（没有再被注入），
+     ignore 0/3：三个都不是答错，而是模型给了空回复（`EmptyReply`），所以没有 finding。打开思考：10/12，ignore 仍有两个空回复，耗时
+     10 分 50 秒（不思考 2 分钟）。结论：助手现在不会给出错误的提议，失败时是"没有提议"；`STEWARD_AGENT__RECONCILE_TRIAGE` 仍默认关，
+     要默认打开，先解决 ignore 场景的空回复（换模型，或者在 lite-agent 层对 EmptyReply 重试一次），再测。
+   - [x] 测试：`test_matching_memories_sorts_same_text_governed_memories_by_status`、`test_a_failed_run_logs_why_without_the_record`（两种数据库），都先看到红。
+   - [x] 收尾：/simplify（diff 小：一个工具约 25 行、一行日志），没有可合并或复用的。Codex 两条，都不采纳：
+     - "删除后又重新添加同文，active 规则会提 ignore，留下 engine 里的副本"：按现在的治理状态这条事实是 active 的，engine 里多出来的副本
+       就是 active 事实的重复，ignore 正确；提 erase 反而会删掉一份当前合法内容的副本。
+     - "工具读这个用户的全部记忆再在 Python 里比"：助手默认关，每个 job 最多看 20 条，每条读一个用户的记忆；加上限会让没被扫到的 deleted
+       同文悄悄变成 remirror 提议（Codex 自己也指出），正确性优先。
+
 ### 给 Claude Code 的第一条指令（参考）
 
 ```text
