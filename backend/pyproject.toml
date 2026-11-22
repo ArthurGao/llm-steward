@@ -43,13 +43,13 @@ rerank = [
 # The owner's own RAG engine in-process (`STEWARD_LITERAG_MODE=inprocess`); the default HTTP mode needs
 # nothing. Pinned to a commit: upgrading requires the contract tests (`pytest -m contract`) to pass first.
 literag = [
-    "lite-rag[server] @ git+https://github.com/ArthurGao/lite-rag@74dc5bd724621467051e7d0c085ea55e37285e2a",
+    "lite-rag[server] @ git+https://github.com/ArthurGao/lite-rag@f341850d2413b9b8d3814043d366abfc704bcbed",
 ]
 # The owner's own memory engine in-process (`STEWARD_MEMORY_PROVIDER=litemem`,
 # `STEWARD_LITEMEM_MODE=inprocess`); the default HTTP mode needs nothing. Pinned to a commit:
 # upgrading requires the contract tests (`pytest -m contract`) to pass first.
 litemem = [
-    "lite-mem[server,sqlite] @ git+https://github.com/ArthurGao/lite-mem@2a34c861cc2c1b38dbe6cb74f85f0bcbc56e97f9",
+    "lite-mem[server,sqlite] @ git+https://github.com/ArthurGao/lite-mem@95d89e74309820c8a188704980d4e41539c64d50",
 ]
 # The LLM response cache (design §11 P10, `STEWARD_CACHE__ENABLED`, off by default): lite-cache's
 # exact (L1) cache as an AsyncCacheHook on PostgreSQL. A release wheel; it names its lite-model.
@@ -152,7 +152,7 @@ source_modules = [
 forbidden_modules = ["fastapi", "starlette"]
 
 [tool.uv.sources]
-lite-model = { url = "https://github.com/ArthurGao/lite-model/releases/download/v0.7.0/lite_model-0.7.0-py3-none-any.whl" }
-lite-cache = { url = "https://github.com/ArthurGao/lite-cache/releases/download/v0.3.2/lite_cache-0.3.2-py3-none-any.whl" }
-lite-agent = { url = "https://github.com/ArthurGao/lite-agent/releases/download/v0.2.3/lite_agent-0.2.3-py3-none-any.whl" }
+lite-model = { url = "https://github.com/ArthurGao/lite-model/releases/download/v0.8.0/lite_model-0.8.0-py3-none-any.whl" }
+lite-cache = { url = "https://github.com/ArthurGao/lite-cache/releases/download/v0.3.3/lite_cache-0.3.3-py3-none-any.whl" }
+lite-agent = { url = "https://github.com/ArthurGao/lite-agent/releases/download/v0.2.4/lite_agent-0.2.4-py3-none-any.whl" }
 llm-steward-client = { path = "../sdk/python", editable = true }
