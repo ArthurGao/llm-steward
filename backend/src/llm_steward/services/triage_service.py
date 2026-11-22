@@ -22,7 +22,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from llm_steward import prompts
 from llm_steward.llm.roles import Role
 from llm_steward.models import ChangeLog, ExternalRef, Memory, ReconcileFinding
-from llm_steward.models.enums import ObjectType, TriageAction
+from llm_steward.models.enums import MemoryStatus, ObjectType, TriageAction
 from llm_steward.providers.base import MemoryProvider, MemoryRecord
 from llm_steward.services.job_queue import ClaimedJob
 
@@ -107,12 +107,14 @@ class TriageService:
         )
         result = await agent.run(f"Look into the unmirrored {self._provider.name} record.")
         if not reported:
+            error = result.error  # lite-agent's kind and type: no model or record text
             log.warning(
-                "reconcile triage %s %s: no finding (%s, %s)",
+                "reconcile triage %s %s: no finding (%s, %s%s)",
                 namespace_id,
                 external_id,
                 result.outcome,
                 result.stop,
+                f", {error.kind} {error.type}" if error else "",
             )
             return None
         finding = reported[-1]
@@ -202,6 +204,28 @@ class TriageService:
                 memories = [{"id": str(m.id), "text": m.content, "status": m.status} for m in rows]
             return json.dumps(memories or "none", ensure_ascii=False, default=str)
 
+        @tool(
+            description="The record's user's governed memories with the same text as the record "
+            "(case and spacing aside), split into active and deleted."
+        )
+        async def matching_memories(args: NoArgs, ctx: ToolContext) -> str:
+            # P15: the comparison qwen3:8b kept getting wrong is done here, not by the model
+            if record is None:
+                return gone
+            wanted = _same_text(record.content)
+            async with sessions() as s:
+                rows = await s.scalars(
+                    select(Memory).where(
+                        Memory.namespace_id == namespace_id, Memory.user_id == user_id
+                    )
+                )
+                same = [m for m in rows if _same_text(m.content) == wanted]
+            found: dict[str, list[str]] = {"active": [], "deleted": []}
+            for m in same:
+                if m.status in (MemoryStatus.ACTIVE, MemoryStatus.DELETED):
+                    found[m.status.value].append(m.content)
+            return json.dumps(found, ensure_ascii=False)
+
         @tool(description="Latest governance changes to the record's user's memories here.")
         async def recent_changes(args: NoArgs, ctx: ToolContext) -> str:
             if record is None:
@@ -235,6 +259,12 @@ class TriageService:
             get_orphan,
             find_external_refs,
             list_mirrored_memories,
+            matching_memories,
             recent_changes,
             report_finding,
         ]
+
+
+def _same_text(text: str) -> str:
+    """What makes two memory texts the same for triage: case and runs of spacing aside."""
+    return " ".join(text.split()).casefold()

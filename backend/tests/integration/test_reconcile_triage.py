@@ -276,3 +276,46 @@ def test_a_finding_is_stored_once_per_record(app_client: AppClient) -> None:
     )
     assert first is not None and again is None
     assert app_client.count(ReconcileFinding) == 1
+
+
+def test_matching_memories_sorts_same_text_governed_memories_by_status(
+    app_client: AppClient,
+) -> None:
+    """P15: the comparison the model kept getting wrong (3/12 on qwen3:8b) is done in code: the
+    user's governed memories with the orphan's text (case and spacing aside), by status."""
+    h, ns = app_client.new_tenant("acme")
+    post = lambda text: app_client.http.post(  # noqa: E731
+        "/v1/memories", json={"content": text, "user_id": "u1"}, headers=h
+    ).json()["id"]
+    post("Lives in Wellington")
+    gone = post("Card number ends in 4242")
+    assert app_client.http.delete(f"/v1/memories/{gone}", headers=h).status_code in (200, 204)
+    app_client.drain()
+    shown = {}
+    for text in ("  lives in  WELLINGTON ", "Card number ends in 4242", "Has two children"):
+        orphan = _orphan(app_client, ns, text=text)
+        fake = AsyncFakeModel(**{ROLE: [call("matching_memories", n=1), report()]})
+        app_client.call(_service(app_client, fake).triage, ns, orphan)
+        shown[text.strip()] = json.loads(_results(fake)[0])
+    assert shown["lives in  WELLINGTON"] == {"active": ["Lives in Wellington"], "deleted": []}
+    assert shown["Card number ends in 4242"] == {
+        "active": [],
+        "deleted": ["Card number ends in 4242"],
+    }
+    assert shown["Has two children"] == {"active": [], "deleted": []}
+
+
+def test_a_failed_run_logs_why_without_the_record(
+    app_client: AppClient, caplog: pytest.LogCaptureFixture
+) -> None:
+    """P15: qwen3:8b's ignore cases ended with no finding; the log now says the model's error
+    (an EmptyReply), never the record's text."""
+    from lite_model import EmptyReply
+
+    _, ns = app_client.new_tenant("acme")
+    orphan = _orphan(app_client, ns, text="private words")
+    fake = AsyncFakeModel(**{ROLE: [EmptyReply("role agent.triage (fake:fake-model): empty")]})
+    with caplog.at_level("WARNING", logger="llm_steward.services.triage_service"):
+        assert app_client.call(_service(app_client, fake).triage, ns, orphan) is None
+    [line] = [r.getMessage() for r in caplog.records if "no finding" in r.getMessage()]
+    assert "EmptyReply" in line and "private words" not in line
