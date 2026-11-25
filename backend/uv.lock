@@ -878,7 +878,7 @@ provides-extras = ["anthropic"]
 [[package]]
 name = "lite-rag"
 version = "0.1.0"
-source = { git = "https://github.com/ArthurGao/lite-rag?rev=f341850d2413b9b8d3814043d366abfc704bcbed#f341850d2413b9b8d3814043d366abfc704bcbed" }
+source = { git = "https://github.com/ArthurGao/lite-rag?rev=a1dd603a0355718ee045606bbfe40ed38c978a36#a1dd603a0355718ee045606bbfe40ed38c978a36" }
 dependencies = [
     { name = "httpx2" },
     { name = "jieba" },
@@ -977,7 +977,7 @@ requires-dist = [
     { name = "lite-cache", marker = "extra == 'cache'", url = "https://github.com/ArthurGao/lite-cache/releases/download/v0.3.3/lite_cache-0.3.3-py3-none-any.whl" },
     { name = "lite-mem", extras = ["server", "sqlite"], marker = "extra == 'litemem'", git = "https://github.com/ArthurGao/lite-mem?rev=95d89e74309820c8a188704980d4e41539c64d50" },
     { name = "lite-model", url = "https://github.com/ArthurGao/lite-model/releases/download/v0.8.0/lite_model-0.8.0-py3-none-any.whl" },
-    { name = "lite-rag", extras = ["server"], marker = "extra == 'literag'", git = "https://github.com/ArthurGao/lite-rag?rev=f341850d2413b9b8d3814043d366abfc704bcbed" },
+    { name = "lite-rag", extras = ["server"], marker = "extra == 'literag'", git = "https://github.com/ArthurGao/lite-rag?rev=a1dd603a0355718ee045606bbfe40ed38c978a36" },
     { name = "mcp", specifier = "==2.3.0" },
     { name = "mem0ai", marker = "extra == 'mem0'", specifier = "==2.2.1" },
     { name = "psycopg", extras = ["binary", "pool"], marker = "extra == 'mem0'", specifier = ">=3.2" },
