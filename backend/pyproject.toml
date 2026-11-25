@@ -43,7 +43,7 @@ rerank = [
 # The owner's own RAG engine in-process (`STEWARD_LITERAG_MODE=inprocess`); the default HTTP mode needs
 # nothing. Pinned to a commit: upgrading requires the contract tests (`pytest -m contract`) to pass first.
 literag = [
-    "lite-rag[server] @ git+https://github.com/ArthurGao/lite-rag@f341850d2413b9b8d3814043d366abfc704bcbed",
+    "lite-rag[server] @ git+https://github.com/ArthurGao/lite-rag@a1dd603a0355718ee045606bbfe40ed38c978a36",
 ]
 # The owner's own memory engine in-process (`STEWARD_MEMORY_PROVIDER=litemem`,
 # `STEWARD_LITEMEM_MODE=inprocess`); the default HTTP mode needs nothing. Pinned to a commit:
