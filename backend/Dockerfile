@@ -9,13 +9,13 @@ RUN apt-get update && apt-get install -y --no-install-recommends git && rm -rf /
 # --locked would re-check it, which needs the dev group's path source (../sdk/python), outside this
 # build context. Development and CI run `uv sync --locked`, so the lock is checked there.
 COPY pyproject.toml uv.lock ./
-RUN --mount=type=cache,target=/root/.cache/uv uv sync --frozen --no-dev --extra native --extra mem0 --extra litemem --no-install-project
+RUN --mount=type=cache,target=/root/.cache/uv uv sync --frozen --no-dev --extra native --extra mem0 --extra litemem --extra agent --no-install-project
 # The local embedding model (native and mem0), baked in: a first start needs no download from the
 # Hugging Face Hub, which can stall for minutes. Must match Settings.embedding_model (a test pins it).
 ARG EMBEDDING_MODEL=sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2
 RUN .venv/bin/python -c "import sys; from fastembed import TextEmbedding; TextEmbedding(sys.argv[1], cache_dir='/app/models')" "$EMBEDDING_MODEL"
 COPY src ./src
-RUN --mount=type=cache,target=/root/.cache/uv uv sync --frozen --no-dev --extra native --extra mem0 --extra litemem --no-editable
+RUN --mount=type=cache,target=/root/.cache/uv uv sync --frozen --no-dev --extra native --extra mem0 --extra litemem --extra agent --no-editable
 
 FROM python:3.12-slim
 # A real home: libraries such as huggingface_hub write under $HOME and fail without one.
