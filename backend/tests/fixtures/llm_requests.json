@@ -4,7 +4,7 @@
     "body": {
       "messages": [
         {
-          "content": "Rewrite TEXT as one entry for a team knowledge base: a short title and a general statement that is\ntrue for everyone, in the language of TEXT. Remove names, personal details and anything that only\napplies to one person or one conversation. Keep numbers and conditions exact; do not add facts that\nTEXT does not state.\n\nThen label how risky it is to share your entry without an expert checking it first: high for prices,\nlegal or policy commitments, medical, financial or safety advice, security details, or anything about\na specific person; medium for product or process facts that could be outdated; low for general,\nstable, harmless facts. When unsure, choose the higher level. Give a one-sentence reason.\n",
+          "content": "Rewrite TEXT as one entry for a team knowledge base: a short title and a general statement that is\ntrue for everyone, in the language of TEXT. Remove names, personal details and anything that only\napplies to one person or one conversation. Keep numbers and conditions exact; do not add facts that\nTEXT does not state.\n\nThen label how risky it is to share your entry without an expert checking it first: high for prices,\nlegal or policy commitments, medical, financial or safety advice, security details, or anything about\na specific person; medium for product or process facts that could be outdated; low for general,\nstable, harmless facts. When unsure, choose the higher level. Give a one-sentence reason.\n\nWrite the title, the statement and the reason in the language TEXT is written in (Chinese TEXT: a Chinese entry). Never translate TEXT.\n",
           "role": "system"
         },
         {

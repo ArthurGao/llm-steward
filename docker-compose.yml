@@ -49,7 +49,8 @@ x-steward-pg-env: &steward-pg-env
   STEWARD_LITEMEM_MODE: ${STEWARD_LITEMEM_MODE:-inprocess}
   STEWARD_LITEMEM_URL: ${STEWARD_LITEMEM_URL:-http://host.docker.internal:8710}
   STEWARD_LITEMEM_API_KEY: ${STEWARD_LITEMEM_API_KEY:-}
-  LITEMEM_EMBEDDING__BASE_URL: ${LITEMEM_EMBEDDING_URL:-http://host.docker.internal:11434}
+  # lite-mem S14: embeddings are lite-model's; the backend takes the OpenAI-compatible root
+  LITEMEM_EMBEDDING__BACKENDS__OLLAMA__BASE_URL: ${LITEMEM_EMBEDDING_URL:-http://host.docker.internal:11434}/v1
   LITEMEM_LLM__BACKENDS__OPENAI__BASE_URL: ${LITEMEM_DOCKER_LLM_URL:-http://host.docker.internal:11434/v1}
   LITEMEM_LLM__MODEL: ${LITEMEM_LLM_MODEL:-qwen3:8b}
 
