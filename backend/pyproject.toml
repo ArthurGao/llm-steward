@@ -154,5 +154,5 @@ forbidden_modules = ["fastapi", "starlette"]
 [tool.uv.sources]
 lite-model = { url = "https://github.com/ArthurGao/lite-model/releases/download/v0.8.0/lite_model-0.8.0-py3-none-any.whl" }
 lite-cache = { url = "https://github.com/ArthurGao/lite-cache/releases/download/v0.3.3/lite_cache-0.3.3-py3-none-any.whl" }
-lite-agent = { url = "https://github.com/ArthurGao/lite-agent/releases/download/v0.2.5/lite_agent-0.2.5-py3-none-any.whl" }
+lite-agent = { url = "https://github.com/ArthurGao/lite-agent/releases/download/v0.3.0/lite_agent-0.3.0-py3-none-any.whl" }
 llm-steward-client = { path = "../sdk/python", editable = true }
