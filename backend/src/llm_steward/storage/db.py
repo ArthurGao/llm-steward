@@ -69,7 +69,7 @@ def libpq_url(database_url: str | URL) -> str | None:
     return url.set(drivername="postgresql").render_as_string(hide_password=False)
 
 
-# Tenant isolation, second line (design §4 "租户隔离", P12): on PostgreSQL every governance
+# Tenant isolation, second line (design §4 "Tenant isolation", P12): on PostgreSQL every governance
 # transaction starts by telling the row-level security policies whose rows it may touch. The
 # application's own `namespace_id` filters stay (rule 7); this catches the one that is missing.
 class _Every:
