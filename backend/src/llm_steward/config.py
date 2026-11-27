@@ -134,6 +134,10 @@ class Settings(BaseSettings):
     # KB pipeline LLM steps (design §5): risk labels, worthiness scoring, drafting (roles kb.risk,
     # kb.worthiness, kb.draft). Off: rules-only risk, no suggestions; promote/suggestions → 422.
     kb_llm: bool = False
+    # A drafted entry whose kb.similar cosine with an effective entry is at least this goes to a
+    # reviewer, not the asked user (design §5 "KB review policy"). 0.63: on bge-m3, same-topic
+    # drafts scored 0.674-0.882 (lowest: Chinese draft vs English entry), other pairs <= 0.597.
+    kb_similar_threshold: float = Field(default=0.63, gt=0, le=1)
     # STEWARD_CACHE__ENABLED=true: the KB labels' LLM answers are cached per namespace (lite-cache).
     cache: CacheSettings = CacheSettings()
     # Refuse to start where row-level security would not hold (P12): SQLite, or a PostgreSQL role

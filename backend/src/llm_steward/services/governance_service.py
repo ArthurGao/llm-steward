@@ -11,6 +11,7 @@ Only a reviewer can make knowledge `verified`; an end user's confirmation never 
 
 import hashlib
 import uuid
+from collections.abc import Sequence
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from enum import Enum
@@ -272,13 +273,17 @@ class SubmitKbEntry:
     source_refs: list[dict[str, Any]] = field(default_factory=list)
     tags: list[str] = field(default_factory=list)
     reason: str | None = None
+    # effective entries the draft is near ({"entry_id", "similarity"}; both None: the check could
+    # not run). Any at all: a reviewer decides, not the asked user (design §5 "KB review policy").
+    touches: list[dict[str, Any]] = field(default_factory=list)
 
 
 @dataclass(frozen=True)
 class ReviseKbEntry:
-    """A new version of knowledge from outside: it applies at once, unless the entry is verified
-    or the new text is high risk and the author is not a reviewer — then it waits in the review
-    queue as an UPDATE candidate and the entry is unchanged."""
+    """A new version of knowledge from outside. A reviewer's applies at once. Anyone else's waits
+    in the review queue as an UPDATE candidate, the entry unchanged, when the entry is effective
+    (active or verified: knowledge the team relies on, design §5) or the new text's risk routes
+    to review."""
 
     namespace_id: uuid.UUID
     entry_id: uuid.UUID
@@ -397,6 +402,7 @@ class DecideCandidate:
     draft: dict[str, Any] | None = None
     scope: Literal["personal", "team"] = "team"
     risk_level: RiskLevel | None = None  # the decider's edit labelled (KB LLM): a floor
+    touches: list[dict[str, Any]] = field(default_factory=list)  # as SubmitKbEntry's, re-checked
 
 
 @dataclass(frozen=True)
@@ -919,6 +925,8 @@ class GovernanceService:
             route = "auto" if actor.is_reviewer else _route(collection, risk)
         if route == "user" and op.requested_for_user is None:
             route = "auto"  # nobody to ask: medium goes live (design §5)
+        if op.touches and not actor.is_reviewer:  # a reviewer's own write still goes straight in
+            route = "review"  # it may change what the team already relies on
         if route == "auto" and op.author_type == AuthorType.AI:
             # A model rewrote untrusted text and labelled its own risk: a prompt injection could
             # make that "low". A person sees it first, the asked user or else a reviewer.
@@ -934,7 +942,7 @@ class GovernanceService:
             risk_level=risk,
             origin=CANDIDATE_ORIGIN[op.origin],
             stage=STAGES[route],
-            reason=_reason(op.reason, checked),
+            reason=_reason(op.reason, checked, op.touches),
             requested_for_user=op.requested_for_user,
             session_id=op.session_id,
         )
@@ -950,7 +958,8 @@ class GovernanceService:
         checked, title, content = await self._screen_edit(s, entry, op.title, op.content)
         risk = max_risk(op.risk_level, checked.level, collection.default_risk)
         waits = (
-            entry.status == KbStatus.VERIFIED
+            entry.status
+            in EFFECTIVE_KB_STATUSES  # knowledge the team relies on (owner, 2026-11-27)
             or _route(collection, risk) == "review"
             or actor.propose_only
         )
@@ -1173,9 +1182,17 @@ class GovernanceService:
             by_user = candidate.stage == CandidateStage.AWAITING_USER and not actor.is_reviewer
             if by_user and op.scope == "personal":  # the user keeps it for themselves
                 await self._create_memory(s, _memory_op(candidate, draft), actor)
-            elif by_user and risk == RiskLevel.HIGH:  # useful is not correct: a reviewer decides
+            elif by_user and (risk == RiskLevel.HIGH or op.touches):
+                # useful is not correct, and knowledge the team relies on may change: a reviewer
                 candidate.stage = CandidateStage.AWAITING_REVIEW
-                candidate.draft, candidate.risk_level = draft, risk
+                if op.touches:
+                    candidate.draft = {**draft, "touches": op.touches}
+                    candidate.reason = "; ".join(
+                        [*filter(None, [candidate.reason]), *_touch_notes(op.touches)]
+                    )
+                else:
+                    candidate.draft = draft
+                candidate.risk_level = risk
                 await s.flush()
                 self._log(s, ObjectType.CANDIDATE, candidate, ChangeOp.UPDATE, before, actor, note)
                 return candidate
@@ -1356,6 +1373,7 @@ def _draft(op: SubmitKbEntry, checked: Assessment) -> dict[str, Any]:
         "author_type": op.author_type.value,
         "source_refs": list(op.source_refs),
         "tags": list(checked.tags),
+        **({"touches": list(op.touches)} if op.touches else {}),
     }
 
 
@@ -1374,9 +1392,22 @@ async def _same_file(
     return found
 
 
-def _reason(given: str | None, checked: Assessment) -> str | None:
+def _reason(
+    given: str | None, checked: Assessment, touches: Sequence[dict[str, Any]] = ()
+) -> str | None:
     """What is written about a change; a caller's or model's free text is redacted (PII)."""
-    return "; ".join([*([redact_pii(given)] if given else []), *checked.reasons]) or None
+    notes = [*([redact_pii(given)] if given else []), *checked.reasons, *_touch_notes(touches)]
+    return "; ".join(notes) or None
+
+
+def _touch_notes(touches: Sequence[dict[str, Any]]) -> list[str]:
+    """Why a reviewer sees it: the effective entries it touches, or a check that could not run."""
+    return [
+        f"touches entry {t['entry_id']} (similarity {t['similarity']})"
+        if t["entry_id"]
+        else "could not check whether it touches effective knowledge"
+        for t in touches
+    ]
 
 
 def _memory_op(candidate: Candidate, draft: dict[str, Any]) -> CreateMemory:

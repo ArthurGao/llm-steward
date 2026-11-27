@@ -106,7 +106,7 @@ def build_llm(
     if settings.memory_llm and mode == "engine":
         log.info("STEWARD_MEMORY_LLM is unused: the %s engine extracts itself", memory.name)
     if settings.kb_llm:
-        roles += [Role.KB_RISK, Role.KB_WORTHINESS, Role.KB_DRAFT]
+        roles += [Role.KB_RISK, Role.KB_WORTHINESS, Role.KB_DRAFT, Role.KB_SIMILAR]
     else:
         log.info("KB LLM steps are off (STEWARD_KB_LLM): rules-only risk, no suggestions")
     return role_llm(settings, tuple(roles), cache_store) if roles else None
@@ -174,7 +174,20 @@ def build_services(
         sessions, memory_provider=providers.memory.name, kb_provider=providers.kb.name
     )
     sync = SyncService(sessions, providers)
-    kb = KbService(sessions, governance, llm if settings.kb_llm else None)
+    retrieval = RetrievalService(
+        sessions,
+        providers,
+        timeout_s=settings.retrieve_timeout_ms / 1000,
+        reranker=reranker,
+        rerank_timeout_s=settings.rerank_timeout_ms / 1000,
+    )
+    kb = KbService(
+        sessions,
+        governance,
+        llm if settings.kb_llm else None,
+        retrieval=retrieval,
+        similar_threshold=settings.kb_similar_threshold,
+    )
     extraction = ExtractionService(
         sessions,
         governance,
@@ -202,13 +215,6 @@ def build_services(
         async with sessions() as s:
             return (await read_config(s, namespace_id)).limits.requests_per_minute
 
-    retrieval = RetrievalService(
-        sessions,
-        providers,
-        timeout_s=settings.retrieve_timeout_ms / 1000,
-        reranker=reranker,
-        rerank_timeout_s=settings.rerank_timeout_ms / 1000,
-    )
     handlers: dict[JobType, Handler] = {
         **dict.fromkeys(SyncService.JOB_TYPES, sync.handle),
         JobType.MEMORY_EXTRACT: extraction.handle,

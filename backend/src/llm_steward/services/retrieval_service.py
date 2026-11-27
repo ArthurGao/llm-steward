@@ -24,7 +24,7 @@ from functools import partial
 from typing import Any, Literal, cast
 
 from jinja2 import Environment, PackageLoader
-from sqlalchemy import Table, bindparam, or_, select, update
+from sqlalchemy import Table, bindparam, func, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from llm_steward.errors import NotFound, ProviderUnavailable, Unprocessable
@@ -159,6 +159,19 @@ _CONTEXT_ENV = Environment(
 # another cited entry.
 _CONTEXT_ENV.filters["oneline"] = lambda text: " ".join(text.split())
 _CONTEXT = _CONTEXT_ENV.get_template("context_render.j2")
+
+
+class NotYetSynced(RuntimeError):
+    """`nearby_entries`: effective knowledge exists that the KB engine cannot find yet."""
+
+
+@dataclass(frozen=True)
+class NearbyEntry:
+    """An effective entry near a text (`RetrievalService.nearby_entries`)."""
+
+    id: uuid.UUID
+    title: str
+    content: str
 
 
 @dataclass(frozen=True)
@@ -477,8 +490,64 @@ class RetrievalService:
             result = exc
         return result, _ms_since(started)
 
+    async def nearby_entries(
+        self, namespace_id: uuid.UUID, collection_id: uuid.UUID, text: str, top_k: int
+    ) -> list[NearbyEntry]:
+        """The effective entries of one collection the KB engine ranks nearest to `text`: what a
+        drafted entry may touch (design §5 "KB review policy"). Read-only: no retrieval log, no
+        hit counts. A failing or slow engine raises, and so does effective knowledge the engine
+        cannot have yet (not synced): the caller counts either as "may touch"."""
+        now = utcnow()
+        async with self._sessions() as s:
+            if await self._unsynced_entries(s, namespace_id, collection_id, now):
+                raise NotYetSynced(f"collection {collection_id} has entries the engine lacks")
+            ext_ids = await self._collection_ext_ids(s, namespace_id, None, collection_id)
+        if not ext_ids:
+            return []  # nothing effective to touch
+        hits = await asyncio.wait_for(
+            self._providers.kb.search(text, ext_ids, top_k=top_k), self._timeout_s
+        )
+        if not hits:
+            return []
+        provider = self._providers.kb.name
+        query = self._hits_of(KbEntry, ObjectType.KB_ENTRY, provider, namespace_id, hits).where(
+            KbEntry.status.in_(EFFECTIVE_KB_STATUSES), *_entry_valid_at(now)
+        )
+        async with self._sessions() as s:
+            known = {
+                eid: NearbyEntry(e.id, e.title, e.content) for eid, e in await s.execute(query)
+            }
+        return [known[h.external_id] for h in hits if h.external_id in known]
+
+    async def _unsynced_entries(
+        self, s: AsyncSession, namespace_id: uuid.UUID, collection_id: uuid.UUID, now: datetime
+    ) -> int:
+        """Effective entries of the collection the KB engine does not hold yet (sync pending)."""
+        synced = select(ExternalRef.id).where(
+            ExternalRef.object_type == ObjectType.KB_ENTRY,
+            ExternalRef.object_id == KbEntry.id,
+            ExternalRef.provider == self._providers.kb.name,
+            ExternalRef.sync_status == SyncStatus.SYNCED,
+        )
+        count = await s.scalar(
+            select(func.count())
+            .select_from(KbEntry)
+            .where(
+                KbEntry.namespace_id == namespace_id,
+                KbEntry.collection_id == collection_id,
+                KbEntry.status.in_(EFFECTIVE_KB_STATUSES),
+                *_entry_valid_at(now),
+                ~synced.exists(),
+            )
+        )
+        return int(count or 0)
+
     async def _collection_ext_ids(
-        self, s: AsyncSession, namespace_id: uuid.UUID, names: tuple[str, ...] | None
+        self,
+        s: AsyncSession,
+        namespace_id: uuid.UUID,
+        names: tuple[str, ...] | None,
+        collection_id: uuid.UUID | None = None,
     ) -> list[str]:
         query = (
             select(ExternalRef.external_id)
@@ -492,6 +561,8 @@ class RetrievalService:
         )
         if names is not None:
             query = query.where(KbCollection.name.in_(names))
+        if collection_id is not None:
+            query = query.where(KbCollection.id == collection_id)
         return [eid for eid in await s.scalars(query) if eid]
 
     async def _resolve(
@@ -586,8 +657,7 @@ class RetrievalService:
         provider = self._providers.kb.name
         query = self._hits_of(KbEntry, ObjectType.KB_ENTRY, provider, namespace_id, hits).where(
             KbEntry.status.in_(_KB_HISTORY if req.as_of else EFFECTIVE_KB_STATUSES),
-            KbEntry.valid_from <= now,
-            or_(KbEntry.valid_to.is_(None), KbEntry.valid_to > now),
+            *_entry_valid_at(now),
         )
         rows = await s.execute(query)
         return {
@@ -786,6 +856,12 @@ _LABELS = {  # the context's headings and marks per language
         on=" (on %s)",
     ),
 }
+
+
+def _entry_valid_at(now: datetime) -> tuple[Any, ...]:
+    """An entry inside its validity window at `now`: what retrieval serves and what new
+    knowledge is compared with (`nearby_entries`) agree on it."""
+    return (KbEntry.valid_from <= now, or_(KbEntry.valid_to.is_(None), KbEntry.valid_to > now))
 
 
 def _context_language(setting: str, query: str) -> str:

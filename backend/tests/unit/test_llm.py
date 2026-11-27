@@ -88,6 +88,16 @@ def test_a_role_needs_an_llm_configured() -> None:
         role_llm(_settings(), (Role.MEMORY_EXTRACT, Role.MEMORY_RESOLVE))
 
 
+def test_kb_similar_must_name_its_own_embedding_model() -> None:
+    # the default model is a chat model: its "embeddings" would make every comparison meaningless
+    with pytest.raises(LLMConfigError, match=r"kb\.similar needs an embedding model"):
+        role_llm(_settings(backend="gateway", model="m"), (Role.KB_DRAFT, Role.KB_SIMILAR))
+    ollama = {"ollama": {"type": "ollama", "base_url": "http://127.0.0.1:11434/v1"}}
+    roles = {"kb.similar": {"backend": "ollama", "model": "bge-m3:567m"}}
+    llm = _settings(backend="gateway", model="m", backends=ollama, roles=roles)
+    role_llm(llm, (Role.KB_DRAFT, Role.KB_SIMILAR))
+
+
 @pytest.mark.parametrize(
     ("llm", "problem"),
     [

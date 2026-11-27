@@ -12,6 +12,7 @@ from llm_steward import prompts
 from llm_steward.llm.client import LLM
 from llm_steward.llm.roles import Provenance, Role
 from llm_steward.models.enums import RiskLevel
+from llm_steward.ranking import has_cjk
 
 MIN_GENERALITY = 0.6  # a high mean is not enough for knowledge that is about one person
 CRITERIA = ("reusability", "novelty", "timeliness", "generality", "trust")
@@ -106,9 +107,12 @@ def worthy_ids(scores: list[FactScores], asked: set[str], *, threshold: float) -
 
 
 async def draft_entry(llm: LLM, text: str) -> tuple[DraftReply, Provenance]:
+    # Code, not the model, names the language: with only Chinese named in the prompt, qwen3:8b
+    # (thinking off) drafted an English suggestion in Chinese (glassdesk browser test, 2026-11-27).
+    language = "Chinese" if has_cjk(text) else "English"
     return await llm.structured(
         Role.KB_DRAFT,
         DRAFT_PROMPT,
-        json.dumps({"TEXT": text}, ensure_ascii=False),
+        json.dumps({"TEXT": text, "LANGUAGE": language}, ensure_ascii=False),
         DraftReply,
     )
