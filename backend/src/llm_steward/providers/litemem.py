@@ -198,7 +198,11 @@ class LiteMemProvider:
         self, query: str, scope: Scope, *, top_k: int, filters: dict[str, Any] | None = None
     ) -> list[ProviderHit]:
         ns = self._namespace(scope.namespace_id)
-        hits = await self._transport.search(ns, query, self._scope(scope), top_k, filters)
+        # Without the session: given one, lite-mem returns only that session's rows, while
+        # llm-steward lets a session see the user's own memories that have none (scoping.visible).
+        # So ask for all of the user's, and the safety net drops other sessions' (rule 4).
+        user = LiteScope(scope.user_id, scope.agent_id, None)
+        hits = await self._transport.search(ns, query, user, top_k, filters)
         return [
             ProviderHit(self._external(scope.namespace_id, h.memory_id), h.score, h.content)
             for h in hits
