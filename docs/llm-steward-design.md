@@ -54,7 +54,7 @@ No single project does "Memory + governable KB + review + SQLite/pgvector dual b
 ### The 10 design principles drawn from this
 
 1. **Store atomic facts, not whole conversations** (mem0). Keep the whole conversation separately as an episode, as provenance.
-2. **Decide on conflicts at write time**: ADD / UPDATE / DELETE / NOOP (early mem0). This is what keeps a KB from rotting.
+2. **Decide on conflicts at write time**: ADD / UPDATE / DELETE / NOOP (early mem0). This is what keeps a KB from rotting. For memories a model decides; for KB entries a draft near effective knowledge is sent to a reviewer (§5 "KB review policy").
 3. **Invalidate, do not delete**: record the validity interval with `valid_from` / `valid_to`, so past states can be queried (Graphiti).
 4. **Every piece of data is traceable**: it maps to an episode, a document or a manual action (Graphiti).
 5. **Two shapes**: profile (each key has one current value, such as "city") and collection (can accumulate, retrieved on demand) (LangMem, Memobase).
@@ -399,12 +399,29 @@ Run the rules first, then let an LLM label, and take the higher level of the two
 | high | Goes into the review queue, approved by a reviewer | `verified` | 1.0 |
 | Created by an Admin or a reviewer | Takes effect directly | `verified` | 1.0 |
 
+**A draft that touches effective knowledge goes to review** (2026-11-27, found in glassdesk's browser test: a member
+accepted a card saying the expense deadline is 90 days and it went live beside the active entry saying 30). Before any
+write that is not a reviewer's is submitted (a draft from suggest, promote or extraction, or a member's own entry), and
+again when a user accepts a card for the team, the KB
+engine's nearest effective entries of the collection (`RetrievalService.nearby_entries`: read-only, no retrieval log,
+no hit counts) are compared with it by cosine of the `kb.similar` embed role. At or above `STEWARD_KB_SIMILAR_THRESHOLD`
+the candidate goes to the review queue whatever its risk, with `draft.touches = [{entry_id, similarity}]` and a "touches
+entry …" reason. A check that cannot run (engine or embedding failure, or effective entries of the collection the engine
+does not hold yet because their sync is pending) counts as touching (`entry_id: null`): unknown is not "no conflict".
+The same comparison against the conversation's open cards (the same asked user, the same collection, not expired) makes a
+near-identical suggestion return the card already waiting instead of a second one. This is similarity, not a judgement: a refinement or a paraphrase
+also goes to a reviewer; telling contradiction from refinement is left to the reviewer (an LLM judge was considered
+and not chosen, owner 2026-11-27). A reviewer's own write is unaffected. Without the KB LLM (no `kb.similar`) nothing is
+checked. A non-reviewer's `revise` of an effective (active or verified) entry always waits in the review queue as an
+UPDATE candidate (owner, 2026-11-27; before, only verified entries and high-risk text waited). Not checked: uploaded
+documents.
+
 Status changes: `draft → active → verified`. Any effective status can become `deprecated` through supersession, expiry or a manual action. A rejected candidate is written as `rejected` and kept. When `review_due_at` passes, the status does not change, and the Admin only marks it "awaiting re-review". **End-user confirmation never produces `verified`**: a user's confirmation only says it is useful, not that it is correct.
 
 ### User confirmation card (the pop-up discussed earlier)
 
 - The responses of `POST /v1/episodes` and `POST /v1/retrieve` carry an optional field `suggestions[]`, whose items are candidates with `stage=awaiting_user` (including the drafted title and content).
-- The host app shows the card. When the user confirms, it calls `POST /v1/candidates/{id}/accept`, and the request body can carry the edited `draft` and the save scope `scope: personal | team`. personal becomes the user's memory. team continues through the review policy (medium takes effect directly, high enters the review queue).
+- The host app shows the card. When the user confirms, it calls `POST /v1/candidates/{id}/accept`, and the request body can carry the edited `draft` and the save scope `scope: personal | team`. personal becomes the user's memory. team continues through the review policy (medium takes effect directly, high, or a draft that now touches effective knowledge, enters the review queue).
 - When the user rejects, it calls `/reject`. If `stop_suggestions=true` is included, a procedural memory for this user is written: "不希望被推荐分享" (does not want to be offered sharing), and no cards are produced automatically for this user afterwards; deleting this memory restores them. (The original design blocked by "type X of question"; extracted memories have no usable category, so on 2026-11-11 this became turning it off for the user as a whole, see §11 P7c.)
 - Anti-nuisance: at most `max_suggestions_per_session` (default 2) per session; cards not handled expire after 7 days.
 - The frontend provides an embeddable React component `<SuggestionCard />` (in `frontend/packages/widget`).
@@ -850,7 +867,7 @@ Work is split into 8 stages, one PR per stage, each with acceptance criteria tha
    - P3a governance core (2026-11-09, no LLM):
      - Only a reviewer can produce `verified` (on create or on transition): `admin`, or an API key with the `review` scope (chosen by the user on 2026-11-09; on 2026-11-10 it was decided the Admin has no login, so this is the long-term approach). review is a capability of `Actor` (`can_review`), not an identity: such a key is still recorded as `host_app` in the change_log, so the audit can tell a person from a key. End users, AI and system can none of them verify.
      - External writes go through `SubmitKbEntry`: the risk is the highest of the caller's estimate, the rule result and the collection's `default_risk` (a floor). low → `active`; medium → an `awaiting_user` card if there is an end user, otherwise `active`; high → `awaiting_review`; a submission by a reviewer is `verified` directly. A collection's `review_policy` can only change the routing of low / medium, and high always goes to review.
-     - Edits go through `ReviseKbEntry`: when a non-reviewer edits a verified entry, or the new content is high, an UPDATE candidate is created and goes to review, and the entry does not change.
+     - Edits go through `ReviseKbEntry`: when a non-reviewer edits a verified entry, or the new content is high, an UPDATE candidate is created and goes to review, and the entry does not change. (Since 2026-11-27 any effective entry, active included: §5, §11 item 17.)
      - When a candidate is accepted it lands in the same transaction: ADD creates the entry (and points `target_id` at it), UPDATE changes the content and produces a new version, DELETE deprecates. An end user accepting a card: `personal` is stored as their own memory; for `team`, medium takes effect as `active` and high is moved to the review queue. Only the user who was asked (or a reviewer) can answer a card, and only a reviewer can handle the review queue. A candidate expires after 7 days and cannot be accepted after that.
      - Screening is done in governance: `SubmitKbEntry`, `ReviseKbEntry` and `DecideCandidate` with edits all read the namespace policy inside the write transaction and run `pipeline/risk.py`, so the same rules apply whether the request comes from the API, the pipeline or MCP. A draft edited when accepting a card is screened again: if personal information or high-risk content was added, the end user's acceptance moves it into the review queue and it does not take effect directly (found in the security review, 2026-11-09). A decision can change only `title` and `content`.
      - Rule risk (`pipeline/risk.py`): the namespace-configured `kb.high_risk_keywords` (case-insensitive) and built-in PII detection (phone number, ID number with check digit, bank card with Luhn, email, key formats). `memory.pii.action` is `redact` (default, replaced with `[REDACTED:<type>]`), `block` (422) or `allow`. Any hit raises the risk to high, the reason goes into the candidate's `reason`, and it does not repeat the sensitive value itself.
@@ -1223,6 +1240,51 @@ Work is split into 8 stages, one PR per stage, each with acceptance criteria tha
      stay recalled in their own session only, and lite-mem never resolves them against the newer user-wide memories
      (its conflict search is exact on scope), so an old session can show both an old and a newer fact until reconcile
      or an admin retires the old one. Re-extracting, erasing or retiring them is the host's choice.
+17. **Fix: a drafted entry could contradict effective knowledge without review** (2026-11-27, branch
+   `fix/kb-governance-glassdesk-test`, stacked on 16; found in glassdesk's browser test, en, qwen3:8b)
+   - [x] Bug: a member accepted a card "报销期限: 报销申请的期限为90天" for the team; it went live `active` beside the active
+     entry "within 30 days" (medium risk → asked user → accept = live). Nothing compared a draft with effective knowledge.
+   - [x] Fix (§5 "KB review policy"): `kb.similar` (a lite-model embed role) compares new knowledge (a draft, or a
+     member's own entry) with the KB engine's nearest effective entries of its collection
+     (`RetrievalService.nearby_entries`, read-only) before submit and again when a user accepts a card for the team; at or above `STEWARD_KB_SIMILAR_THRESHOLD` it goes to review with
+     `draft.touches`; a check that cannot run counts as touching. The same comparison against the conversation's open
+     cards returns the waiting card instead of a second one (the agent had suggested the same change twice in one turn).
+     `kb.similar` must name its own embedding model (startup error otherwise) and is declared to lite-model only when
+     used or configured (lite-model checks every declared role; the gateway serves no embeddings).
+   - [x] Drafts in the wrong language: `kb_draft.j2` named only Chinese, and an English suggestion came back Chinese.
+     Code now passes `LANGUAGE` (Chinese if the text has CJK, else English), as lite-mem's extraction does.
+   - [x] Threshold, measured on bge-m3:567m (Ollama), 5 entries × 14 drafts: the 8 same-topic pairs scored 0.674–0.882
+     (lowest: the Chinese 90-day draft vs the English 30-day entry; Chinese "年假" vs English leave 0.714), the 62 other
+     pairs at most 0.597. Default 0.63, below the midpoint (errs toward review). A small set: re-measure on real data.
+   - [x] Tests (red first): `test_kb_touches.py` (touching → review, a member's own touching entry → review while a
+     reviewer's goes in, unrelated → the user's card, failed check → review, the same suggestion twice in a session → one
+     card, accept re-checked with the reason recorded; the accept test also killed a mutant that skipped the re-check),
+     `test_kb_llm.py` (LANGUAGE), `test_llm.py` (kb.similar needs its own model). Full suite 1097 passed.
+   - [x] Close-out: /simplify (four angles). Altitude found two holes, both now red → green: the check sat only in the
+     drafting path (a member's hand-typed entry went live), and the route guard exempted any "auto" route, not just
+     reviewers. Also: touch notes built once in governance for submit and accept (accept had none), one embedding text
+     format, a shared validity predicate with retrieval's safety net, the session-card query renamed off the existing
+     `_open_cards`. Not done: narrowing `except Exception` (engine adapters raise varied errors; retrieval treats them
+     the same way), a candidate evidence column instead of `draft.touches` (a migration plus SDK and Admin changes),
+     caching entry vectors, gathering the accept-time label and check (edits on accept are rare).
+   - [x] Review (a Claude subagent; Codex quota out until 2026-12-18). Fixed, each red first: the session dedupe could
+     return another user's, another collection's or an expired card (`test_a_waiting_card_is_reused_only_for_the_same_user_and_collection`);
+     effective entries not yet synced were invisible to the check, now "may touch" (`test_effective_knowledge_not_yet_synced_counts_as_may_touch`);
+     an embedding reply of the wrong size was a 500, now "may touch"; the tests only used similarities 1.0 / 0.0, now a
+     pair at 0.63 and 0.629 (`test_the_threshold_is_the_configured_one_and_inclusive`, killed a `>` mutant); propose-only
+     actors no longer pay for a check whose route is review anyway. Planned already: glassdesk's compose needs a
+     `kb.similar` model before it bumps its pin (startup error otherwise). Not changed: the accept-time check still runs
+     before the decider check for other actors (one search and embedding, then the 403); edits on accept are embedded
+     before they are screened, as retrieval queries are; no `candidate.*` event when an accept escalates to review (the
+     HIGH path never sent one either).
+   - [x] Owner's decision (2026-11-27): a member's `revise` of an active entry applied in place at low or medium risk, so
+     the same contradiction could go live by editing the 30-day entry to 90. Now any non-reviewer's revise of effective
+     knowledge is an UPDATE candidate in review. `test_a_revision_of_ordinary_knowledge_applies_at_once` pinned the old
+     rule and was rewritten to the new one (`test_a_revision_of_effective_knowledge_waits_for_a_reviewer`, red first);
+     `test_editing_creates_a_new_version` now edits with a reviewer key, and asserts a host key's edit waits (202).
+   - Not done: an LLM judge telling contradiction from refinement (owner chose similarity → review); drafts that merge
+     details of an existing entry into a new claim (seen once; left to a measured eval round); lite-mem's extraction
+     names no language but Chinese (its §13).
 
 ### The first instruction for Claude Code (for reference)
 

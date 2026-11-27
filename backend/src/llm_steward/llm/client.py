@@ -7,12 +7,12 @@ import os
 from typing import TYPE_CHECKING, Protocol
 
 import lite_model
-from lite_model import AsyncLiteModel, AsyncModel, Message, call_context
+from lite_model import AsyncEmbedModel, AsyncLiteModel, AsyncModel, Message, call_context
 from lite_model.config import resolve, target
 from pydantic import BaseModel
 
 from llm_steward.config import Settings
-from llm_steward.llm.roles import ROLES, LLMConfigError, Provenance, Role
+from llm_steward.llm.roles import ROLES, ROLES_WITH_SIMILAR, LLMConfigError, Provenance, Role
 from llm_steward.storage.db import libpq_url
 
 if TYPE_CHECKING:  # the `cache` extra; imported only when the cache is on
@@ -40,6 +40,10 @@ class LLM(Protocol):
         scopes. None, or another role: never."""
         ...
 
+    async def embed(self, role: Role, texts: list[str]) -> list[list[float]]:
+        """One vector per text, in order, from an embed role (`kb.similar`)."""
+        ...
+
 
 # The roles whose answers may be reused (design §11 P10): kb.risk labels one entry's text, which
 # comes back unchanged on revise and re-accept. Not kb.worthiness (one prompt per batch: the key
@@ -52,8 +56,12 @@ def cache_scope(namespace_id: object) -> str:
     return f"steward/{namespace_id}"
 
 
+class ChatAndEmbedModel(AsyncModel, AsyncEmbedModel, Protocol):
+    """What the roles need of lite-model: structured chat, and embeddings (`kb.similar`)."""
+
+
 class LiteModelLLM:
-    def __init__(self, model: AsyncModel, cache: "Policy | None" = None) -> None:
+    def __init__(self, model: ChatAndEmbedModel, cache: "Policy | None" = None) -> None:
         """`cache`: the lite-cache `Policy` of `CACHED_ROLES` calls that name a `cache_scope`,
         when a cache hook is registered on `model`; None: no call is cached."""
         self._model = model
@@ -87,6 +95,14 @@ class LiteModelLLM:
         # say (what llm-steward recorded before lite-model)
         return reply.value, Provenance(role.value, p.answered or p.requested)
 
+    async def embed(self, role: Role, texts: list[str]) -> list[list[float]]:
+        try:
+            reply = await self._model.embed(role.value, texts)
+        except lite_model.ModelError as exc:
+            raise LLMError(str(exc)) from exc
+        vectors: list[list[float]] = reply.vectors
+        return vectors
+
 
 def role_llm(
     settings: Settings, roles: tuple[Role, ...], cache_store: "PgStore | None" = None
@@ -105,8 +121,17 @@ def _build(settings: Settings, roles: tuple[Role, ...]) -> AsyncLiteModel:
         raise LLMConfigError(
             f"no model for LLM roles {names}: set STEWARD_LLM__BACKEND and STEWARD_LLM__MODEL"
         )
+    if Role.KB_SIMILAR in roles and Role.KB_SIMILAR.value not in settings.llm.roles:
+        # the default model answers the chat roles: as an embedder it would make every
+        # comparison meaningless (or fail), so the embed role names its own model
+        raise LLMConfigError(
+            "kb.similar needs an embedding model of its own: "
+            'STEWARD_LLM__ROLES={"kb.similar": {"model": "bge-m3:567m"}} (on an embedding backend)'
+        )
+    # configured whenever it is used (checked above): declared to lite-model only then
+    similar = Role.KB_SIMILAR.value in settings.llm.roles
     try:
-        return lite_model.build_async(settings.llm, ROLES)
+        return lite_model.build_async(settings.llm, ROLES_WITH_SIMILAR if similar else ROLES)
     except lite_model.ConfigError as exc:
         raise LLMConfigError(str(exc)) from exc
 

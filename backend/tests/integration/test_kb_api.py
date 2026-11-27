@@ -84,11 +84,13 @@ def test_a_namespace_keyword_marks_knowledge_high_risk(t: Tenant) -> None:
 
 def test_editing_creates_a_new_version(t: Tenant) -> None:
     entry = t.submit(t.collection(default_risk="low"), "Refunds take 3 days").json()["entry"]
-    r = t.c.http.patch(
-        f"/v1/kb/entries/{entry['id']}", json={"content": "Refunds take 4 days"}, headers=t.host
-    )
+    path = f"/v1/kb/entries/{entry['id']}"
+    # since 2026-11-27 (owner): a non-reviewer's edit of effective knowledge waits for review
+    waiting = t.c.http.patch(path, json={"content": "Refunds take 5 days"}, headers=t.host)
+    assert waiting.status_code == 202 and waiting.json()["candidate"]["op"] == "UPDATE"
+    r = t.c.http.patch(path, json={"content": "Refunds take 4 days"}, headers=t.reviewer)
     assert r.status_code == 200 and r.json()["entry"]["version"] == 2
-    got = t.c.http.get(f"/v1/kb/entries/{entry['id']}", headers=t.host).json()
+    got = t.c.http.get(path, headers=t.host).json()
     assert (got["content"], got["version"]) == ("Refunds take 4 days", 2)
 
 

@@ -70,3 +70,13 @@ async def test_a_memory_is_drafted_as_a_general_statement() -> None:
         "medium",
     )  # one call: the draft labels its own risk
     assert provenance.role == "kb.draft"
+
+
+async def test_code_names_the_drafts_language_from_the_text() -> None:
+    # Found 2026-11-27: an English suggestion came back as a Chinese card, the prompt named only
+    # Chinese and qwen3:8b (thinking off) took that as the default.
+    reply = {"title": "t", "content": "c", "risk_level": "low", "reason": "r"}
+    llm = FakeLLM(kb_draft=lambda p: reply)
+    await draft_entry(llm, "The expense claim deadline is 90 days.")
+    await draft_entry(llm, "报销期限是 90 天。")
+    assert [payload["LANGUAGE"] for _, payload in llm.calls] == ["English", "Chinese"]

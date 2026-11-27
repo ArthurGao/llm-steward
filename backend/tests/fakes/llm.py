@@ -5,7 +5,7 @@ import json
 from collections.abc import Callable
 from typing import Any
 
-from lite_model.testing import AsyncFakeModel, FakeCall
+from lite_model.testing import AsyncFakeModel, FakeCall, hash_vectors
 from pydantic import BaseModel
 
 from llm_steward.llm.client import LiteModelLLM
@@ -18,12 +18,29 @@ class FakeLLM(LiteModelLLM):
     """Each handler answers one role from the call's JSON payload; its provenance says
     `<role>:fake-model`, so a scripted answer is never mistaken for a model's."""
 
-    def __init__(self, **handlers: Handler) -> None:
+    def __init__(
+        self,
+        similar: Callable[[str], list[float]] | BaseException | None = None,
+        **handlers: Handler,
+    ) -> None:
+        """`similar`: the `kb.similar` vector of one text, or an error every embedding raises;
+        None: a fixed vector per text with no similarity between different texts."""
+
         # keyword = role with dots as underscores, e.g. memory_resolve=...
         def script(handler: Handler) -> Callable[[FakeCall], dict[str, Any]]:
             return lambda call: handler(json.loads(call.messages[-1].content))
 
-        self.fake = AsyncFakeModel(**{k.replace("_", "."): script(v) for k, v in handlers.items()})
+        embed = (
+            hash_vectors(64)
+            if similar is None
+            else similar
+            if isinstance(similar, BaseException)
+            else lambda call: [similar(text) for text in call.texts]
+        )
+        self.fake = AsyncFakeModel.with_vectors(
+            {Role.KB_SIMILAR.value: embed},
+            **{k.replace("_", "."): script(v) for k, v in handlers.items()},
+        )
         self.scopes: list[tuple[str, str | None]] = []  # (role, cache_scope) of every call
         super().__init__(self.fake)
 

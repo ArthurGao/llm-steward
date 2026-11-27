@@ -352,14 +352,25 @@ async def test_a_collection_policy_is_set_and_changed_with_a_log(kb: KbStack) ->
         )
 
 
-async def test_a_revision_of_ordinary_knowledge_applies_at_once(kb: KbStack) -> None:
+async def test_a_revision_of_effective_knowledge_waits_for_a_reviewer(kb: KbStack) -> None:
+    # owner, 2026-11-27 (was: ordinary knowledge revised at once): editing the 30-day entry to
+    # 90 would otherwise be the glassdesk contradiction by another route, so any non-reviewer's
+    # change to effective knowledge is an UPDATE candidate in the review queue
     entry = await kb.submit(RiskLevel.LOW)
-    revised = await kb.gov.apply(
-        ReviseKbEntry(kb.ns, entry.id, content="Refunds take 4 days", risk_level=RiskLevel.LOW),
-        HOST,
+    revision = ReviseKbEntry(
+        kb.ns, entry.id, content="Refunds take 4 days", risk_level=RiskLevel.LOW
     )
-    assert isinstance(revised, KbEntry) and (revised.version, revised.status) == (
-        2,
+    candidate = await kb.gov.apply(revision, HOST)
+    assert isinstance(candidate, Candidate)
+    assert (candidate.op, candidate.target_id, candidate.stage) == (
+        CandidateOp.UPDATE,
+        entry.id,
+        CandidateStage.AWAITING_REVIEW,
+    )
+    [unchanged] = await kb.entries()
+    assert (unchanged.content, unchanged.version, unchanged.status) == (
+        "Refunds take 3 to 5 business days",
+        1,
         KbStatus.ACTIVE,
     )
 

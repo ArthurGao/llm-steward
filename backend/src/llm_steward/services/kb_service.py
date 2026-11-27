@@ -8,8 +8,9 @@ governance and the code here decide."""
 
 import asyncio
 import logging
+import math
 import uuid
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, Literal
 
 from sqlalchemy import func, select
@@ -17,7 +18,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from llm_steward.errors import NotFound, Unprocessable
 from llm_steward.llm.client import LLM, cache_scope
-from llm_steward.llm.roles import Provenance
+from llm_steward.llm.roles import Provenance, Role
 from llm_steward.models import Candidate, Episode, KbCollection, KbEntry, Memory
 from llm_steward.models.base import utcnow
 from llm_steward.models.enums import (
@@ -27,6 +28,7 @@ from llm_steward.models.enums import (
     AuthorType,
     CandidateStage,
     CandidateStatus,
+    CandidateTarget,
     JobType,
     KbOrigin,
     KbStatus,
@@ -59,6 +61,7 @@ from llm_steward.services.governance_service import (
 )
 from llm_steward.services.job_queue import ClaimedJob, enqueue
 from llm_steward.services.paging import page
+from llm_steward.services.retrieval_service import RetrievalService
 from llm_steward.storage.db import per_namespace, unscoped
 
 log = logging.getLogger(__name__)
@@ -74,6 +77,7 @@ REVIEW_MIN_HITS = 5  # answers since the last review, at least
 REVIEW_UNHELPFUL_PERCENT = 30  # of the ratings since then, unhelpful, at least
 VERIFY_MIN_HELPFUL = 5  # helpful ratings, at least, to be worth verifying
 VERIFY_HELPFUL_PERCENT = 80  # of all ratings, helpful, at least
+NEARBY = 5  # effective entries new knowledge is compared with, the KB engine's nearest
 
 type ReviewFilter = Literal["due", "verify"]
 
@@ -93,6 +97,29 @@ class Submitted:
     @classmethod
     def of(cls, obj: KbEntry | Candidate) -> "Submitted":
         return cls(obj, None) if isinstance(obj, KbEntry) else cls(None, obj)
+
+
+@dataclass(frozen=True)
+class Touched:
+    """`KbService._touches`: the effective entries new knowledge touches, or the card already
+    waiting in its conversation that says the same."""
+
+    touches: list[dict[str, Any]] = field(default_factory=list)
+    asked: Candidate | None = None
+
+
+def _entry_text(title: str, content: str) -> str:
+    """What `kb.similar` embeds of an entry, a draft or a card: one format for all of them."""
+    return f"{title}\n{content}"
+
+
+def _draft_text(draft: dict[str, Any]) -> str:
+    return _entry_text(draft.get("title", ""), draft.get("content", ""))
+
+
+def _cosine(a: list[float], b: list[float]) -> float:
+    norm = math.sqrt(sum(x * x for x in a)) * math.sqrt(sum(y * y for y in b))
+    return sum(x * y for x, y in zip(a, b, strict=True)) / norm if norm else 0.0
 
 
 @dataclass(frozen=True)
@@ -117,11 +144,18 @@ class KbService:
         sessions: async_sessionmaker[AsyncSession],
         governance: GovernanceService,
         llm: LLM | None = None,
+        *,
+        retrieval: RetrievalService | None = None,
+        similar_threshold: float = 1.0,
     ) -> None:
-        """`llm`: the KB roles (kb.risk, kb.worthiness, kb.draft), or None when they are off."""
+        """`llm`: the KB roles (kb.risk, kb.worthiness, kb.draft, kb.similar), or None when they
+        are off. `retrieval` finds the effective entries a draft may touch; at or above
+        `similar_threshold` (cosine of kb.similar vectors) it touches them (design §5)."""
         self._sessions = sessions
         self._governance = governance
         self._llm = llm
+        self._retrieval = retrieval
+        self._similar_threshold = similar_threshold
 
     def _drafting(self) -> LLM:
         if self._llm is None:
@@ -148,10 +182,15 @@ class KbService:
         source_refs: list[dict[str, Any]] | None = None,
         reason: str | None = None,
         labelled: bool = False,
+        touches: list[dict[str, Any]] | None = None,
     ) -> Submitted:
         """`risk_level` is the caller's own estimate: the LLM label (when on) and the rules can
-        only raise it. `labelled`: the risk already comes from a model (a draft labels itself)."""
+        only raise it. `labelled`: the risk already comes from a model (a draft labels itself).
+        `touches`: already checked (a draft); None: checked here unless a reviewer writes it."""
         reasons = [reason] if reason else []
+        if touches is None and not (actor.is_reviewer or actor.propose_only):  # those: no need
+            touched = await self._touches(namespace_id, collection_id, _entry_text(title, content))
+            touches = touched.touches
         if not labelled:
             risk_level, notes = await self._label(namespace_id, title, content, risk_level)
             reasons += notes
@@ -168,8 +207,73 @@ class KbService:
             source_refs=list(source_refs or []),
             tags=list(tags or []),
             reason="; ".join(reasons) or None,
+            touches=list(touches or []),
         )
         return Submitted.of(await self._governance.apply(op, actor))
+
+    async def _touches(
+        self,
+        namespace_id: uuid.UUID,
+        collection_id: uuid.UUID,
+        text: str,
+        *,
+        session_id: str | None = None,
+        user_id: str | None = None,
+    ) -> "Touched":
+        """Which effective entries of the collection `text` is near, and a card already waiting
+        in `session_id` that says the same (by `kb.similar` cosine, design §5 "KB review policy").
+        A check that cannot run counts as touching: unknown is not "no conflict". Without the KB
+        LLM (no `kb.similar`) nothing is checked."""
+        if self._llm is None or self._retrieval is None:
+            return Touched()
+        asked = []
+        if session_id:  # the same card waiting for the same person, about the same collection
+            now = utcnow()
+            asked = [
+                c
+                for c in await self._session_cards(namespace_id, session_id)
+                if c.requested_for_user == user_id
+                and c.draft.get("collection_id") == str(collection_id)
+                and (c.expires_at is None or c.expires_at > now)
+            ]
+        try:
+            nearby = await self._retrieval.nearby_entries(namespace_id, collection_id, text, NEARBY)
+            if not nearby and not asked:
+                return Touched()
+            texts = [_entry_text(e.title, e.content) for e in nearby]
+            texts += [_draft_text(c.draft) for c in asked]
+            [mine, *theirs] = await self._llm.embed(Role.KB_SIMILAR, [text, *texts])
+            if len(theirs) != len(texts):
+                raise ValueError(f"{len(theirs)} vectors for {len(texts)} texts")
+            similarity = [round(_cosine(mine, v), 3) for v in theirs]
+        except Exception as exc:  # any engine or embedding failure (as retrieval treats engines)
+            log.warning("kb: touch check failed (%s): routed to review", type(exc).__name__)
+            return Touched([{"entry_id": None, "similarity": None}])
+        threshold = self._similar_threshold
+        for card, value in zip(asked, similarity[len(nearby) :], strict=True):
+            if value >= threshold:
+                return Touched(asked=card)
+        return Touched(
+            [
+                {"entry_id": str(e.id), "similarity": value}
+                for e, value in zip(nearby, similarity, strict=False)
+                if value >= threshold
+            ]
+        )
+
+    async def _session_cards(self, namespace_id: uuid.UUID, session_id: str) -> list[Candidate]:
+        """Knowledge candidates still waiting in one conversation, at any stage (unlike the
+        user's cards, `_open_cards`): a suggestion already sent to review is not asked again."""
+        async with self._sessions() as s:
+            rows = await s.scalars(
+                select(Candidate).where(
+                    Candidate.namespace_id == namespace_id,
+                    Candidate.session_id == session_id,
+                    Candidate.status == CandidateStatus.PENDING,
+                    Candidate.target_type == CandidateTarget.KB_ENTRY,
+                )
+            )
+            return list(rows)
 
     async def _label(
         self, namespace_id: uuid.UUID, title: str, content: str, floor: RiskLevel
@@ -220,6 +324,15 @@ class KbService:
         source_refs: list[dict[str, Any]] | None,
     ) -> Submitted:
         draft, provenance = drafted
+        touched = await self._touches(
+            namespace_id,
+            collection_id,
+            _entry_text(draft.title, draft.content),
+            session_id=session_id,
+            user_id=user_id,
+        )
+        if touched.asked is not None:  # the same card is already waiting in this conversation
+            return Submitted(None, touched.asked)
         return await self.submit(
             namespace_id,
             collection_id,
@@ -234,6 +347,7 @@ class KbService:
             source_refs=source_refs,
             reason=f"drafted by {provenance.tag}: {draft.reason}",
             labelled=True,
+            touches=touched.touches,
         )
 
     async def promote(
@@ -561,6 +675,13 @@ class KbService:
             floor, _ = await self._label(
                 namespace_id, draft.get("title", ""), draft.get("content", ""), RiskLevel.LOW
             )
+        touches: list[dict[str, Any]] = []
+        if (
+            to == CandidateStatus.ACCEPTED
+            and scope == "team"
+            and not (actor.is_reviewer or actor.propose_only)
+        ):
+            touches = await self._touches_on_accept(namespace_id, candidate_id, draft)
         op = DecideCandidate(
             namespace_id,
             candidate_id,
@@ -569,6 +690,7 @@ class KbService:
             draft=draft,
             scope=scope,
             risk_level=floor,
+            touches=touches,
         )
         ops: list[Operation] = [op] if rule is None else [op, rule]  # one transaction
         candidate: Candidate = (await self._governance.apply_all(ops, actor))[0]
@@ -576,6 +698,26 @@ class KbService:
             return candidate, None
         async with self._sessions() as s:  # accepting points target_id at the knowledge
             return candidate, await s.get(KbEntry, candidate.target_id)
+
+    async def _touches_on_accept(
+        self, namespace_id: uuid.UUID, candidate_id: uuid.UUID, edits: dict[str, Any] | None
+    ) -> list[dict[str, Any]]:
+        """A user's card checked again when they accept it for the team: knowledge it touches may
+        have gone live since it was drafted (design §5 "KB review policy")."""
+        if self._llm is None or self._retrieval is None:
+            return []  # no kb.similar: nothing to check with
+        async with self._sessions() as s:
+            card = await load_owned(
+                s, Candidate, namespace_id, candidate_id, "candidate", lock=False
+            )
+        if (
+            card.target_type != CandidateTarget.KB_ENTRY
+            or card.stage != CandidateStage.AWAITING_USER
+        ):
+            return []
+        draft = {**card.draft, **(edits or {})}
+        collection_id = uuid.UUID(draft["collection_id"])
+        return (await self._touches(namespace_id, collection_id, _draft_text(draft))).touches
 
     async def _stop_rule(self, namespace_id: uuid.UUID, candidate_id: uuid.UUID) -> CreateMemory:
         """The card's user's "stop suggesting", as a procedural memory they can see and delete
