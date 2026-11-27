@@ -108,6 +108,10 @@ async def check_scopes(p: LiteMemProvider) -> None:
 
     found = {h.external_id for h in await p.search("green tea", Scope(NS, "alice"), top_k=10)}
     assert found == {mine, shared}  # own + shared; never bob's, never another namespace's
+    # In a session the user still sees what is theirs in every session (llm-steward's NULL rule,
+    # `scoping.visible`); a memory of another session is dropped by the safety net, not here.
+    in_session = await p.search("green tea", Scope(NS, "alice", session_id="s9"), top_k=10)
+    assert {h.external_id for h in in_session} == {mine, shared}
     anonymous = {h.external_id for h in await p.search("green tea", Scope(NS), top_k=10)}
     assert anonymous == {shared}
     listed = {r.external_id for r in await p.list(Scope(NS, "bob"))}

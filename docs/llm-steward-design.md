@@ -371,6 +371,11 @@ The upper part is the automatic channel for memory. Only facts that pass the KB 
 1. **Buffer**: accumulate by `(namespace, user, session)`. A flush is triggered when `buffer_tokens` is exceeded (default 1024), when idle for more than `buffer_idle` (default 30 minutes), on an explicit `flush`, or when the request carries `mode=sync`.
 2. **The provider extracts and writes**: call `MemoryProvider.add(messages, scope)`. Engines that extract (lite-mem, mem0) extract the facts and store them, and return a change list (lite-mem also resolves conflicts, and llm-steward mirrors its decision instead of compensating). An engine that cannot extract (native) has llm-steward extract when `STEWARD_MEMORY_LLM=true`, using the `memory.extract` role and the `extract_facts` prompt. The facts are written once through the governance layer (`origin=extraction`) and pushed to the engine by the Syncer, then go through conflict compensation in the same way. When it is not turned on, such an engine accepts only direct writes (`/v1/episodes` returns 422).
 3. **Mirror and record**: write the changes into the `memories` mirror, `external_refs` and `change_log` (`actor_type=provider`), and link `source_episode_id`.
+   **Scope of an extracted memory**: the episode's user and agent, never its session. What a conversation teaches
+   is the user's and is recalled in every session (the §7 SDK example: an episode with `session_id`, a retrieve without
+   one). The session stays on the episode (`source_episode_id`), and a card drafted from the memory takes its session
+   from there, so the per-session card budget (step 6) is unchanged. A memory written explicitly with a `session_id`
+   (`POST /v1/memories`) stays session-scoped.
 4. **Conflict compensation**: if the provider can extract (`extract`) but does not declare the `resolves_conflicts` capability (mem0 2.2.1 only does ADD, which is such a case; decided by capability since P2, 2026-11-08), then for each new memory take the top-5 with similarity ≥ 0.75 in the same scope (profile types are looked up by `key`), and `ConflictResolver` judges UPDATE / DELETE / NOOP. On UPDATE, the old memory is marked `superseded` in the mirror, with `valid_to` and `superseded_by` written, and **stays in the provider** (following "invalidate, do not delete", so that `as_of` can find the old value; normal retrieval filters by status in the safety net). DELETE likewise only marks it invalid. On NOOP, the newly written duplicate is deleted. (The original text said `provider.delete(old)`; it was corrected at P2 implementation per principle 3 of section 2, 2026-11-08.)
 5. **KB value scoring and risk grading**: the governance layer's own LLM call (one batch per flush) gives each new memory five scores (reusability, increment, timeliness, generality, credibility, each 0–1) and a `risk_level`.
 6. **KB suggestion**: when the mean of the five scores ≥ `kb_suggest_threshold` (default 0.7) and "generality" ≥ 0.6, rewrite it in general wording with the `draft_kb_entry` prompt and create one candidate with `target_type=kb_entry`.
@@ -1182,6 +1187,42 @@ Work is split into 8 stages, one PR per stage, each with acceptance criteria tha
        is a duplicate of an active fact, and ignore is correct; proposing erase would delete a copy of currently legitimate content instead.
      - "The tool reads all of this user's memories and then compares in Python": the assistant is off by default, each job looks at no more than 20 items, and each reads one user's memories; adding a cap would make a deleted
        memory with the same text that was not reached quietly turn into a remirror proposal (Codex pointed this out itself), and correctness comes first.
+
+16. **Fix: extracted memories were session-scoped** (2026-11-27, branch `fix/extracted-memory-scope`; found from glassdesk)
+   - [x] Bug: extraction wrote the episode's `session_id` into every memory it produced, in the engine (lite-mem filters
+     by it) and in the mirror (`visible()` shows a session-scoped memory only to that session). A fact a user stated in one
+     conversation was never recalled in another; a retrieve without a session had the hits dropped by the safety net
+     (`safety net dropped 2 provider hit(s)`). It contradicted the §7 example and conflict resolution, which already
+     compared memories without the session (`exact(..., session=False)`).
+   - [x] Fix: `memory_scope(episode)` (extraction) scopes memories to user and agent, for engine-extracted and
+     `STEWARD_MEMORY_LLM` alike; `_card_sessions` (kb) gives a card the session of the memory's source episode, falling
+     back to the memory's own session for memories written directly. Both the suggestion job (and its per-session
+     budget) and `promote` use it (§5 step 3).
+   - [x] Tests: `test_extracted_memory_scope.py` (engine-extracted and steward-extracted memories are recalled with another
+     session and with none, not by another user; a promoted extracted memory's card shows in its own conversation), each
+     red on both databases first. The per-session card tests in `test_kb_suggestions.py` stayed green unchanged (they
+     went red with the scope fix alone, before the card fix).
+   - [x] Close-out: /simplify (four angles): `promote` had been missed and lost its card's session (now red → green
+     through the shared `_card_sessions`); the scope rule got a name (`memory_scope`) and two always-`None`
+     `session_id=` arguments went. Not done: a shared `_episode` test helper (each test file keeps its own, as the
+     suite does today).
+   - [x] Review (a Claude subagent; Codex quota was out until 2026-12-18): conflict compensation compared a new
+     user-wide memory with session-only copies of the same fact (native and mem0 search across sessions once the scope
+     has none), so a NOOP deleted the user's memory and the fact stayed session-only. `_related` now keeps only
+     memories of exactly the new one's scope, session included (`test_a_session_only_copy_does_not_swallow_the_users_memory`,
+     red first). Recorded, not changed: `GET /v1/memories?session_id=` no longer lists extracted memories (they have no
+     session; no SDK, Admin or glassdesk caller relied on it); a card whose source episode row is gone falls back to the
+     memory's own session.
+   - [x] Found in the live check (glassdesk on lite-mem in-process): a user-wide memory was still not recalled in a session,
+     because lite-mem's `visible` search given a session returns only that session's rows (plus all-empty shared ones),
+     while llm-steward lets a session see the user's own rows with no session. `LiteMemProvider.search` now asks lite-mem
+     without the session (all of the user's memories) and the safety net drops other sessions' (rule 4). Contract test:
+     `check_scopes` searches with a session and expects the user's own and the shared memory, red first. Note: the first
+     retrieve after a restart can still mark `memory` degraded while Ollama loads the embedding model (800 ms budget).
+   - Existing data: memories extracted before the fix keep their session (lite-mem's tables are its own, rule 9). They
+     stay recalled in their own session only, and lite-mem never resolves them against the newer user-wide memories
+     (its conflict search is exact on scope), so an old session can show both an old and a newer fact until reconcile
+     or an admin retires the old one. Re-extracting, erasing or retiring them is the host's choice.
 
 ### The first instruction for Claude Code (for reference)
 

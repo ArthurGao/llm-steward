@@ -18,7 +18,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from llm_steward.errors import NotFound, Unprocessable
 from llm_steward.llm.client import LLM, cache_scope
 from llm_steward.llm.roles import Provenance
-from llm_steward.models import Candidate, KbCollection, KbEntry, Memory
+from llm_steward.models import Candidate, Episode, KbCollection, KbEntry, Memory
 from llm_steward.models.base import utcnow
 from llm_steward.models.enums import (
     EFFECTIVE_KB_STATUSES,
@@ -249,6 +249,7 @@ class KbService:
         another `user_id` is given."""
         async with self._sessions() as s:
             memory = await load_owned(s, Memory, namespace_id, memory_id, "memory", lock=False)
+            [session_id] = (await _card_sessions(s, [memory])).values()
         if memory.status != MemoryStatus.ACTIVE:
             raise Unprocessable(f"a {memory.status.value!r} memory cannot be promoted")
         return await self._drafted(
@@ -258,7 +259,7 @@ class KbService:
             actor=actor,
             origin=KbOrigin.PROMOTED_MEMORY,
             user_id=user_id or memory.user_id,
-            session_id=memory.session_id,
+            session_id=session_id,
             source_refs=[{"type": "memory", "id": str(memory.id)}],
         )
 
@@ -320,6 +321,7 @@ class KbService:
                 )
                 if m.status == MemoryStatus.ACTIVE and not m.meta.get(SCORED)
             ]
+            session_of = await _card_sessions(s, memories)
             stopped = await _stopped(s, namespace_id, {m.user_id for m in memories if m.user_id})
         if not memories:
             return 0
@@ -337,6 +339,7 @@ class KbService:
         chosen = await self._within_budget(
             namespace_id,
             [m for m in memories if str(m.id) in worthy],
+            session_of,
             config.max_suggestions_per_session,
         )
         if not chosen:
@@ -360,13 +363,17 @@ class KbService:
                 actor=None,
                 origin=KbOrigin.EXTRACTION,
                 user_id=memory.user_id,
-                session_id=memory.session_id,
+                session_id=session_of[memory.id],
                 source_refs=refs,
             )
         return len(chosen)
 
     async def _within_budget(
-        self, namespace_id: uuid.UUID, memories: list[Memory], per_session: int
+        self,
+        namespace_id: uuid.UUID,
+        memories: list[Memory],
+        session_of: dict[uuid.UUID, str | None],
+        per_session: int,
     ) -> list[Memory]:
         """Do not disturb (design §5): per user and session, no more cards than the budget left.
         Decided before drafting, so no draft is paid for and then dropped."""
@@ -376,7 +383,7 @@ class KbService:
             if memory.user_id is None:  # nobody to ask: no card, no budget
                 out.append(memory)
                 continue
-            key = (memory.user_id, memory.session_id)
+            key = (memory.user_id, session_of[memory.id])
             if key not in left:
                 left[key] = per_session - await self._count_open_cards(namespace_id, *key)
             if left[key] > 0:
@@ -589,6 +596,22 @@ class KbService:
             key=STOP_KEY,
             internal=True,
         )
+
+
+async def _card_sessions(s: AsyncSession, memories: list[Memory]) -> dict[uuid.UUID, str | None]:
+    """The session a card about each memory belongs to: where the user said it. An extracted
+    memory is the user's (no session) and its episode holds the session (design §5 steps 3 and 6);
+    a memory written directly keeps its own."""
+    told = dict(
+        (
+            await s.execute(
+                select(Memory.id, Episode.session_id)
+                .join(Episode, Episode.id == Memory.source_episode_id)
+                .where(Memory.id.in_([m.id for m in memories]))
+            )
+        ).all()
+    )
+    return {m.id: told.get(m.id) or m.session_id for m in memories}
 
 
 async def _stopped(s: AsyncSession, namespace_id: uuid.UUID, users: set[str]) -> set[str]:

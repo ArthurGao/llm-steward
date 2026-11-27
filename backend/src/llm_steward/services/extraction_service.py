@@ -60,6 +60,13 @@ def extraction_mode(provider: MemoryProvider, memory_llm: bool) -> ExtractionMod
     return "steward" if memory_llm else "none"
 
 
+def memory_scope(episode: Episode) -> Scope:
+    """Whose the memories extracted from an episode are: its user's and agent's, recalled in every
+    session. The episode's session stays provenance (`source_episode_id`) and decides which
+    conversation a card about the memory shows in (design §5 step 3)."""
+    return Scope(episode.namespace_id, episode.user_id, episode.agent_id)
+
+
 def compensates(provider: MemoryProvider, mode: ExtractionMode) -> bool:
     """Conflict compensation runs whenever facts are extracted and the engine does not resolve
     conflicts on add itself."""
@@ -104,7 +111,7 @@ class ExtractionService:
         if not episodes:
             return []
         first, last = episodes[0], episodes[-1]
-        scope = Scope(namespace_id, first.user_id, first.agent_id, first.session_id)
+        scope = memory_scope(first)
         mirrored = await self._mirrored(namespace_id, last.id)
         if mirrored is not None:  # a retry: this batch already went to the engine
             return await self._finish(scope, mirrored)
@@ -176,7 +183,6 @@ class ExtractionService:
                     content=e.content or "",
                     user_id=scope.user_id,
                     agent_id=scope.agent_id,
-                    session_id=scope.session_id,
                     source_episode_id=episode_id,
                     id=new,
                 )
@@ -223,7 +229,6 @@ class ExtractionService:
                 fact,
                 user_id=scope.user_id,
                 agent_id=scope.agent_id,
-                session_id=scope.session_id,
                 origin=MemoryOrigin.EXTRACTION,
                 source_episode_id=last,
             )
@@ -295,7 +300,13 @@ class ExtractionService:
             return []
         mirrored = await self._mirrors(scope, {h.external_id for h in hits})
         found = (mirrored.get(h.external_id) for h in hits)  # the engine's order: best first
-        return [m for m in found if m is not None and m.id not in exclude][:CANDIDATES]
+        # The session too: a copy kept for one session only (written so, or extracted before
+        # memories were the user's) must not make the user's memory a duplicate and delete it.
+        return [
+            m
+            for m in found
+            if m is not None and m.id not in exclude and m.session_id == scope.session_id
+        ][:CANDIDATES]
 
     async def _episodes(
         self, namespace_id: uuid.UUID, episode_ids: Sequence[uuid.UUID]
